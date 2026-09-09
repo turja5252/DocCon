@@ -1,0 +1,41 @@
+---
+description: Locked Jira data contract for DocCon transmittals
+alwaysApply: true
+---
+
+# Jira register (live-read 2026-08-21)
+
+- Cloud: `https://eliteintegrityservices.atlassian.net` — project **P2024** (Elite Integrity - Engineering)
+- REST v3 with operator email + API token. **Never store tokens in this folder.**
+- Types: **Project** (job) → **Task** (package) → **Sub-task** (drawing). Dummy job `P2024-15553` spawned this template.
+
+## One drawing = Sub-task under Drawing Package
+
+- Label `Drafting`. Parent task e.g. `2026-Tanzim Drawing Package`. Job Project is the grandparent.
+- Dummy drawings: `P2024-15578` `2026-Tanzim-1-1 Drawing-1`, `P2024-15579` `2026-Tanzim-1-2 Drawing-2`
+- Live summary shape: `2026-075-1-STWD SPIRAL STAIRWAY: INSIDE HANDRAIL DETAIL` — first token = drawing ID; rest = title. Job Number field is the grouping key.
+
+## Field map
+
+| Use | Field | ID |
+| --- | --- | --- |
+| Job | Job Number | `customfield_10300` |
+| Outgoing revision (what we send) | Outgoing Rev | `customfield_10280` (A–E, 0–15, 0A/1A/2A, N/A) |
+| Purpose | Submitted to Client For | `customfield_10281` (Approval / Info / Planned / NA) |
+| Incoming rev | Incoming Rev | `customfield_10283` |
+| Client stamp | Client Approval Status | `customfield_10284` |
+| Shop / Field IFC rev | Shop IFC Rev / Field IFC Rev | `customfield_10285` / `customfield_10287` |
+| Client dwg no. | Client Document Number | `customfield_10279` (text; editable on the DocCon pack, Confirm writes it) |
+| Drawing class | EDDI Status | `customfield_10289` (drawings: `1 - Fabrication Drawings - EDDI`) |
+
+Sub-task statuses: To Do, In Progress, OFA, Awaiting Client Information, Roadblock, Back from Client, IFI, IFC, Done.
+
+Template also has Task `Document Transmittals` (label `DocCon`) — a work package, not the drawing register.
+
+Log numbering (locked 2026-09-01): `CT|ST|FT-{Job Number}-{n}` from the job Excel books under `3.0 Doc Con`. Client STATUS list: APPROVAL, CONSTRUCTION, INFORMATION, REVIEW, AS-BUILT (not the same labels as Jira purpose).
+
+Controllers today edit those fields in a Jira Excel export. That file is not a second register. They will edit the same fields **on the DocCon console**; confirm writes Jira REST on the drawing sub-task.
+
+## Still unknown
+
+Which of those fields show as editable on each event (client send vs pack back vs IFC); shop IFC copy root named in the QRG. “Ready” is not a status — see last-record rule in AGENTS.md.

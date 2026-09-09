@@ -1,0 +1,63 @@
+---
+description: DocCon transmittal architecture and build order
+alwaysApply: true
+---
+
+# Architecture
+
+**Today:** Jira list → hunt PDFs → eye-match → type log → write email → maybe update Jira.
+
+**Target:** Pull Jira → scan job-folder PDFs → score matches → review board → fill `TRANSMITTAL` on the existing CT/ST/FT Excel books (macros stay) → File Transmittal in Excel or DocCon File + PDF → confirm send → Outlook + Jira writeback + folder copy.
+
+## Trigger (Sarah runs DocCon)
+
+Engineer emails Sarah the list and details. No new Jira status or include-field. Sarah opens DocCon, enters Job Number, console **fetches** the Drawing Package, she selects this pack and can **edit the drawing fields on the board**. Confirm **writes Jira**. Outlook from the DocCon mailbox is a later confirm.
+
+## Match engine
+
+Find `{Job Number} …` under `2.1 Current Jobs` (also `2.0` / completed). Scan `2.0 Drafting/**/Current PDF/*.pdf`. Skip Void. Filename `{id} REV {rev}.pdf`. Jira `2026-075-1-STWD` matches PDF `2026-075-STWD`. High / Missing on the board. OCR later. Never auto-send.
+
+## Three panes (workstation)
+
+1. Register — job Drawing Package; each row shows **last record** and the operator **edits** Outgoing Rev, purpose, Incoming Rev, approval, IFC stamps, and **Client Document Number** **on the console**. Confirm writes Jira (not a live keystroke). Mail is a later confirm.
+2. Match board — Jira row vs PDF vs confidence
+3. Preview — title block and previous transmittal
+
+Cover (FROM / TO / CC / project) is a **bottom strip**, not a side column, so the drawing list keeps full width.
+
+## Transmittal log (Excel, not a new file)
+
+Job folder `3.0 Doc Con`:
+
+- Client: `3.1 Client Transmittals/3.1.1 Out/CT-{job}.xlsm` + `CT-{job}-{n}.pdf` (+ zip). Incoming returns: `3.1.2 In/{date} …`
+- Shop: `3.2 Shop Transmittals/ST-{job}.xlsm` + `ST-{job}-{n}.pdf`, then copy IFC/ITP/MID/BOM
+- Field: `3.3 Field Transmittals/FT-{job}.xlsm` + `FT-{job}-{n}.pdf`, then copy into `8.0 Field Construction Folder/2.0 IFC Drawings & Transmittals` (no MID/BOM)
+
+`TRANSMITTAL` is the next send. Numbered sheets `1`, `2`, … are history. The original `.xlsm` stays the log: **Add Page** and **File Transmittal** must still work by hand. DocCon **Confirm…** writes Jira Next values, fills the working sheet, copies a numbered tab, prints the cover PDF, zips the pack, and opens an Outlook draft (one click; operator clicks Send). Unused filed tab keeps the number (`FILED IN ERROR, NOT USED YET`).
+
+## PEP (`7.0 Sales`)
+
+Project Execution Plan is the job card for the cover. Form is sheet `C-109.5` (Excel, printed to PDF). Pick the highest Rev whose name is this Job Number — not a leftover from another job.
+
+- **TO** = emails from Transmittal Recipients Main (`D50`) — default only; editable on the console. Addresses only.
+- **CC** = emails from Transmittal Recipients CC (`D51`) plus any emails in the PEP PM/PE cells — default only; editable on the console. Addresses only; add more with a semicolon. Names and roles are not shown.
+- Cover project line uses Client, site LSD, tank tag, PO, WO/MOC from the same PEP — default only; editable on the console
+- FROM stays `doc.control@eliteintegrityservices.com` (not an operator edit)
+- Date issued and Expected document return are console fields (return is typed; N/A if left blank)
+- Pack draft is saved as `{job}/3.0 Doc Con/DocCon/client-pack.json` (Dropbox). Machine settings stay in LOCALAPPDATA. Do not write console edits back into the Sales PEP.
+- If Sales has no usable PEP, the operator locates the file (Excel C-109.5 preferred; PDF if that is all they have)
+- Real job: highest Rev whose filename is this Job Number. Sandbox `2026-Tanzim` has no PEP of its own; a copied PEP in `7.0 Sales` is the test stand-in. Blank C-109.5 and leftover template PEP PDFs are not auto-picked.
+
+Mail: **Confirm…** uses the Outlook account signed into **this PC** (not forced to doc.control). Writes `CT-{job}-{n}.zip` in `3.1.1 Out` and opens a draft. Operator clicks Send in Outlook. Cover FROM on the Excel sheet stays `doc.control@…`. Shop/Field still copy into IFC folders (no MID/BOM on Field).
+
+## Build slices (do not start until asked)
+
+1. Match + log (fill TRANSMITTAL; File still works in Excel; optional DocCon File + PDF; email and Jira update still manual)
+2. Outlook send + client zip in `3.1.1 Out` + Jira writeback + shop/field folder copy
+3. Delta vs last pack, per-client templates, multi-job queue
+
+Skip a client portal unless a client demands it.
+
+## Architecture canvas (outside Dropbox)
+
+`C:\Users\TanzimNasir\.cursor\projects\c-Users-TanzimNasir-Elite-Integrity-Serv-Dropbox-Tanzim-Nasir-2-7-Engineering-2-7-5-Software-Elite-DocCon-Suite\canvases\doccon-transmittal-architecture.canvas.tsx`
