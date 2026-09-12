@@ -2,7 +2,16 @@
 # Copyright (c) 2026 Tanzim Nasir.
 # Built for Elite Integrity Services.
 # Unauthorized use by other companies is prohibited.
-from doccon.register import adopted_summary, drawing_fields_payload, drawing_from_issue, drawings_jql, parse_summary
+from doccon.register import (
+    JobProject,
+    adopted_summary,
+    drawing_fields_payload,
+    drawing_from_issue,
+    drawings_jql,
+    job_project_from_issues,
+    jira_project_label,
+    parse_summary,
+)
 
 
 def test_parse_summary_live_shape() -> None:
@@ -17,11 +26,143 @@ def test_parse_summary_dummy() -> None:
     assert title == "Drawing-1"
 
 
-def test_drawings_jql_contains_job() -> None:
+def test_parse_summary_id_only_has_no_description() -> None:
+    drawing_id, title = parse_summary("2026-075-ITP-1-1")
+    assert drawing_id == "2026-075-ITP-1-1"
+    assert title == ""
+
+
+def test_parse_summary_language_after_id() -> None:
+    drawing_id, title = parse_summary("2026-075-ITP-1-1 Inspection and Testing Plan for Roof")
+    assert drawing_id == "2026-075-ITP-1-1"
+    assert title == "Inspection and Testing Plan for Roof"
+
+
+def test_parse_summary_keeps_code_tokens_then_language() -> None:
+    drawing_id, title = parse_summary("2026-075 ITP-1-1 Inspection and Testing Plan")
+    assert drawing_id == "2026-075 ITP-1-1"
+    assert title == "Inspection and Testing Plan"
+
+
+def test_parse_summary_dash_then_language() -> None:
+    drawing_id, title = parse_summary("2026-075-ITP-1-1 - Inspection and Testing Plan")
+    assert drawing_id == "2026-075-ITP-1-1"
+    assert title == "Inspection and Testing Plan"
+
+
+def test_parse_summary_weld_procedure_wording() -> None:
+    from doccon.register import weld_package_description
+
+    drawing_id, title = parse_summary("EIS-1 Welding Procedure Specification")
+    assert drawing_id == "EIS-1"
+    assert title == "Welding Procedure Specification"
+    drawing_id, title = parse_summary("EIS-2-LT Welding Procedure Specification")
+    assert drawing_id == "EIS-2-LT"
+    assert title == "Welding Procedure Specification"
+    drawing_id, title = parse_summary("FM-WPS-01 Welding Procedure Specification")
+    assert drawing_id == "FM-WPS-01"
+    assert title == "Welding Procedure Specification"
+    drawing_id, title = parse_summary("CWB Certificate CWB Certification")
+    assert drawing_id == "CWB Certificate"
+    assert title == "CWB Certification"
+    drawing_id, title = parse_summary("CWB Certificate")
+    assert drawing_id == "CWB Certificate"
+    assert title == ""
+    assert weld_package_description("EIS-12") == "Welding Procedure Specification"
+    assert weld_package_description("WS-2026-Tanzim") == "Elite Weld Procedure Summary"
+    assert weld_package_description("CWB Certificate") == "CWB Certification"
+    assert weld_package_description("2026-Tanzim-1-1") == ""
+
+
+def test_drawings_jql_is_all_job_issues() -> None:
+    from doccon.register import children_of_jql, job_project_jql
+
     jql = drawings_jql("2026-Tanzim")
     assert "2026-Tanzim" in jql
-    assert "Drafting" in jql
-    assert "Sub-task" in jql
+    assert "Job Number" in jql
+    assert "Drafting" not in jql
+    assert "Sub-task" not in jql
+    assert "issuetype != Project" in jql
+    assert 'issuetype = Project' in job_project_jql("2026-Tanzim")
+    assert "parent in (P2024-15553, P2024-1)" in children_of_jql(["P2024-15553", "P2024-1"])
+
+
+def test_jira_project_label_from_project_issue() -> None:
+    project = job_project_from_issues(
+        [
+            {
+                "key": "P2024-15577",
+                "fields": {"issuetype": {"name": "Task"}, "summary": "Drawing Package"},
+            },
+            {
+                "key": "P2024-15553",
+                "fields": {"issuetype": {"name": "Project"}, "summary": "2026-Tanzim Test"},
+            },
+        ]
+    )
+    assert project == JobProject(key="P2024-15553", summary="2026-Tanzim Test")
+    assert jira_project_label(project) == "P2024-15553  2026-Tanzim Test"
+    assert jira_project_label(None) == "No Jira Project for this Job Number"
+
+
+def test_pack_sort_groups_by_eddi() -> None:
+    from doccon.register import eddi_group_title, sort_pack_rows
+
+    generic = drawing_from_issue(
+        {
+            "key": "P2024-2",
+            "fields": {
+                "summary": "2026-Tanzim-ITP ITP-1",
+                "customfield_10289": [{"value": "0 - Generic Task"}],
+            },
+        }
+    )
+    fab = drawing_from_issue(
+        {
+            "key": "P2024-1",
+            "fields": {
+                "summary": "2026-Tanzim-1-1 Drawing-1",
+                "customfield_10289": [{"value": "1 - Fabrication Drawings - EDDI"}],
+            },
+        }
+    )
+    blank = drawing_from_issue(
+        {
+            "key": "P2024-3",
+            "fields": {"summary": "2026-Tanzim-ZZ Later"},
+        }
+    )
+    ordered = sort_pack_rows([blank, fab, generic])
+    assert [row.key for row in ordered] == ["P2024-2", "P2024-1", "P2024-3"]
+    assert eddi_group_title("") == "Ungrouped"
+    assert eddi_group_title("4 - Engineering - EDDI") == "4 - Engineering"
+    assert eddi_group_title("1 - Fabrication Drawings - EDDI") == "1 - Fabrication Drawings"
+
+
+def test_visible_pack_skips_generic() -> None:
+    from doccon.register import is_generic_eddi, visible_pack_rows
+
+    generic = drawing_from_issue(
+        {
+            "key": "P2024-2",
+            "fields": {
+                "summary": "Generic task",
+                "customfield_10289": [{"value": "0 - Generic Task"}],
+            },
+        }
+    )
+    fab = drawing_from_issue(
+        {
+            "key": "P2024-1",
+            "fields": {
+                "summary": "2026-Tanzim-1-1 Drawing-1",
+                "customfield_10289": [{"value": "1 - Fabrication Drawings - EDDI"}],
+            },
+        }
+    )
+    assert is_generic_eddi(generic.eddi_status)
+    assert not is_generic_eddi(fab.eddi_status)
+    assert [row.key for row in visible_pack_rows([generic, fab])] == ["P2024-1"]
 
 
 def test_drawing_from_issue_maps_custom_fields() -> None:
@@ -38,6 +179,13 @@ def test_drawing_from_issue_maps_custom_fields() -> None:
             "customfield_10285": {"value": "0"},
             "customfield_10287": {"value": "0"},
             "customfield_10279": "CNRL-T-101",
+            "duedate": "2026-09-15",
+            "customfield_10301": "2026-09-09",
+            "customfield_10046": "2026-09-20",
+            "customfield_10066": "2026-09-22",
+            "customfield_10286": "2026-09-25",
+            "customfield_10288": "2026-09-26",
+            "customfield_10289": [{"value": "1 - Fabrication Drawings - EDDI"}],
             "parent": {"fields": {"summary": "2026-Tanzim Drawing Package"}},
         },
     }
@@ -52,11 +200,18 @@ def test_drawing_from_issue_maps_custom_fields() -> None:
     assert row.shop_ifc_rev == "0"
     assert row.field_ifc_rev == "0"
     assert row.client_document_number == "CNRL-T-101"
+    assert row.due_date == "2026-09-15"
+    assert row.submission_date == "2026-09-09"
+    assert row.return_request_date == "2026-09-20"
+    assert row.return_date == "2026-09-22"
+    assert row.shop_ifc_date == "2026-09-25"
+    assert row.field_ifc_date == "2026-09-26"
+    assert row.eddi_status == "1 - Fabrication Drawings - EDDI"
     assert row.parent_summary == "2026-Tanzim Drawing Package"
 
 
 def test_drawing_fields_payload_skips_blanks() -> None:
-    from doccon.register import CLIENT_DOC_FIELD, PURPOSE_FIELD
+    from doccon.register import CLIENT_DOC_FIELD, DUE_DATE_FIELD, EDDI_FIELD, PURPOSE_FIELD
 
     row = drawing_from_issue(
         {
@@ -66,14 +221,61 @@ def test_drawing_fields_payload_skips_blanks() -> None:
                 "customfield_10280": {"value": "A"},
                 "customfield_10281": {"value": "Approval"},
                 "customfield_10279": "  CNRL-T-101  ",
+                "duedate": "2026-09-15",
+                "customfield_10289": [{"value": "1 - Fabrication Drawings - EDDI"}],
             },
         }
     )
     payload = drawing_fields_payload(row)
     assert payload[PURPOSE_FIELD] == {"value": "Approval"}
     assert payload[CLIENT_DOC_FIELD] == "CNRL-T-101"
+    assert payload[DUE_DATE_FIELD] == "2026-09-15"
+    assert payload[EDDI_FIELD] == [{"value": "1 - Fabrication Drawings - EDDI"}]
     assert "customfield_10283" not in payload
+
+
+def test_eddi_conflicts_from_multi_checkbox() -> None:
+    from doccon.register import eddi_conflicts, eddi_fix_options, eddi_options, has_multiple_eddi
+
+    row = drawing_from_issue(
+        {
+            "key": "P2024-15578",
+            "fields": {
+                "summary": "2026-Tanzim-1-1 Drawing-1",
+                "customfield_10289": [
+                    {"value": "1 - Fabrication Drawings - EDDI"},
+                    {"value": "4 - Engineering - EDDI"},
+                ],
+            },
+        }
+    )
+    assert eddi_options(
+        [
+            {"value": "1 - Fabrication Drawings - EDDI"},
+            {"value": "4 - Engineering - EDDI"},
+        ]
+    ) == ("1 - Fabrication Drawings - EDDI", "4 - Engineering - EDDI")
+    assert has_multiple_eddi(row.eddi_status)
+    conflicts = eddi_conflicts([row])
+    assert [item.key for item in conflicts] == ["P2024-15578"]
+    assert conflicts[0].drawing_id == "2026-Tanzim-1-1"
+    assert conflicts[0].options == (
+        "1 - Fabrication Drawings - EDDI",
+        "4 - Engineering - EDDI",
+    )
+    assert "0 - Generic Task" not in eddi_fix_options()
+    assert all(name.startswith(f"{n} -") for n, name in enumerate(eddi_fix_options(), start=1))
 
 
 def test_adopted_summary_keeps_title() -> None:
     assert adopted_summary("2026-096-1-1 Drawing-1", "2026-096-1-SK1") == "2026-096-1-SK1 Drawing-1"
+
+
+def test_due_date_follows_new_return_request_only() -> None:
+    from doccon.register import due_date_from_return_request
+
+    assert due_date_from_return_request("2026-09-01", "", "2026-09-20") == "2026-09-20"
+    assert due_date_from_return_request("2026-09-01", "2026-09-10", "2026-09-20") == "2026-09-20"
+    assert due_date_from_return_request("2026-09-01", "2026-09-10", "2026-09-10") == "2026-09-01"
+    assert due_date_from_return_request("2026-09-01", "2026-09-10", "") == "2026-09-01"
+    assert due_date_from_return_request("2026-09-01", "2026-09-10", "N/A") == "2026-09-01"

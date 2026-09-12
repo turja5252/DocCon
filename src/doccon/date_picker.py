@@ -2,10 +2,11 @@
 # Copyright (c) 2026 Tanzim Nasir.
 # Built for Elite Integrity Services.
 # Unauthorized use by other companies is prohibited.
-"""Calendar popup for Date issued / Expected return."""
+"""Calendar popup: type YYYY-MM-DD in the box, or click the dropdown to pick."""
 from __future__ import annotations
 
 import calendar
+import contextlib
 import tkinter as tk
 from datetime import date
 from tkinter import ttk
@@ -34,19 +35,72 @@ def month_weeks(year: int, month: int) -> list[list[int | None]]:
     return weeks
 
 
-def set_entry_date(entry: ttk.Entry | tk.Entry, value: date) -> None:
+def set_entry_date(entry: ttk.Entry | ttk.Combobox | tk.Entry, value: date) -> None:
+    text = value.isoformat()
+    setter = getattr(entry, "set", None)
+    if callable(setter):
+        setter(text)
+        return
     entry.delete(0, "end")
-    entry.insert(0, value.isoformat())
+    entry.insert(0, text)
+
+
+def popup_origin(anchor: tk.Misc, popup: tk.Misc) -> tuple[int, int]:
+    """Put the popup on the same screen as the app, next to the date box.
+
+    Do not clamp to ``winfo_screenwidth()`` — that is the primary monitor only
+    and would send the calendar back to the screen where DocCon first opened.
+    """
+    popup.update_idletasks()
+    ax = int(anchor.winfo_rootx())
+    ay = int(anchor.winfo_rooty()) + int(anchor.winfo_height())
+    pw = max(int(popup.winfo_reqwidth()), 1)
+    ph = max(int(popup.winfo_reqheight()), 1)
+    top = anchor.winfo_toplevel()
+    left = int(top.winfo_rootx())
+    top_y = int(top.winfo_rooty())
+    right = left + max(int(top.winfo_width()), pw)
+    bottom = top_y + max(int(top.winfo_height()), ph)
+    x = ax
+    y = ay
+    if x + pw > right:
+        x = right - pw
+    if x < left:
+        x = left
+    if y + ph > bottom:
+        y = ay - int(anchor.winfo_height()) - ph
+    if y < top_y:
+        y = top_y
+    return x, y
 
 
 class CalendarPopup(tk.Toplevel):
-    def __init__(self, master: tk.Misc, *, initial: date, on_pick) -> None:
+    _open: CalendarPopup | None = None
+
+    def __init__(
+        self,
+        master: tk.Misc,
+        *,
+        initial: date,
+        on_pick,
+        on_na=None,
+        anchor: tk.Misc | None = None,
+    ) -> None:
+        previous = CalendarPopup._open
+        if previous is not None:
+            with contextlib.suppress(tk.TclError):
+                previous.destroy()
         super().__init__(master)
+        CalendarPopup._open = self
+        self.withdraw()
         self.title("Pick a date")
         self.resizable(False, False)
-        self.transient(master.winfo_toplevel())
+        host = master.winfo_toplevel()
+        self.transient(host)
         apply_theme(self)
+        self._anchor = anchor or master
         self._on_pick = on_pick
+        self._on_na = on_na
         self._year = initial.year
         self._month = initial.month
         self._selected = initial
@@ -59,6 +113,8 @@ class CalendarPopup(tk.Toplevel):
         self._title.pack(side="left", padx=8)
         ttk.Button(nav, text=">", width=3, command=self._next).pack(side="left")
         ttk.Button(nav, text="Today", command=self._today).pack(side="right")
+        if on_na is not None:
+            ttk.Button(nav, text="N/A", command=self._na).pack(side="right", padx=(0, 4))
 
         grid = ttk.Frame(self, padding=(8, 0, 8, 8))
         grid.pack()
@@ -72,10 +128,20 @@ class CalendarPopup(tk.Toplevel):
         self._days: list[int | None] = [None] * 42
         self._draw()
         self.bind("<Escape>", lambda _event: self.destroy())
+        self._place()
+        self.deiconify()
+        self.lift()
         self.after(10, self._grab)
+
+    def _place(self) -> None:
+        with contextlib.suppress(tk.TclError):
+            x, y = popup_origin(self._anchor, self)
+            self.geometry(f"+{x}+{y}")
 
     def _grab(self) -> None:
         try:
+            self._place()
+            self.lift()
             self.grab_set()
             self.focus_set()
         except tk.TclError:
@@ -124,34 +190,101 @@ class CalendarPopup(tk.Toplevel):
     def _today(self) -> None:
         self._choose(date.today())
 
+    def _na(self) -> None:
+        if self._on_na is not None:
+            self._on_na()
+        self.destroy()
+
     def _click(self, row: int, col: int) -> None:
         day = self._days[row * 7 + col]
         if day is None:
             return
         self._choose(date(self._year, self._month, day))
 
+    def destroy(self) -> None:
+        if CalendarPopup._open is self:
+            CalendarPopup._open = None
+        super().destroy()
+
     def _choose(self, value: date) -> None:
         self._on_pick(value)
         self.destroy()
 
 
-def attach_calendar(entry: ttk.Entry | tk.Entry, *, on_change=None, parent: tk.Misc | None = None) -> None:
-    host = parent or entry.master
+def set_na_text(entry: ttk.Entry | ttk.Combobox | tk.Entry) -> None:
+    setter = getattr(entry, "set", None)
+    if callable(setter):
+        setter("N/A")
+        return
+    entry.delete(0, "end")
+    entry.insert(0, "N/A")
 
+
+ARROW_PX = 24
+
+
+def attach_calendar(
+    entry: ttk.Entry | tk.Entry,
+    *,
+    on_change=None,
+    parent: tk.Misc | None = None,
+    allow_na: bool = False,
+) -> ttk.Button:
+    host = parent or entry.winfo_toplevel()
+    opener = _calendar_opener(entry, parent=host, on_change=on_change, allow_na=allow_na)
+    btn = ttk.Button(entry.master, text="▾", width=2, command=opener)
+    try:
+        btn.pack(side="left", after=entry, padx=(2, 8))
+    except tk.TclError:
+        btn.pack(side="left", padx=(2, 8))
+    entry._doccon_calendar = btn
+    return btn
+
+
+def bind_date_picker(
+    box: ttk.Combobox | ttk.Entry | tk.Entry,
+    *,
+    parent: tk.Misc,
+    on_change=None,
+    allow_na: bool = False,
+) -> None:
+    opener = _calendar_opener(box, parent=parent, on_change=on_change, allow_na=allow_na)
+
+    def on_click(event) -> str | None:
+        width = max(event.widget.winfo_width(), event.widget.winfo_reqwidth())
+        arrow = max(ARROW_PX, width // 6)
+        if width <= arrow:
+            return None
+        if event.x >= width - arrow:
+            opener()
+            return "break"
+        return None
+
+    if isinstance(box, ttk.Combobox):
+        box.bind("<Button-1>", on_click, add="+")
+    # Entry text stays editable. Cover dates get a ▾ button from attach_calendar.
+
+
+def _calendar_opener(box: ttk.Combobox | ttk.Entry | tk.Entry, *, parent: tk.Misc, on_change, allow_na: bool):
     def pick() -> None:
-        current = parse_entry_date(entry.get())
+        current = parse_entry_date(box.get())
 
         def chosen(value: date) -> None:
-            set_entry_date(entry, value)
+            set_entry_date(box, value)
             if on_change is not None:
                 on_change()
 
-        CalendarPopup(host, initial=current, on_pick=chosen)
+        def na() -> None:
+            set_na_text(box)
+            if on_change is not None:
+                on_change()
 
-    def today() -> None:
-        set_entry_date(entry, date.today())
-        if on_change is not None:
-            on_change()
+        CalendarPopup(
+            parent,
+            initial=current,
+            on_pick=chosen,
+            on_na=na if allow_na else None,
+            anchor=box,
+        )
 
-    ttk.Button(host, text="Today", command=today).pack(side="left", padx=(0, 4))
-    ttk.Button(host, text="Calendar…", command=pick).pack(side="left")
+    return pick

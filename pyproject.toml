@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "elite-doccon"
-version = "0.74"
+version = "1.40"
 description = "Elite DocCon Suite — transmittal workstation (slice 1: Jira register pull)"
 requires-python = ">=3.11"
 authors = [{ name = "Tanzim Nasir" }]
@@ -17,6 +17,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.12"]
+pack = ["pyinstaller>=6,<7"]
 
 [project.scripts]
 doccon = "doccon.gui:main"

@@ -5,6 +5,7 @@
 """Console look: navy chrome, light cards, Segoe UI. ttk clam so colors actually apply."""
 from __future__ import annotations
 
+import contextlib
 import tkinter as tk
 from tkinter import ttk
 
@@ -19,11 +20,21 @@ TEXT = "#102A43"
 MUTED = "#627D98"
 OK = "#0F766E"
 BAD = "#B42318"
+# Identity chips on the navy bar: Jira (Atlassian blue) vs Dropbox/folder (Elite teal).
+JIRA = "#4C9AFF"
+FOLDER = "#2DD4BF"
+IDENTITY_MISSING = "#FCA5A5"
+PENDING_BG = "#FEF3C7"
+PENDING_BORDER = "#E8B86D"
+# Scrollbar: pale thumb on a slate trough so the slider is findable on navy and board BG.
+SCROLL_TROUGH = "#486581"
+SCROLL_THUMB = "#D9E2EC"
+SCROLL_THUMB_HOVER = "#F0F4F8"
+SCROLL_ARROW = "#102A43"
 FONT = ("Segoe UI", 10)
 FONT_SMALL = ("Segoe UI", 9)
 FONT_BOLD = ("Segoe UI", 10, "bold")
 FONT_TITLE = ("Segoe UI", 14, "bold")
-FONT_HEADER = ("Segoe UI", 8, "bold")
 
 
 def apply_theme(root: tk.Misc) -> ttk.Style:
@@ -48,7 +59,22 @@ def apply_theme(root: tk.Misc) -> ttk.Style:
     style.configure("TLabel", background=BG, foreground=TEXT, font=FONT)
     style.configure("Muted.TLabel", background=BG, foreground=MUTED, font=FONT_SMALL)
     style.configure("Hint.TLabel", background=BG, foreground=MUTED, font=FONT_SMALL)
-    style.configure("Header.TLabel", background=BG, foreground=MUTED, font=FONT_HEADER)
+    style.configure("Header.TFrame", background="#E4EBF2")
+    style.configure(
+        "Header.TLabel",
+        background="#E4EBF2",
+        foreground=MUTED,
+        font=FONT_SMALL,
+        padding=(2, 6),
+    )
+    style.configure(
+        "Group.TLabel",
+        background=NAVY_MID,
+        foreground="#FFFFFF",
+        font=FONT_BOLD,
+        padding=(8, 5),
+    )
+    style.configure("CoverHead.TLabel", background=BG, foreground=MUTED, font=FONT_BOLD)
     style.configure("Now.TLabel", background=BG, foreground=MUTED, font=FONT_SMALL)
     style.configure("Next.TLabel", background=BG, foreground=ACCENT, font=FONT_SMALL)
     style.configure("Board.TLabel", background=BG, foreground=TEXT, font=FONT)
@@ -130,6 +156,23 @@ def apply_theme(root: tk.Misc) -> ttk.Style:
     )
     style.map("TEntry", bordercolor=[("focus", ACCENT)], lightcolor=[("focus", ACCENT)])
     style.configure(
+        "Pending.TEntry",
+        fieldbackground=PENDING_BG,
+        foreground=TEXT,
+        insertcolor=TEXT,
+        bordercolor=PENDING_BORDER,
+        lightcolor=PENDING_BORDER,
+        darkcolor=PENDING_BORDER,
+        padding=5,
+    )
+    style.map(
+        "Pending.TEntry",
+        fieldbackground=[("focus", PENDING_BG), ("!disabled", PENDING_BG)],
+        bordercolor=[("focus", "#D97706"), ("!focus", PENDING_BORDER)],
+        lightcolor=[("focus", PENDING_BG), ("!focus", PENDING_BORDER)],
+        darkcolor=[("focus", PENDING_BG), ("!focus", PENDING_BORDER)],
+    )
+    style.configure(
         "TCombobox",
         fieldbackground=SURFACE,
         background=SURFACE,
@@ -146,8 +189,54 @@ def apply_theme(root: tk.Misc) -> ttk.Style:
         bordercolor=[("focus", ACCENT)],
         lightcolor=[("focus", ACCENT)],
     )
+    style.configure(
+        "Pending.TCombobox",
+        fieldbackground=PENDING_BG,
+        background=PENDING_BG,
+        foreground=TEXT,
+        arrowcolor=NAVY,
+        bordercolor=PENDING_BORDER,
+        lightcolor=PENDING_BORDER,
+        darkcolor=PENDING_BORDER,
+        padding=4,
+    )
+    style.map(
+        "Pending.TCombobox",
+        fieldbackground=[
+            ("readonly", PENDING_BG),
+            ("disabled", PENDING_BG),
+            ("focus", PENDING_BG),
+            ("active", PENDING_BG),
+            ("pressed", PENDING_BG),
+            ("!disabled", PENDING_BG),
+        ],
+        background=[
+            ("readonly", PENDING_BG),
+            ("focus", PENDING_BG),
+            ("active", PENDING_BG),
+            ("!disabled", PENDING_BG),
+        ],
+        bordercolor=[("focus", "#D97706"), ("!focus", PENDING_BORDER)],
+        lightcolor=[("focus", PENDING_BG), ("!focus", PENDING_BORDER)],
+        darkcolor=[("focus", PENDING_BG), ("!focus", PENDING_BORDER)],
+    )
     style.configure("TCheckbutton", background=BG, foreground=TEXT, font=FONT)
     style.map("TCheckbutton", background=[("active", BG)])
+    style.configure(
+        "Locate.TButton",
+        background=SURFACE,
+        foreground=NAVY,
+        font=FONT_SMALL,
+        padding=(8, 2),
+        bordercolor=BORDER,
+        lightcolor=SURFACE,
+        darkcolor=BORDER,
+    )
+    style.map(
+        "Locate.TButton",
+        background=[("disabled", "#EEF2F6"), ("active", "#E4EBF2"), ("pressed", "#D0D9E3")],
+        foreground=[("disabled", MUTED)],
+    )
     style.configure(
         "TRadiobutton",
         background=BG,
@@ -174,8 +263,65 @@ def apply_theme(root: tk.Misc) -> ttk.Style:
         font=FONT,
     )
     style.configure("BrandMuted.TLabel", background=NAVY, foreground="#9FB3C8", font=FONT_SMALL)
-    style.configure("TScrollbar", background=BG, troughcolor=BG, bordercolor=BG, arrowcolor=MUTED)
-    style.configure("Vertical.TScrollbar", background="#D9E2EC", troughcolor=BG)
+    style.configure("BrandJira.TLabel", background=NAVY, foreground=JIRA, font=FONT_SMALL)
+    style.configure("BrandFolder.TLabel", background=NAVY, foreground=FOLDER, font=FONT_SMALL)
+    style.configure(
+        "TScrollbar",
+        background=SCROLL_THUMB,
+        troughcolor=SCROLL_TROUGH,
+        bordercolor=SCROLL_TROUGH,
+        arrowcolor=SCROLL_ARROW,
+        lightcolor=SCROLL_THUMB,
+        darkcolor=SCROLL_TROUGH,
+        relief="flat",
+        borderwidth=1,
+    )
+    style.map(
+        "TScrollbar",
+        background=[("active", SCROLL_THUMB_HOVER), ("pressed", "#FFFFFF")],
+        arrowcolor=[("disabled", MUTED)],
+    )
+    style.configure(
+        "Horizontal.TScrollbar",
+        background=SCROLL_THUMB,
+        troughcolor=SCROLL_TROUGH,
+        bordercolor=SCROLL_TROUGH,
+        arrowcolor=SCROLL_ARROW,
+        lightcolor=SCROLL_THUMB,
+        darkcolor=SCROLL_TROUGH,
+        relief="flat",
+        borderwidth=1,
+    )
+    style.map(
+        "Horizontal.TScrollbar",
+        background=[("active", SCROLL_THUMB_HOVER), ("pressed", "#FFFFFF")],
+    )
+    style.configure(
+        "Vertical.TScrollbar",
+        background=SCROLL_THUMB,
+        troughcolor=SCROLL_TROUGH,
+        bordercolor=SCROLL_TROUGH,
+        arrowcolor=SCROLL_ARROW,
+        lightcolor=SCROLL_THUMB,
+        darkcolor=SCROLL_TROUGH,
+        relief="flat",
+        borderwidth=1,
+    )
+    style.map(
+        "Vertical.TScrollbar",
+        background=[("active", SCROLL_THUMB_HOVER), ("pressed", "#FFFFFF")],
+    )
+    style.configure(
+        "Horizontal.TProgressbar",
+        troughcolor=NAVY_MID,
+        background=ACCENT,
+        bordercolor=NAVY,
+        lightcolor=ACCENT,
+        darkcolor=ACCENT,
+        thickness=4,
+        borderwidth=0,
+        relief="flat",
+    )
     return style
 
 
@@ -201,3 +347,103 @@ def match_style(confidence: str) -> str:
     if confidence == "Missing":
         return "Bad.TLabel"
     return "Board.TLabel"
+
+
+class ThemeProgress(tk.Canvas):
+    """Load meter on navy chrome. Slate trough + teal fill so it is findable (not a 4px hairline)."""
+
+    BAR_H = 10
+    PAD_Y = 4
+    TRACK = SCROLL_TROUGH
+    FILL = FOLDER
+
+    def __init__(self, master: tk.Misc, *, manage_pack: bool = True) -> None:
+        super().__init__(
+            master,
+            height=self.BAR_H + self.PAD_Y * 2,
+            highlightthickness=0,
+            bd=0,
+            bg=NAVY,
+        )
+        self._manage_pack = manage_pack
+        self._mode = "idle"
+        self._value = 0.0
+        self._pulse = 0.0
+        self._after = ""
+        self.bind("<Configure>", lambda _event: self._draw())
+
+    def start_indeterminate(self) -> None:
+        self._cancel()
+        self._mode = "indeterminate"
+        self._pulse = 0.0
+        self._show()
+        self._tick()
+
+    def set_determinate(self, done: int, total: int) -> None:
+        self._cancel()
+        self._mode = "determinate"
+        self._value = 0.0 if total <= 0 else min(1.0, max(0.0, done / float(total)))
+        self._show()
+        self._draw()
+
+    def stop(self) -> None:
+        self._cancel()
+        self._mode = "idle"
+        self._value = 0.0
+        self.delete("all")
+        if self._manage_pack:
+            self.pack_forget()
+
+    def fraction(self) -> float:
+        return self._value
+
+    def mode(self) -> str:
+        return self._mode
+
+    def _show(self) -> None:
+        if self._manage_pack and not self.winfo_ismapped():
+            self.pack(fill="x", pady=(8, 0))
+
+    def _cancel(self) -> None:
+        if self._after:
+            with contextlib.suppress(tk.TclError):
+                self.after_cancel(self._after)
+            self._after = ""
+
+    def _tick(self) -> None:
+        if self._mode != "indeterminate":
+            return
+        self._pulse = (self._pulse + 0.035) % 1.0
+        self._draw()
+        self._after = self.after(32, self._tick)
+
+    def _draw(self) -> None:
+        self.delete("all")
+        if self._mode == "idle":
+            return
+        width = max(int(self.winfo_width()), 2)
+        height = int(self.cget("height"))
+        mid = height / 2
+        self._capsule(0, width, mid, self.TRACK)
+        track = width
+        if self._mode == "determinate":
+            fill = track * self._value
+            if fill > 1:
+                self._capsule(0, fill, mid, self.FILL)
+            return
+        span = max(track * 0.28, 64)
+        travel = max(track - span, 1)
+        phase = 1.0 - abs(2.0 * self._pulse - 1.0)
+        left = travel * phase
+        self._capsule(left, left + span, mid, self.FILL)
+
+    def _capsule(self, x0: float, x1: float, y: float, color: str) -> None:
+        if x1 <= x0:
+            return
+        pad = self.BAR_H / 2
+        left = x0 + pad
+        right = x1 - pad
+        if right <= left:
+            self.create_oval(x0, y - pad, x1, y + pad, fill=color, outline="")
+            return
+        self.create_line(left, y, right, y, fill=color, width=self.BAR_H, capstyle=tk.ROUND)

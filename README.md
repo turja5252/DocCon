@@ -4,7 +4,9 @@ Desktop transmittal workstation. Slice 1: Jira settings + load a job’s drawing
 
 ## Run
 
-Double-click **`Run DocCon (source).bat`** in this folder (same pattern as Databook Engine).
+Double-click **`Elite DocCon.exe`** in this folder (Sarah’s copy too). Rebuild with **`Build DocCon.exe.bat`**.
+
+Or double-click **`Run DocCon (source).bat`** to run from source.
 
 Or from a terminal:
 
@@ -14,8 +16,8 @@ python -m pytest
 python -m doccon
 ```
 
-1. **Settings** — site, Atlassian email, paste API token (Windows Credential Manager, not Dropbox).
+1. **Settings** — site, Atlassian email, paste API token (Windows Credential Manager, not Dropbox). Save TO/CC addresses here; **Pick…** on the cover adds one.
 2. **Test connection**.
-3. **Job Number** — e.g. `2026-Tanzim` — **Load**. Edit Next on drawings, tick Pack, **Confirm…**. That writes Jira, files the cover PDF, zips the pack, and opens an Outlook draft (Send it in Outlook). Cover FROM/TO/CC and project line come from the PEP in `7.0 Sales` (**Locate PEP…** if it is missing). Shop and Field are on the bar but not wired yet.
+3. **Job Number** — e.g. `2026-Tanzim` — **Load**. The navy bar shows the Jira Project name (blue) and the Dropbox job folder (teal). Several Job Numbers may share one folder; **Locate job folder…** if the hunt cannot pick. Edit Next on drawings, tick Pack, **Confirm…**. Missing PDF: **Locate…**. **Open** beside it opens the matched PDF. Cover TO/CC/project come from the existing CT/ST/FT letter when those cells are filled; PEP is the fallback (**Locate PEP…** overwrites). **EDDI…** (and Confirm) copy the job’s EDDI form to a dated snapshot in `3.0 Doc Con` and print a PDF of items that have a matched PDF (not attached to Outlook). Next edits auto-save in `client-pack.json`. Outlook gets the transmittal PDF plus a zip of the drawings (the form PDF is not in the zip).
 
 Email send from Outlook is still a person clicking Send. Do not run File and email against a live job (075).

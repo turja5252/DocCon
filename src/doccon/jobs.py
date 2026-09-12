@@ -153,12 +153,52 @@ def localize_dropbox_path(stored: str, *, hint: Path | None = None) -> str:
     return token
 
 
-def _is_job_folder(name: str, job_number: str) -> bool:
-    token = name.strip()
+MISSING_JOB_FOLDER = "No Dropbox folder for this Job Number"
+
+
+def job_folder_keys(job_number: str) -> list[str]:
+    """Typed Job Number, then parent job codes (`2026-049-1` → `2026-049`).
+
+    Stops before a year-only token so `2026-049` does not match a leftover `2026`.
+    """
     job = job_number.strip()
-    if not token or not job:
-        return False
-    return token == job or token.startswith(job + " ")
+    if not job:
+        return []
+    keys = [job]
+    token = job
+    while "-" in token:
+        head, _sep, tail = token.rpartition("-")
+        if not tail or "-" not in head:
+            break
+        keys.append(head)
+        token = head
+    return keys
+
+
+def _folder_match_rank(name: str, keys: list[str]) -> int | None:
+    token = name.strip()
+    if not token or not keys:
+        return None
+    for index, key in enumerate(keys):
+        if token == key:
+            return index * 2
+        if token.startswith(key + " "):
+            return index * 2 + 1
+    return None
+
+
+def _is_job_folder(name: str, job_number: str) -> bool:
+    return _folder_match_rank(name, job_folder_keys(job_number)) is not None
+
+
+def job_folder_identity(folder: Path | None) -> str:
+    if folder is None:
+        return MISSING_JOB_FOLDER
+    parent = folder.parent.name.strip()
+    name = folder.name.strip() or str(folder)
+    if parent:
+        return f"{parent}\\{name}"
+    return name
 
 
 def _job_bucket_dirs(member: Path) -> list[Path]:
@@ -186,7 +226,16 @@ def _job_bucket_dirs(member: Path) -> list[Path]:
 
 
 def find_job_folder(job_number: str, *, hint: Path | None = None) -> Path | None:
+    """Hunt Current / completed job buckets. Exact name wins; else a parent job folder.
+
+    Several equal matches → None (operator Locates). Not a 1:1 Job Number == folder name.
+    """
     job = job_number.strip()
+    if not job:
+        return None
+    keys = job_folder_keys(job)
+    found: list[tuple[int, int, Path]] = []
+    seen: set[str] = set()
     for member in local_team_dropbox_member_roots(hint):
         for bucket in _job_bucket_dirs(member):
             try:
@@ -194,6 +243,37 @@ def find_job_folder(job_number: str, *, hint: Path | None = None) -> Path | None
             except OSError:
                 continue
             for child in children:
-                if child.is_dir() and _is_job_folder(child.name, job):
-                    return child
-    return None
+                if not child.is_dir():
+                    continue
+                rank = _folder_match_rank(child.name, keys)
+                if rank is None:
+                    continue
+                try:
+                    identity = child.resolve()
+                except OSError:
+                    identity = child
+                key = os.path.normcase(str(identity))
+                if key in seen:
+                    continue
+                seen.add(key)
+                found.append((rank, len(child.name), child))
+    if not found:
+        return None
+    best_rank = min(item[0] for item in found)
+    at_best = [item for item in found if item[0] == best_rank]
+    if best_rank >= 2:
+        shortest = min(item[1] for item in at_best)
+        at_best = [item for item in at_best if item[1] == shortest]
+    if len(at_best) != 1:
+        return None
+    return at_best[0][2]
+
+
+def resolve_job_folder(job_number: str, *, hint: Path | None = None) -> Path | None:
+    """Remembered pick on this PC, then the hunt. Manual Locate overrides."""
+    from doccon.settings import remembered_job_folder
+
+    remembered = remembered_job_folder(job_number)
+    if remembered is not None:
+        return remembered
+    return find_job_folder(job_number, hint=hint)

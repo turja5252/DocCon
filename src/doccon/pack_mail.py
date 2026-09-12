@@ -2,33 +2,30 @@
 # Copyright (c) 2026 Tanzim Nasir.
 # Built for Elite Integrity Services.
 # Unauthorized use by other companies is prohibited.
-"""Zip the client pack and open an Outlook draft from the signed-in account."""
+"""Open an Outlook draft: transmittal PDF plus a zip of the drawing PDFs."""
 from __future__ import annotations
 
 import json
 import os
 import subprocess
 import tempfile
-import zipfile
 from pathlib import Path
+from zipfile import ZIP_DEFLATED, ZipFile
 
 from doccon.client_log import LogError
 from doccon.excel_pdf import _ps_lit
-from doccon.kinds import PREFIX, CLIENT
+from doccon.kinds import CLIENT, PREFIX
 from doccon.match import MatchedRow
-from doccon.pep import email_line
+from doccon.pep import DOC_CONTROL_FROM, email_line
 
 
 def normalize_recipients(text: str) -> str:
     return email_line(text)
 
 
-def pack_files(rows: list[MatchedRow], cover_pdf: Path | None) -> list[Path]:
+def drawing_pdfs(rows: list[MatchedRow]) -> list[Path]:
     files: list[Path] = []
     seen: set[str] = set()
-    if cover_pdf is not None and cover_pdf.is_file():
-        files.append(cover_pdf.resolve())
-        seen.add(str(cover_pdf.resolve()).casefold())
     for row in rows:
         if row.pdf is None or not row.pdf.path.is_file():
             continue
@@ -41,36 +38,95 @@ def pack_files(rows: list[MatchedRow], cover_pdf: Path | None) -> list[Path]:
     return files
 
 
-def cover_pdf_for_book(book: Path, job: str, next_number: int) -> tuple[str, Path | None]:
+def write_drawings_zip(dest: Path, pdfs: list[Path], *, exclude: Path | None = None) -> Path:
+    """Zip drawing PDFs. Never include the transmittal form PDF."""
+    dest = Path(dest)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    skip: set[str] = set()
+    if exclude is not None and Path(exclude).is_file():
+        skip.add(str(Path(exclude).resolve()).casefold())
+    cover_beside = dest.with_suffix(".pdf")
+    if cover_beside.is_file():
+        skip.add(str(cover_beside.resolve()).casefold())
+    written = 0
+    used_names: set[str] = set()
+    with ZipFile(dest, "w", compression=ZIP_DEFLATED) as zipped:
+        for pdf in pdfs:
+            resolved = Path(pdf).resolve()
+            if not resolved.is_file():
+                continue
+            if str(resolved).casefold() in skip:
+                continue
+            arc = _unique_arcname(resolved.name, used_names)
+            zipped.write(resolved, arcname=arc)
+            written += 1
+    if written <= 0:
+        dest.unlink(missing_ok=True)
+        raise LogError("No drawing PDFs to zip.")
+    return dest.resolve()
+
+
+def _unique_arcname(name: str, used: set[str]) -> str:
+    key = name.casefold()
+    if key not in used:
+        used.add(key)
+        return name
+    stem = Path(name).stem
+    suffix = Path(name).suffix
+    n = 2
+    while True:
+        candidate = f"{stem}_{n}{suffix}"
+        token = candidate.casefold()
+        if token not in used:
+            used.add(token)
+            return candidate
+        n += 1
+
+
+def mail_attachments(cover_pdf: Path | None, pack_zip: Path | None) -> list[Path]:
+    files: list[Path] = []
+    if cover_pdf is not None and Path(cover_pdf).is_file():
+        files.append(Path(cover_pdf).resolve())
+    if pack_zip is not None and Path(pack_zip).is_file():
+        files.append(Path(pack_zip).resolve())
+    return files
+
+
+def cover_pdf_for_book(book: Path, job: str, next_number: int, kind: str = CLIENT) -> tuple[str, Path | None]:
     folder = Path(book).parent
-    next_id = f"{PREFIX[CLIENT]}-{job}-{next_number}"
+    next_id = f"{PREFIX[kind]}-{job}-{next_number}"
     next_pdf = folder / f"{next_id}.pdf"
     if next_pdf.is_file():
         return next_id, next_pdf
     if next_number > 1:
-        prev_id = f"{PREFIX[CLIENT]}-{job}-{next_number - 1}"
+        prev_id = f"{PREFIX[kind]}-{job}-{next_number - 1}"
         prev_pdf = folder / f"{prev_id}.pdf"
         if prev_pdf.is_file():
             return prev_id, prev_pdf
     return next_id, None
 
 
-def write_pack_zip(dest: Path, files: list[Path]) -> Path:
-    dest = Path(dest)
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    with zipfile.ZipFile(dest, "w", compression=zipfile.ZIP_DEFLATED) as zipped:
-        for path in files:
-            zipped.write(path, arcname=path.name)
-    return dest.resolve()
+def attachment_note(files: list[Path]) -> str:
+    names = [path.name for path in files]
+    if not names:
+        return "No PDFs attached."
+    return "Attached: " + "; ".join(names)
 
 
 def draft_subject(cover_id: str, job: str) -> str:
     return f"{cover_id}  {job}"
 
 
-def draft_body(*, cover_id: str, project: str, rows: list[MatchedRow], zip_name: str) -> str:
+def draft_body(*, cover_id: str, project: str, rows: list[MatchedRow]) -> str:
+    token = (cover_id or "").split("-", 1)[0].upper()
+    if token == "ST":
+        label = "shop transmittal"
+    elif token == "FT":
+        label = "field transmittal"
+    else:
+        label = "client transmittal"
     lines = [
-        f"Please find client transmittal {cover_id}.",
+        f"Please find {label} {cover_id}.",
         "",
     ]
     if project:
@@ -79,10 +135,27 @@ def draft_body(*, cover_id: str, project: str, rows: list[MatchedRow], zip_name:
     for row in rows:
         drawing = row.drawing
         rev = (row.pdf.rev if row.pdf else "") or drawing.outgoing_rev or "—"
-        title = drawing.title or drawing.summary
-        lines.append(f"  {drawing.drawing_id or drawing.key}  Rev {rev}  {title}")
-    lines.extend(["", f"Pack saved as {zip_name}.", ""])
+        title = (drawing.title or "").strip()
+        line = f"  {drawing.drawing_id or drawing.key}  Rev {rev}"
+        if title:
+            line = f"{line}  {title}"
+        lines.append(line)
+    lines.extend(
+        ["", "The transmittal PDF is attached. Drawing PDFs are in the zip (not the transmittal form).", ""]
+    )
     return "\n".join(lines)
+
+
+def pick_outlook_send_account(addresses: list[str], *, preferred: str = DOC_CONTROL_FROM) -> str:
+    """Use doc.control when that Outlook account is on this PC; else the signed-in default."""
+    want = (preferred or "").strip().casefold()
+    if not want:
+        return ""
+    for addr in addresses:
+        text = (addr or "").strip()
+        if text.casefold() == want:
+            return text
+    return ""
 
 
 def display_outlook_draft(
@@ -92,11 +165,13 @@ def display_outlook_draft(
     subject: str,
     body: str,
     attachments: list[Path],
+    require_to: bool = True,
+    send_account: str = DOC_CONTROL_FROM,
 ) -> None:
     if os.name != "nt":
         raise LogError("Outlook draft needs Windows Outlook.")
     to_line = normalize_recipients(to_line)
-    if not to_line:
+    if require_to and not to_line:
         raise LogError("TO is empty. Type recipients on the Cover pane.")
     payload = {
         "to": to_line,
@@ -104,6 +179,7 @@ def display_outlook_draft(
         "subject": subject,
         "body": body,
         "files": [str(Path(path).resolve()) for path in attachments],
+        "send_account": (send_account or "").strip(),
     }
     tmp_dir = Path(tempfile.mkdtemp(prefix="elite-doccon-outlook-"))
     script_path = tmp_dir / "draft.ps1"
@@ -122,6 +198,15 @@ def display_outlook_draft(
                 "  $outlook = New-Object -ComObject Outlook.Application\n"
                 "}\n"
                 "$mail = $outlook.CreateItem(0)\n"
+                "$preferred = [string]$p.send_account\n"
+                "if ($preferred) {\n"
+                "  $account = $null\n"
+                "  foreach ($acc in @($outlook.Session.Accounts)) {\n"
+                "    try { $smtp = [string]$acc.SmtpAddress } catch { $smtp = '' }\n"
+                "    if ($smtp -and $smtp.ToLower() -eq $preferred.ToLower()) { $account = $acc; break }\n"
+                "  }\n"
+                "  if ($account -ne $null) { try { $mail.SendUsingAccount = $account } catch {} }\n"
+                "}\n"
                 "$mail.To = [string]$p.to\n"
                 "if ($p.cc) { $mail.CC = [string]$p.cc }\n"
                 "$mail.Subject = [string]$p.subject\n"

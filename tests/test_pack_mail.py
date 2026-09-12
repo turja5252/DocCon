@@ -3,14 +3,19 @@
 # Built for Elite Integrity Services.
 # Unauthorized use by other companies is prohibited.
 from pathlib import Path
+from zipfile import ZipFile
 
 from doccon.match import MatchedRow, PdfHit
 from doccon.pack_mail import (
+    attachment_note,
     cover_pdf_for_book,
+    draft_body,
     draft_subject,
+    drawing_pdfs,
+    mail_attachments,
     normalize_recipients,
-    pack_files,
-    write_pack_zip,
+    pick_outlook_send_account,
+    write_drawings_zip,
 )
 from doccon.register import DrawingRow
 
@@ -52,13 +57,38 @@ def test_cover_pdf_prefers_next_then_previous(tmp_path: Path) -> None:
     assert found == prev
 
 
-def test_write_pack_zip(tmp_path: Path) -> None:
+def test_drawings_zip_excludes_transmittal_form(tmp_path: Path) -> None:
     drawing = tmp_path / "2026-Tanzim-1-1 REV 0.pdf"
     drawing.write_bytes(b"%PDF")
     cover = tmp_path / "CT-2026-Tanzim-1.pdf"
     cover.write_bytes(b"%PDF-cover")
-    files = pack_files([_row("2026-Tanzim-1-1", drawing)], cover)
-    dest = write_pack_zip(tmp_path / "CT-2026-Tanzim-1.zip", files)
-    assert dest.is_file()
-    assert dest.stat().st_size > 0
+    dest = tmp_path / "CT-2026-Tanzim-1.zip"
+    assert drawing_pdfs([_row("2026-Tanzim-1-1", drawing)]) == [drawing.resolve()]
+    write_drawings_zip(dest, [drawing, cover], exclude=cover)
+    with ZipFile(dest) as zipped:
+        names = zipped.namelist()
+    assert names == ["2026-Tanzim-1-1 REV 0.pdf"]
+    assert "CT-2026-Tanzim-1.pdf" not in names
+    files = mail_attachments(cover, dest)
+    assert [path.name for path in files] == ["CT-2026-Tanzim-1.pdf", "CT-2026-Tanzim-1.zip"]
+    assert attachment_note(files).startswith("Attached: CT-2026-Tanzim-1.pdf")
+    body = draft_body(cover_id="CT-2026-Tanzim-1", project="Job", rows=[_row("2026-Tanzim-1-1", drawing)])
+    assert "zip" in body.casefold()
+    assert "transmittal form" in body.casefold()
     assert draft_subject("CT-2026-Tanzim-1", "2026-Tanzim") == "CT-2026-Tanzim-1  2026-Tanzim"
+    shop = draft_body(cover_id="ST-2026-Tanzim-1", project="", rows=[_row("EIS-1", drawing)])
+    assert "shop transmittal" in shop
+    field = draft_body(cover_id="FT-2026-Tanzim-1", project="", rows=[_row("EIS-1", drawing)])
+    assert "field transmittal" in field
+
+
+def test_pick_outlook_send_account_prefers_doc_control() -> None:
+    from doccon.pep import DOC_CONTROL_FROM
+
+    assert (
+        pick_outlook_send_account(
+            ["sarah.chan@eliteintegrityservices.com", DOC_CONTROL_FROM]
+        )
+        == DOC_CONTROL_FROM
+    )
+    assert pick_outlook_send_account(["chris.samm@eliteintegrityservices.com"]) == ""

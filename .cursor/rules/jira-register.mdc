@@ -9,24 +9,35 @@ alwaysApply: true
 - REST v3 with operator email + API token. **Never store tokens in this folder.**
 - Types: **Project** (job) → **Task** (package) → **Sub-task** (drawing). Dummy job `P2024-15553` spawned this template.
 
-## One drawing = Sub-task under Drawing Package
+## Pack list = every issue with this Job Number
 
-- Label `Drafting`. Parent task e.g. `2026-Tanzim Drawing Package`. Job Project is the grandparent.
-- Dummy drawings: `P2024-15578` `2026-Tanzim-1-1 Drawing-1`, `P2024-15579` `2026-Tanzim-1-2 Drawing-2`
-- Live summary shape: `2026-075-1-STWD SPIRAL STAIRWAY: INSIDE HANDRAIL DETAIL` — first token = drawing ID; rest = title. Job Number field is the grouping key.
+- Search: `project = P2024 AND issuetype != Project AND "Job Number" ~ "{job}"` (Tasks, Sub-tasks, EDDI items — not only `labels = Drafting`).
+- Also walk the job **Project** issue for that Job Number: direct children and their sub-tasks, even when Job Number was never copied onto those issues.
+- After Load, show that **Project** issue’s summary and key (dummy `P2024-15553`) next to the matched or Located Dropbox job folder. Several Job Numbers may share one folder; they stay two Loads / two register lists.
+- Group on the console by EDDI Status (1–9), header row between groups. Blank EDDI → Ungrouped. **0 Generic is not listed.**
+- Missing PDF: **Locate…** on the row (pairs the file; does not rewrite Jira). **Locate…** stays after a match so the operator can pick a different file. **Open** beside it opens the paired PDF in the Windows default reader (disabled until a file is paired; missing file is a short error). The file picker remembers the last folder on this PC (LOCALAPPDATA, not Dropbox).
+- Drawings are still Sub-tasks under the Drawing Package (label `Drafting`). Dummy drawings: `P2024-15578` `2026-Tanzim-1-1 Drawing-1`, `P2024-15579` `2026-Tanzim-1-2 Drawing-2`
+- Live summary shape: ID is the leading code (`2026-075-1-STWD`, `2026-075-ITP-1-1`); wording after that is the description. Empty description is fine. Job Number field is the grouping key.
 
 ## Field map
 
 | Use | Field | ID |
 | --- | --- | --- |
 | Job | Job Number | `customfield_10300` |
-| Outgoing revision (what we send) | Outgoing Rev | `customfield_10280` (A–E, 0–15, 0A/1A/2A, N/A) |
-| Purpose | Submitted to Client For | `customfield_10281` (Approval / Info / Planned / NA) |
+| Due date | Due date | `duedate` (not edited on the console; Confirm writes it from Return Request Date when that Next date is entered) |
+| Client Doc No. | Client Document Number | `customfield_10279` (text) |
+| Outgoing revision | Outgoing Rev | `customfield_10280` |
+| Submitted to Client For | Submitted to Client For | `customfield_10281` (Approval / Info / Planned / NA) |
+| Submission Date | Submission Date | `customfield_10301` |
+| Return Request Date | Return Request Date | `customfield_10046` |
 | Incoming rev | Incoming Rev | `customfield_10283` |
-| Client stamp | Client Approval Status | `customfield_10284` |
-| Shop / Field IFC rev | Shop IFC Rev / Field IFC Rev | `customfield_10285` / `customfield_10287` |
-| Client dwg no. | Client Document Number | `customfield_10279` (text; editable on the DocCon pack, Confirm writes it) |
-| Drawing class | EDDI Status | `customfield_10289` (drawings: `1 - Fabrication Drawings - EDDI`) |
+| Client Approval Status | Client Approval Status | `customfield_10284` (Approved / Approved with Comments / Revise & Resubmit / Rejected / Info / Void) |
+| Return Date | Return Date | `customfield_10066` |
+| Shop IFC Rev / Date | Shop IFC Rev / Shop IFC Date | `customfield_10285` / `customfield_10286` |
+| Field IFC Rev / Date | Field IFC Rev / Field IFC Date | `customfield_10287` / `customfield_10288` |
+| EDDI Status | EDDI Status | `customfield_10289` (multi-checkbox; DocCon needs one option). On Load, more than one value prompts for a single 1–9 choice, writes that, and reloads. Skip continues Load with the messy multi-status. Generic (0) is not listed on the board. |
+
+All of those (plus workflow **Status**) except **Due Date** are Now/Next on the pack board. Confirm writes filled Next values, and writes Jira Due Date from a newly entered Return Request Date. Cover Date issued / Expected return stay on the Excel letter (not Jira fields by themselves). Load starts both at N/A with Pack off. Expected return stamps packed Next Return Request Date (`customfield_10046`) to the same calendar day; Confirm writes that to Jira and copies a newly entered value to `duedate`. Cover Date issued stamps packed Next Submission Date (`customfield_10301`) the same way. Setting a cover date back to N/A restores that packed Next date to Now. Pack-tick with blank/N/A does not wipe a typed Next. Blank Expected return → N/A on the letter. Blank/N/A Date issued → today on the letter. Submitted to Client For, Client Approval Status, Shop/Field IFC Rev, and EDDI Status are pick-only lists (same as Status).
 
 Sub-task statuses: To Do, In Progress, OFA, Awaiting Client Information, Roadblock, Back from Client, IFI, IFC, Done.
 

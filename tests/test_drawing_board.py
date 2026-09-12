@@ -2,31 +2,86 @@
 # Copyright (c) 2026 Tanzim Nasir.
 # Built for Elite Integrity Services.
 # Unauthorized use by other companies is prohibited.
+import contextlib
 import tkinter as tk
+from dataclasses import replace
+from tkinter import ttk
+from types import SimpleNamespace
 
 import pytest
 
-from doccon.drawing_board import DrawingBoard
+from doccon.drawing_board import (
+    BOARD_COLUMNS,
+    CHAR_PX,
+    DESC_COL_INDEX,
+    DESC_COL_PX,
+    DRAWING_COL_INDEX,
+    FROZEN_COLS,
+    HEADER_TITLES,
+    HEADING_PAD_PX,
+    JIRA_ID_COL_PX,
+    JIRA_ID_TITLE,
+    MIN_COL_PX,
+    PACK_COL_INDEX,
+    PACK_COL_PX,
+    PDF_COL_INDEX,
+    PDF_COL_PX,
+    PICK_ONLY_FIELDS,
+    REV_VALUES,
+    DrawingBoard,
+    NextEntry,
+    default_col_px,
+    field_is_pick_only,
+    header_pad_px,
+    heading_floor_px,
+    merge_col_px,
+    next_outgoing_rev,
+    row_matches_filter,
+    with_now_option,
+)
+from doccon.settings import BOARD_LAYOUT_REV
 from doccon.match import MatchedRow
 from doccon.register import DrawingRow
 
 
-def _row(*, key: str = "P2024-1", drawing_id: str = "2026-Tanzim-1-1") -> MatchedRow:
+def _row(
+    *,
+    key: str = "P2024-1",
+    drawing_id: str = "2026-Tanzim-1-1",
+    eddi_status: str = "",
+    title: str = "Drawing",
+    outgoing_rev: str = "A",
+    return_request_date: str = "",
+    submission_date: str = "",
+) -> MatchedRow:
     return MatchedRow(
         drawing=DrawingRow(
             key=key,
             summary=f"{drawing_id} Drawing",
             drawing_id=drawing_id,
-            title="Drawing",
+            title=title,
             status="To Do",
             job_number="2026-Tanzim",
-            outgoing_rev="A",
+            outgoing_rev=outgoing_rev,
             purpose="Info",
             parent_summary="Drawing Package",
+            eddi_status=eddi_status,
+            return_request_date=return_request_date,
+            submission_date=submission_date,
         ),
         pdf=None,
         confidence="Missing",
     )
+
+
+def test_option_now_uses_dropdown_value() -> None:
+    from doccon.drawing_board import PURPOSE_VALUES, _option_now
+    from doccon.register import EDDI_VALUES
+
+    assert _option_now(PURPOSE_VALUES, "Info") == "Info"
+    assert _option_now(EDDI_VALUES, "1 - Fabrication Drawings - EDDI") == "1 - Fabrication Drawings - EDDI"
+    assert _option_now((), "2026-01-02") == "2026-01-02"
+    assert _option_now(PURPOSE_VALUES, " leftover ") == "leftover"
 
 
 def test_now_next_and_pack() -> None:
@@ -43,15 +98,22 @@ def test_now_next_and_pack() -> None:
         board._blocks["P2024-1"].nexts["outgoing_rev"].set("0")
         board._blocks["P2024-1"].nexts["purpose"].set("Approval")
         board._blocks["P2024-1"].nexts["client_document_number"].set("CNRL-T-101")
+        board._blocks["P2024-1"].nexts["return_request_date"].set("2026-09-15")
         pending = board.pending_rows()
         assert len(pending) == 1
         assert pending[0].drawing.outgoing_rev == "0"
         assert pending[0].drawing.purpose == "Approval"
         assert pending[0].drawing.client_document_number == "CNRL-T-101"
+        assert pending[0].drawing.return_request_date == "2026-09-15"
+        assert pending[0].drawing.due_date == "2026-09-15"
+        assert "due_date" not in board._blocks["P2024-1"].nexts
+        assert "due_date" not in board._batch_fields
+        assert "Due Date (Jira)" not in board.header_titles()
         packed = board.selected_rows()
         assert packed[0].drawing.outgoing_rev == "0"
         board._blocks["P2024-1"].include.set(False)
         assert board.selected_rows() == []
+        assert [row.drawing.key for row in board.current_rows()] == ["P2024-1"]
         assert board.pending_rows()
         board._blocks["P2024-1"].include.set(True)
         board._blocks["P2024-1"].nexts["outgoing_rev"].set("A")
@@ -61,6 +123,177 @@ def test_now_next_and_pack() -> None:
         assert len(pending) == 1
         assert pending[0].drawing.status == "IFI"
         assert pending[0].drawing.outgoing_rev == "A"
+        board.revert_next()
+        assert board.pending_rows() == []
+        assert board._blocks["P2024-1"].nexts["outgoing_rev"].get() == "A"
+        assert board._blocks["P2024-1"].status_next.get() == "To Do"
+    finally:
+        root.destroy()
+
+
+def test_edited_next_box_turns_yellow() -> None:
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("Tk is not available")
+    root.withdraw()
+    try:
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.set_rows([_row()])
+        box = board._blocks["P2024-1"].nexts["outgoing_rev"]
+        status = board._blocks["P2024-1"].status_next
+        assert "Pending" not in str(box.cget("style") or "")
+        box.set("0")
+        root.update_idletasks()
+        assert box.cget("style") == "Pending.TCombobox"
+        cell = getattr(box, "_doccon_cell", None)
+        assert cell is not None
+        assert str(cell.cget("bg")).casefold() == "#fef3c7"
+        status.set("IFI")
+        root.update_idletasks()
+        assert status.cget("style") == "Pending.TCombobox"
+        box.set("A")
+        root.update_idletasks()
+        assert "Pending" not in str(box.cget("style") or "TCombobox")
+        assert str(cell.cget("bg")).casefold() in {"#ffffff", "systembuttonface", "white"}
+        board.revert_next()
+        root.update_idletasks()
+        assert "Pending" not in str(status.cget("style") or "TCombobox")
+        assert board.pending_rows() == []
+    finally:
+        root.destroy()
+
+
+def test_right_click_next_restores_now_and_clears_dirty() -> None:
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("Tk is not available")
+    root.withdraw()
+    try:
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.set_rows(
+            [
+                _row(key="P2024-1", drawing_id="2026-Tanzim-1-1"),
+                _row(key="P2024-2", drawing_id="2026-Tanzim-1-2"),
+            ]
+        )
+        block = board._blocks["P2024-1"]
+        other = board._blocks["P2024-2"]
+        box = block.nexts["outgoing_rev"]
+        purpose = block.nexts["purpose"]
+        box.set("ZZ")
+        purpose.set("Approval")
+        other.nexts["outgoing_rev"].set("B")
+        root.update_idletasks()
+        assert box.cget("style") == "Pending.TCombobox"
+        assert purpose.cget("style") == "Pending.TCombobox"
+        assert box.bind("<Button-3>")
+        assert not box.bind("<<Paste>>")
+        box.event_generate("<Button-3>")
+        root.update_idletasks()
+        if box.get() != "A":
+            assert board._on_restore_next(SimpleNamespace(widget=box)) == "break"
+            root.update_idletasks()
+        assert box.get() == "A"
+        assert "Pending" not in str(box.cget("style") or "TCombobox")
+        cell = getattr(box, "_doccon_cell", None)
+        assert cell is not None
+        assert str(cell.cget("bg")).casefold() in {"#ffffff", "systembuttonface", "white"}
+        assert purpose.get() == "Approval"
+        assert purpose.cget("style") == "Pending.TCombobox"
+        pending = board.pending_rows()
+        assert len(pending) == 2
+        first = next(row for row in pending if row.drawing.key == "P2024-1")
+        assert first.drawing.outgoing_rev == "A"
+        assert first.drawing.purpose == "Approval"
+        assert other.nexts["outgoing_rev"].get() == "B"
+        now_label = block.originals["outgoing_rev"]
+        box.set("0")
+        root.update_idletasks()
+        now_label.event_generate("<Button-3>")
+        root.update_idletasks()
+        assert box.get() == "0"
+        block.drawing_label.event_generate("<Button-3>")
+        root.update_idletasks()
+        assert box.get() == "0"
+        cell_purpose = board._next_cell(purpose)
+        assert cell_purpose is not None
+        assert board._on_restore_next(SimpleNamespace(widget=cell_purpose)) == "break"
+        root.update_idletasks()
+        assert purpose.get() == "Info"
+        assert "Pending" not in str(purpose.cget("style") or "TCombobox")
+        still = next(row for row in board.pending_rows() if row.drawing.key == "P2024-1")
+        assert still.drawing.outgoing_rev == "0"
+        assert still.drawing.purpose == "Info"
+    finally:
+        root.destroy()
+
+
+def test_right_click_restores_combobox_date_and_eddi() -> None:
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("Tk is not available")
+    root.withdraw()
+    try:
+        base = _row(eddi_status="1 - Fabrication Drawings - EDDI")
+        row = replace(base, drawing=replace(base.drawing, submission_date="2026-01-02"))
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.set_rows([row])
+        block = board._blocks["P2024-1"]
+        status = block.status_next
+        date_box = block.nexts["submission_date"]
+        eddi = block.nexts["eddi_status"]
+        status.set("IFI")
+        date_box.set("not-a-date")
+        eddi.set("typed leftover")
+        root.update_idletasks()
+        assert board.restore_next_field("P2024-1", "status")
+        assert board.restore_next_field("P2024-1", "submission_date")
+        assert board.restore_next_field("P2024-1", "eddi_status")
+        root.update_idletasks()
+        assert status.get() == "To Do"
+        assert date_box.get() == "2026-01-02"
+        assert eddi.get() == "1 - Fabrication Drawings - EDDI"
+        assert "Pending" not in str(status.cget("style") or "TCombobox")
+        assert "Pending" not in str(date_box.cget("style") or "TCombobox")
+        assert "Pending" not in str(eddi.cget("style") or "TCombobox")
+        assert board.pending_rows() == []
+    finally:
+        root.destroy()
+
+
+def test_right_click_next_does_not_write_jira(monkeypatch) -> None:
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("Tk is not available")
+    root.withdraw()
+    try:
+        from doccon import jira_client
+
+        writes: list[str] = []
+
+        def _bang(*_args, **_kwargs):
+            writes.append("jira")
+            raise AssertionError("restore Next must not write Jira")
+
+        monkeypatch.setattr(jira_client, "apply_drawing_update", _bang)
+        monkeypatch.setattr(jira_client, "update_drawing_fields", _bang)
+        monkeypatch.setattr(jira_client, "transition_drawing", _bang)
+        monkeypatch.setattr(jira_client, "apply_jira_updates", _bang)
+        monkeypatch.setattr(jira_client, "run_jira_register_update", _bang)
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.set_rows([_row()])
+        box = board._blocks["P2024-1"].nexts["outgoing_rev"]
+        box.set("0")
+        root.update_idletasks()
+        assert board._on_restore_next(SimpleNamespace(widget=box)) == "break"
+        root.update_idletasks()
+        assert box.get() == "A"
+        assert writes == []
+        assert board.pending_rows() == []
     finally:
         root.destroy()
 
@@ -91,5 +324,1435 @@ def test_batch_applies_to_pack_only() -> None:
         board.set_pack(True)
         assert board.selected_keys() == ("P2024-1", "P2024-2")
         assert board.apply_next_to_pack() == 0
+        assert not hasattr(board, "_batch_title")
+        title_before = board._blocks["P2024-1"].title_next.get()
+        board._batch_status.set("Done")
+        board._apply_batch()
+        assert board._blocks["P2024-1"].status_next.get() == "Done"
+        assert board._blocks["P2024-1"].title_next.get() == title_before
+    finally:
+        root.destroy()
+
+
+def test_board_groups_by_eddi_with_headers(tmp_path) -> None:
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("Tk is not available")
+    root.withdraw()
+    try:
+        from doccon.match import pair_pdf
+
+        pdf = tmp_path / "2026-Tanzim-1-2 REV 0.pdf"
+        pdf.write_bytes(b"%PDF")
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.set_rows(
+            [
+                pair_pdf(
+                    _row(
+                        key="P2024-2",
+                        drawing_id="2026-Tanzim-1-2",
+                        eddi_status="1 - Fabrication Drawings - EDDI",
+                    ),
+                    pdf,
+                ),
+                _row(key="P2024-1", drawing_id="2026-Tanzim-ITP", eddi_status="0 - Generic Task"),
+                _row(key="P2024-3", drawing_id="2026-Tanzim-RFI", eddi_status=""),
+            ]
+        )
+        assert list(board._blocks) == ["P2024-2", "P2024-3"]
+        labels = [
+            child.cget("text")
+            for child in board._inner.winfo_children()
+            if isinstance(child, ttk.Label) and str(child.cget("style")) == "Group.TLabel"
+        ]
+        assert labels[0].startswith("1 -")
+        assert labels[-1] == "Ungrouped"
+        assert board._blocks["P2024-2"].pack_mark.cget("text") == "✓"
+        assert str(board._blocks["P2024-2"].pack_mark.cget("width")) == "2"
+        assert "nsew" not in str(board._blocks["P2024-2"].pack_mark.grid_info().get("sticky", ""))
+        board._blocks["P2024-2"].include.set(False)
+        assert board._blocks["P2024-2"].pack_mark.cget("text") == ""
+        assert board._blocks["P2024-2"].locate_btn.winfo_manager() in {"grid", "pack"}
+        assert board._blocks["P2024-3"].locate_btn.winfo_manager() in {"grid", "pack"}
+        matched_block = board._blocks["P2024-2"]
+        missing_block = board._blocks["P2024-3"]
+        assert str(matched_block.open_btn.cget("text")) == "Open"
+        assert matched_block.open_btn.master is matched_block.locate_btn.master
+        cluster = list(matched_block.locate_btn.master.pack_slaves())
+        assert cluster[:2] == [matched_block.locate_btn, matched_block.open_btn]
+        assert "disabled" not in str(matched_block.open_btn.cget("state"))
+        assert "disabled" in str(missing_block.open_btn.cget("state"))
+        board.apply_row(pair_pdf(_row(key="P2024-3", drawing_id="2026-Tanzim-RFI"), pdf))
+        assert "disabled" not in str(board._blocks["P2024-3"].open_btn.cget("state"))
+        header_text = board.header_titles()
+        assert JIRA_ID_TITLE in header_text
+        assert "Drawing" not in header_text
+        assert "Description" in header_text
+        assert "Submitted to Client For" in header_text
+        assert "Due Date (Jira)" not in header_text
+        inner_headers = [
+            child.cget("text")
+            for child in board._inner.winfo_children()
+            if isinstance(child, ttk.Label) and str(child.cget("style")) == "Header.TLabel"
+        ]
+        assert inner_headers == []
+    finally:
+        root.destroy()
+
+
+def test_locate_button_browses_instead_of_opening(tmp_path) -> None:
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("Tk is not available")
+    root.withdraw()
+    try:
+        from doccon.match import pair_pdf
+
+        opened: list[str] = []
+        located: list[str] = []
+        pdf = tmp_path / "2026-Tanzim-1-1 REV 0.pdf"
+        pdf.write_bytes(b"%PDF")
+        board = DrawingBoard(root, on_open_pdf=opened.append, on_locate_pdf=located.append)
+        board.set_rows(
+            [
+                pair_pdf(
+                    _row(key="P2024-1", drawing_id="2026-Tanzim-1-1"),
+                    pdf,
+                )
+            ]
+        )
+        board._blocks["P2024-1"].locate_btn.invoke()
+        assert located == ["P2024-1"]
+        assert opened == []
+        board._blocks["P2024-1"].open_btn.invoke()
+        assert opened == ["P2024-1"]
+        assert located == ["P2024-1"]
+    finally:
+        root.destroy()
+
+
+def test_long_description_is_kept() -> None:
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("Tk is not available")
+    root.withdraw()
+    try:
+        title = "Main Steel: Intermediate Shell Platform Detail — north stair and landing"
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.set_rows([_row(title=title)])
+        block = board._blocks["P2024-1"]
+        assert block.title_label.cget("text") == title
+        assert block.title_next.get() == title
+        assert int(str(block.title_label.cget("wraplength") or 0)) > 24
+    finally:
+        root.destroy()
+
+
+def test_now_next_has_full_width_rules() -> None:
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("Tk is not available")
+    root.withdraw()
+    try:
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.set_rows([_row()])
+        rules = [
+            child
+            for child in board._inner.winfo_children()
+            if isinstance(child, tk.Frame) and str(child.cget("height")) == "1"
+        ]
+        assert len(rules) == 2
+        assert all(int(child.grid_info()["columnspan"]) == BOARD_COLUMNS for child in rules)
+    finally:
+        root.destroy()
+
+
+def test_start_rows_paints_one_by_one() -> None:
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("Tk is not available")
+    root.withdraw()
+    try:
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        finished: list[bool] = []
+        board.start_rows(
+            [
+                _row(key="P2024-1", drawing_id="2026-Tanzim-1-1"),
+                _row(key="P2024-2", drawing_id="2026-Tanzim-1-2"),
+            ],
+            on_done=lambda: finished.append(True),
+        )
+        for _ in range(80):
+            if finished:
+                break
+            root.update()
+        assert finished
+        assert set(board._blocks) == {"P2024-1", "P2024-2"}
+        assert not board._paint_queue
+    finally:
+        root.destroy()
+
+
+def test_header_and_body_share_resizable_columns() -> None:
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("Tk is not available")
+    root.withdraw()
+    try:
+        from doccon.drawing_board import default_col_px
+
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.set_rows([_row()])
+        header_px = board.column_minsizes()
+        body_px = [
+            int(board._inner.grid_columnconfigure(col)["minsize"] or 0) for col in range(BOARD_COLUMNS)
+        ]
+        assert header_px == body_px
+        assert len(header_px) == BOARD_COLUMNS
+        purpose_col = next(i for i, (title, _) in enumerate(HEADER_TITLES) if title == "Submitted to Client For")
+        assert default_col_px()[purpose_col] == heading_floor_px()[purpose_col]
+        assert default_col_px()[purpose_col] == len("Submitted to Client For") * 10 + header_pad_px(purpose_col)
+        assert int(str(board._header_labels[purpose_col].cget("wraplength") or 0)) == 0
+        board.resize_column(purpose_col, 280)
+        assert board.column_minsizes()[purpose_col] == 280
+        assert int(board._inner.grid_columnconfigure(purpose_col)["minsize"]) == 280
+        desc_col = next(i for i, (title, _) in enumerate(HEADER_TITLES) if title == "Description")
+        board.resize_column(desc_col, 96)
+        assert str(board._blocks["P2024-1"].title_label.cget("width")) == "1"
+        assert int(board._inner.grid_columnconfigure(desc_col)["minsize"]) == 96
+        assert board.column_minsizes()[desc_col] == 96
+        assert int(str(board._blocks["P2024-1"].title_label.cget("wraplength") or 0)) > 0
+        assert int(str(board._blocks["P2024-1"].drawing_label.cget("wraplength") or 0)) > 0
+        assert int(str(board._blocks["P2024-1"].title_label.cget("wraplength"))) <= 96
+    finally:
+        root.destroy()
+
+
+def test_sash_drag_does_not_relayout_body_until_release() -> None:
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("Tk is not available")
+    root.withdraw()
+    try:
+        from types import SimpleNamespace
+
+        from doccon.drawing_board import MAX_COL_PX
+
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.set_rows([_row()])
+        desc_col = next(i for i, (title, _) in enumerate(HEADER_TITLES) if title == "Description")
+        start = board.column_minsizes()[desc_col]
+        body_start = int(board._inner.grid_columnconfigure(desc_col)["minsize"])
+        press = SimpleNamespace(x_root=100)
+        board._sash_press(desc_col, press)
+        board._sash_move(SimpleNamespace(x_root=180))
+        header_now = board.column_minsizes()[desc_col]
+        assert header_now == min(start + 80, MAX_COL_PX)
+        assert int(board._inner.grid_columnconfigure(desc_col)["minsize"]) == body_start
+        board._sash_release(SimpleNamespace(x_root=180))
+        assert int(board._inner.grid_columnconfigure(desc_col)["minsize"]) == header_now
+        assert board.column_minsizes()[desc_col] == header_now
+    finally:
+        root.destroy()
+
+
+def test_row_matches_filter_id_and_description() -> None:
+    row = _row(drawing_id="2026-Tanzim-1-STWD", title="SPIRAL STAIRWAY: INSIDE HANDRAIL")
+    assert row_matches_filter(row, "")
+    assert row_matches_filter(row, "stwd")
+    assert row_matches_filter(row, "handrail")
+    assert row_matches_filter(row, "STWD stair")
+    assert row_matches_filter(row, "P2024-1")
+    assert not row_matches_filter(row, "ITP")
+    assert row_matches_filter(row, "stair", extra="roof plan")
+    assert row_matches_filter(row, "roof", extra="roof plan")
+
+
+def test_filter_hides_non_matching_rows_and_keeps_edits() -> None:
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("Tk is not available")
+    root.withdraw()
+    try:
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.set_rows(
+            [
+                _row(
+                    key="P2024-1",
+                    drawing_id="2026-Tanzim-1-STWD",
+                    title="SPIRAL STAIRWAY",
+                    eddi_status="1 - Fabrication Drawings - EDDI",
+                ),
+                _row(
+                    key="P2024-2",
+                    drawing_id="2026-Tanzim-ITP-1-1",
+                    title="Inspection and Testing Plan",
+                    eddi_status="",
+                ),
+            ]
+        )
+        board._blocks["P2024-2"].nexts["outgoing_rev"].set("B")
+        board.apply_filter("stair")
+        root.update_idletasks()
+        assert board._blocks["P2024-1"].drawing_label.winfo_manager() == "grid"
+        assert board._blocks["P2024-2"].drawing_label.winfo_manager() == ""
+        assert board._filter_note.cget("text") == "1 of 2"
+        groups = {title: label.winfo_manager() for title, label in board._group_headers}
+        assert groups["1 - Fabrication Drawings"] == "grid"
+        assert groups["Ungrouped"] == ""
+        assert board.selected_keys() == ("P2024-1", "P2024-2")
+        board.set_pack(False)
+        assert board.selected_keys() == ("P2024-2",)
+        board.apply_filter("ITP")
+        root.update_idletasks()
+        board.set_pack(False)
+        board.set_pack(True)
+        assert board.selected_keys() == ("P2024-2",)
+        board.apply_filter("")
+        root.update_idletasks()
+        assert board._blocks["P2024-1"].drawing_label.winfo_manager() == "grid"
+        assert board._blocks["P2024-2"].drawing_label.winfo_manager() == "grid"
+        assert board._blocks["P2024-2"].nexts["outgoing_rev"].get() == "B"
+        assert board._filter_note.cget("text") == "Type, then Find"
+    finally:
+        root.destroy()
+
+
+def test_drawing_column_stays_put_when_scrolled_sideways() -> None:
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("Tk is not available")
+    root.withdraw()
+    try:
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.set_rows([_row()])
+        root.update_idletasks()
+        assert board._blocks["P2024-1"].drawing_label.master is board._freeze_inner
+        assert board._blocks["P2024-1"].pack_mark.master is board._freeze_inner
+        assert board._blocks["P2024-1"].title_label.master is board._inner
+        board._xview("moveto", "1.0")
+        root.update_idletasks()
+        pinned = board._canvas.coords(board._freeze_window)
+        assert abs(float(pinned[0]) - float(board._canvas.canvasx(0))) < 2
+        assert board._blocks["P2024-1"].drawing_label.winfo_manager() == "grid"
+    finally:
+        root.destroy()
+
+
+def test_frozen_rows_follow_wrapped_description_height() -> None:
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("Tk is not available")
+    root.withdraw()
+    try:
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.set_rows(
+            [
+                _row(
+                    title=(
+                        "SPIRAL STAIRWAY: INSIDE HANDRAIL DETAIL AND LONG "
+                        "DESCRIPTION THAT MUST WRAP ONTO SEVERAL LINES"
+                    )
+                )
+            ]
+        )
+        board.resize_column(DESC_COL_INDEX, 72, persist=False)
+        root.update()
+        for _ in range(8):
+            root.update_idletasks()
+        block = board._blocks["P2024-1"]
+        now_row = int(block.title_label.grid_info()["row"])
+        inner_min = int(board._inner.grid_rowconfigure(now_row)["minsize"] or 0)
+        freeze_min = int(board._freeze_inner.grid_rowconfigure(now_row)["minsize"] or 0)
+        assert inner_min == freeze_min
+        assert inner_min >= int(block.title_label.winfo_reqheight())
+        assert abs(block.drawing_label.winfo_y() - block.title_label.winfo_y()) <= 2
+        title_next = block.title_next
+        title_next.focus_set()
+        root.update()
+        title_next.event_generate("<Return>")
+        root.update()
+        for _ in range(8):
+            root.update_idletasks()
+        assert int(board._inner.grid_rowconfigure(now_row)["minsize"] or 0) == int(
+            board._freeze_inner.grid_rowconfigure(now_row)["minsize"] or 0
+        )
+        assert abs(block.drawing_label.winfo_y() - block.title_label.winfo_y()) <= 2
+        assert root.focus_get() is not title_next
+    finally:
+        root.destroy()
+
+
+def test_next_outgoing_rev_steps_letters_numbers_and_blank() -> None:
+    # Blank Now → 0: Elite IFC / numeric jobs (2026-075) already use 0, not A.
+    assert next_outgoing_rev("") == "0"
+    assert next_outgoing_rev("   ") == "0"
+    assert next_outgoing_rev("A") == "B"
+    assert next_outgoing_rev("C") == "D"
+    assert next_outgoing_rev("0") == "1"
+    assert next_outgoing_rev("15") == "16"
+    assert next_outgoing_rev("N/A") == "N/A"
+    assert next_outgoing_rev("0A") == "0B"
+    assert next_outgoing_rev("a") == "b"
+
+
+def _board_root():
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("Tk is not available")
+    root.withdraw()
+    return root
+
+
+def test_bump_packed_revs_from_now_leaves_unpacked() -> None:
+    root = _board_root()
+    try:
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.set_rows(
+            [
+                _row(key="P2024-1", drawing_id="2026-Tanzim-1-1", outgoing_rev="A"),
+                _row(key="P2024-2", drawing_id="2026-Tanzim-1-2", outgoing_rev="0"),
+                _row(key="P2024-3", drawing_id="2026-Tanzim-1-3", outgoing_rev=""),
+                _row(key="P2024-4", drawing_id="2026-Tanzim-1-4", outgoing_rev="C"),
+            ]
+        )
+        board._blocks["P2024-4"].include.set(False)
+        board._blocks["P2024-1"].nexts["outgoing_rev"].set("Z")
+        assert str(board._packed_only_btn.cget("text")) == "Packed only"
+        assert str(board._bump_packed_btn.cget("text")) == "Bump packed"
+        assert str(board._set_packed_btn.cget("text")) == "Set packed to…"
+        count = board.bump_packed_revs()
+        assert count == 3
+        assert board._blocks["P2024-1"].nexts["outgoing_rev"].get() == "B"
+        assert board._blocks["P2024-2"].nexts["outgoing_rev"].get() == "1"
+        assert board._blocks["P2024-3"].nexts["outgoing_rev"].get() == "0"
+        assert board._blocks["P2024-4"].nexts["outgoing_rev"].get() == "C"
+        root.update_idletasks()
+        assert board._blocks["P2024-1"].nexts["outgoing_rev"].cget("style") == "Pending.TCombobox"
+        pending = {row.drawing.key: row.drawing.outgoing_rev for row in board.pending_rows()}
+        assert pending["P2024-1"] == "B"
+        assert pending["P2024-2"] == "1"
+        assert pending["P2024-3"] == "0"
+        assert "P2024-4" not in pending
+        assert board.restore_next_field("P2024-1", "outgoing_rev")
+        root.update_idletasks()
+        assert board._blocks["P2024-1"].nexts["outgoing_rev"].get() == "A"
+        assert "Pending" not in str(board._blocks["P2024-1"].nexts["outgoing_rev"].cget("style") or "")
+    finally:
+        root.destroy()
+
+
+def test_set_packed_rev_stamps_zero_from_letters() -> None:
+    root = _board_root()
+    try:
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.set_rows(
+            [
+                _row(key="P2024-1", drawing_id="2026-Tanzim-1-1", outgoing_rev="A"),
+                _row(key="P2024-2", drawing_id="2026-Tanzim-1-2", outgoing_rev="C"),
+                _row(key="P2024-3", drawing_id="2026-Tanzim-1-3", outgoing_rev="B"),
+            ]
+        )
+        board._blocks["P2024-3"].include.set(False)
+        count = board.set_packed_rev("0")
+        assert count == 2
+        assert board._blocks["P2024-1"].nexts["outgoing_rev"].get() == "0"
+        assert board._blocks["P2024-2"].nexts["outgoing_rev"].get() == "0"
+        assert board._blocks["P2024-3"].nexts["outgoing_rev"].get() == "B"
+        pending = {row.drawing.key: row.drawing.outgoing_rev for row in board.pending_rows()}
+        assert pending == {"P2024-1": "0", "P2024-2": "0"}
+        root.update_idletasks()
+        assert board._blocks["P2024-1"].nexts["outgoing_rev"].cget("style") == "Pending.TCombobox"
+        assert board.set_packed_rev("") == 0
+        assert board._blocks["P2024-1"].nexts["outgoing_rev"].get() == "0"
+    finally:
+        root.destroy()
+
+
+def test_bump_and_set_packed_zero_packed_does_not_crash() -> None:
+    root = _board_root()
+    try:
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.set_rows(
+            [
+                _row(key="P2024-1", drawing_id="2026-Tanzim-1-1", outgoing_rev="A"),
+                _row(key="P2024-2", drawing_id="2026-Tanzim-1-2", outgoing_rev="0"),
+            ]
+        )
+        board.set_pack(False)
+        assert board.selected_keys() == ()
+        assert board.bump_packed_revs() == 0
+        assert board.set_packed_rev("0") == 0
+        board._bump_packed()
+        board._packed_rev.set("0")
+        board._apply_packed_rev()
+        assert board._blocks["P2024-1"].nexts["outgoing_rev"].get() == "A"
+        assert board._blocks["P2024-2"].nexts["outgoing_rev"].get() == "0"
+        assert board.pending_rows() == []
+        note = str(board._batch_note.cget("text"))
+        assert "Pack" in note
+    finally:
+        root.destroy()
+
+
+def test_packed_only_hides_unpacked_and_empty_eddi_headers() -> None:
+    root = _board_root()
+    try:
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.set_rows(
+            [
+                _row(
+                    key="P2024-1",
+                    drawing_id="2026-Tanzim-1-STWD",
+                    title="SPIRAL STAIRWAY",
+                    eddi_status="1 - Fabrication Drawings - EDDI",
+                    outgoing_rev="A",
+                ),
+                _row(
+                    key="P2024-2",
+                    drawing_id="2026-Tanzim-ITP-1-1",
+                    title="Inspection and Testing Plan",
+                    eddi_status="",
+                    outgoing_rev="C",
+                ),
+                _row(
+                    key="P2024-3",
+                    drawing_id="2026-Tanzim-RFI-1",
+                    title="RFI",
+                    eddi_status="4 - Engineering - EDDI",
+                    outgoing_rev="0",
+                ),
+            ]
+        )
+        board._blocks["P2024-2"].include.set(False)
+        board._blocks["P2024-3"].include.set(False)
+        assert not board.packed_only()
+        board._packed_only_btn.invoke()
+        root.update_idletasks()
+        assert board.packed_only()
+        assert board._packed_only_btn.cget("style") == "Brand.TButton"
+        assert board._blocks["P2024-1"].drawing_label.winfo_manager() == "grid"
+        assert board._blocks["P2024-2"].drawing_label.winfo_manager() == ""
+        assert board._blocks["P2024-3"].drawing_label.winfo_manager() == ""
+        groups = {title: label.winfo_manager() for title, label in board._group_headers}
+        assert groups["1 - Fabrication Drawings"] == "grid"
+        assert groups["Ungrouped"] == ""
+        assert groups["4 - Engineering"] == ""
+        assert board._filter_note.cget("text") == "1 packed"
+        board.set_packed_only(False)
+        root.update_idletasks()
+        assert board._blocks["P2024-1"].drawing_label.winfo_manager() == "grid"
+        assert board._blocks["P2024-2"].drawing_label.winfo_manager() == "grid"
+        assert board._blocks["P2024-3"].drawing_label.winfo_manager() == "grid"
+        groups = {title: label.winfo_manager() for title, label in board._group_headers}
+        assert groups["1 - Fabrication Drawings"] == "grid"
+        assert groups["Ungrouped"] == "grid"
+        assert groups["4 - Engineering"] == "grid"
+        assert board._filter_note.cget("text") == "Type, then Find"
+        assert board._packed_only_btn.cget("style") == "TButton"
+    finally:
+        root.destroy()
+
+
+def test_packed_only_intersects_text_filter() -> None:
+    root = _board_root()
+    try:
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.set_rows(
+            [
+                _row(
+                    key="P2024-1",
+                    drawing_id="2026-Tanzim-1-STWD",
+                    title="SPIRAL STAIRWAY",
+                    eddi_status="1 - Fabrication Drawings - EDDI",
+                ),
+                _row(
+                    key="P2024-2",
+                    drawing_id="2026-Tanzim-ITP-1-1",
+                    title="Inspection and Testing Plan",
+                    eddi_status="",
+                ),
+            ]
+        )
+        board._blocks["P2024-2"].include.set(False)
+        board.set_packed_only(True)
+        board.apply_filter("ITP")
+        root.update_idletasks()
+        assert board._blocks["P2024-1"].drawing_label.winfo_manager() == ""
+        assert board._blocks["P2024-2"].drawing_label.winfo_manager() == ""
+        assert board._filter_note.cget("text") == "No matches"
+        board.apply_filter("stair")
+        root.update_idletasks()
+        assert board._blocks["P2024-1"].drawing_label.winfo_manager() == "grid"
+        assert board._blocks["P2024-2"].drawing_label.winfo_manager() == ""
+        assert board._filter_note.cget("text") == "1 of 1 packed"
+        board.set_packed_only(False)
+        root.update_idletasks()
+        assert board._blocks["P2024-1"].drawing_label.winfo_manager() == "grid"
+        assert board._blocks["P2024-2"].drawing_label.winfo_manager() == ""
+        board.apply_filter("")
+        root.update_idletasks()
+        assert board._blocks["P2024-2"].drawing_label.winfo_manager() == "grid"
+        board._blocks["P2024-2"].include.set(True)
+        board.apply_filter("stair")
+        root.update_idletasks()
+        assert board.bump_packed_revs() == 2
+        board.apply_filter("")
+        root.update_idletasks()
+        assert board._blocks["P2024-1"].nexts["outgoing_rev"].get() == "B"
+        assert board._blocks["P2024-2"].nexts["outgoing_rev"].get() == "B"
+    finally:
+        root.destroy()
+
+
+def test_bump_and_set_packed_do_not_write_jira(monkeypatch) -> None:
+    root = _board_root()
+    try:
+        from doccon import jira_client
+
+        writes: list[str] = []
+
+        def _bang(*_args, **_kwargs):
+            writes.append("jira")
+            raise AssertionError("rev batch must not write Jira")
+
+        monkeypatch.setattr(jira_client, "apply_drawing_update", _bang)
+        monkeypatch.setattr(jira_client, "update_drawing_fields", _bang)
+        monkeypatch.setattr(jira_client, "transition_drawing", _bang)
+        monkeypatch.setattr(jira_client, "apply_jira_updates", _bang)
+        monkeypatch.setattr(jira_client, "run_jira_register_update", _bang)
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.set_rows(
+            [
+                _row(key="P2024-1", drawing_id="2026-Tanzim-1-1", outgoing_rev="A"),
+                _row(key="P2024-2", drawing_id="2026-Tanzim-1-2", outgoing_rev="C"),
+            ]
+        )
+        board._blocks["P2024-2"].include.set(False)
+        board.bump_packed_revs()
+        board.set_packed_rev("0")
+        assert writes == []
+        assert board._blocks["P2024-1"].nexts["outgoing_rev"].get() == "0"
+        assert board._blocks["P2024-2"].nexts["outgoing_rev"].get() == "C"
+        pending = board.pending_rows()
+        assert len(pending) == 1
+        assert pending[0].drawing.outgoing_rev == "0"
+    finally:
+        root.destroy()
+
+
+def test_next_widget_kinds_split_dropdown_text_and_calendar() -> None:
+    root = _board_root()
+    try:
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.set_rows([_row(title="SPIRAL STAIRWAY")])
+        block = board._blocks["P2024-1"]
+        assert isinstance(block.title_next, NextEntry)
+        assert not isinstance(block.title_next, ttk.Combobox)
+        assert isinstance(block.nexts["client_document_number"], NextEntry)
+        assert not isinstance(block.nexts["client_document_number"], ttk.Combobox)
+        assert isinstance(block.status_next, ttk.Combobox)
+        assert tuple(block.status_next.cget("values"))
+        for field in ("outgoing_rev", "incoming_rev", "shop_ifc_rev", "field_ifc_rev"):
+            box = block.nexts[field]
+            assert isinstance(box, ttk.Combobox)
+            assert "A" in box.cget("values")
+            assert "0" in box.cget("values")
+        assert isinstance(block.nexts["purpose"], ttk.Combobox)
+        assert "Approval" in block.nexts["purpose"].cget("values")
+        assert isinstance(block.nexts["approval"], ttk.Combobox)
+        assert "Void" in block.nexts["approval"].cget("values")
+        assert isinstance(block.nexts["eddi_status"], ttk.Combobox)
+        assert any(str(item).startswith("1 -") for item in block.nexts["eddi_status"].cget("values"))
+        for field in (
+            "submission_date",
+            "return_request_date",
+            "return_date",
+            "shop_ifc_date",
+            "field_ifc_date",
+        ):
+            box = block.nexts[field]
+            assert isinstance(box, NextEntry)
+            assert not isinstance(box, ttk.Combobox)
+            assert getattr(box, "_doccon_calendar", None) is not None
+        assert isinstance(board._batch_fields["client_document_number"], NextEntry)
+        assert isinstance(board._batch_fields["outgoing_rev"], ttk.Combobox)
+        assert isinstance(board._batch_fields["submission_date"], NextEntry)
+    finally:
+        root.destroy()
+
+
+def test_right_click_description_next_restores_now() -> None:
+    root = _board_root()
+    try:
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.set_rows([_row(title="SPIRAL STAIRWAY")])
+        title = board._blocks["P2024-1"].title_next
+        title.set("changed wording")
+        root.update_idletasks()
+        assert title.cget("style") == "Pending.TEntry"
+        assert board._on_restore_next(SimpleNamespace(widget=title)) == "break"
+        root.update_idletasks()
+        assert title.get() == "SPIRAL STAIRWAY"
+        assert "Pending" not in str(title.cget("style") or "TEntry")
+        assert board.pending_rows() == []
+    finally:
+        root.destroy()
+
+
+def test_text_next_turns_yellow() -> None:
+    root = _board_root()
+    try:
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.set_rows([_row()])
+        box = board._blocks["P2024-1"].nexts["client_document_number"]
+        box.set("CNRL-T-101")
+        root.update_idletasks()
+        assert box.cget("style") == "Pending.TEntry"
+        cell = getattr(box, "_doccon_cell", None)
+        assert cell is not None
+        assert str(cell.cget("bg")).casefold() == "#fef3c7"
+        box.set("")
+        root.update_idletasks()
+        assert "Pending" not in str(box.cget("style") or "TEntry")
+    finally:
+        root.destroy()
+
+
+def test_rev_combobox_uses_jira_allowed_values() -> None:
+    root = _board_root()
+    try:
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.set_rev_options({"outgoing_rev": ("", "0", "A", "Q")})
+        board.set_rows(
+            [
+                _row(key="P2024-1", drawing_id="2026-Tanzim-1-1", outgoing_rev="A"),
+                _row(key="P2024-2", drawing_id="2026-Tanzim-1-2", outgoing_rev="Z"),
+            ]
+        )
+        first = board._blocks["P2024-1"].nexts["outgoing_rev"]
+        second = board._blocks["P2024-2"].nexts["outgoing_rev"]
+        assert isinstance(first, ttk.Combobox)
+        first_vals = [str(v) for v in first.cget("values")]
+        assert "0" in first_vals and "A" in first_vals and "Q" in first_vals
+        assert "B" not in first_vals
+        assert "Z" in [str(v) for v in second.cget("values")]
+        batch_vals = [str(v) for v in board._batch_fields["outgoing_rev"].cget("values")]
+        assert "Q" in batch_vals and "B" not in batch_vals
+        incoming = board._blocks["P2024-1"].nexts["incoming_rev"]
+        incoming_vals = [str(v) for v in incoming.cget("values")]
+        assert "A" in incoming_vals and "0A" in incoming_vals
+        assert set(incoming_vals) == set(REV_VALUES)
+    finally:
+        root.destroy()
+
+
+def test_with_now_option_appends_missing_now() -> None:
+    assert with_now_option(("", "A", "B"), "A") == ("", "A", "B")
+    assert with_now_option(("", "A", "B"), "Z") == ("", "A", "B", "Z")
+    assert with_now_option(("", "A"), "") == ("", "A")
+
+
+def test_header_column_is_jira_id() -> None:
+    root = _board_root()
+    try:
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.set_rows([_row()])
+        titles = board.header_titles()
+        assert HEADER_TITLES[DRAWING_COL_INDEX][0] == JIRA_ID_TITLE
+        assert titles[DRAWING_COL_INDEX] == JIRA_ID_TITLE
+        assert "Drawing" not in titles
+        assert titles[DESC_COL_INDEX] == "Description"
+        freeze_texts = [
+            label.cget("text")
+            for child in board._freeze_header.winfo_children()
+            if isinstance(child, tk.Frame)
+            for label in child.winfo_children()
+            if isinstance(label, ttk.Label)
+        ]
+        assert JIRA_ID_TITLE in freeze_texts
+        assert "Drawing" not in freeze_texts
+        assert "Now" not in freeze_texts
+        assert "Next" not in freeze_texts
+        assert freeze_texts == ["Pack", JIRA_ID_TITLE]
+    finally:
+        root.destroy()
+
+
+def test_default_column_widths_save_horizontal_space() -> None:
+    defaults = default_col_px()
+    floors = heading_floor_px()
+    old_pack = 94
+    old_desc = 52 * CHAR_PX + 44
+    old_id = 32 * CHAR_PX + 44
+    assert PACK_COL_PX == 48
+    assert DESC_COL_PX == 240
+    assert DESC_COL_PX != 564
+    assert JIRA_ID_COL_PX == 180
+    assert PDF_COL_PX == 176
+    assert defaults[PACK_COL_INDEX] == PACK_COL_PX
+    assert old_pack > PACK_COL_PX
+    assert defaults[DESC_COL_INDEX] == DESC_COL_PX
+    assert old_desc > DESC_COL_PX
+    assert defaults[DRAWING_COL_INDEX] == JIRA_ID_COL_PX
+    assert old_id > JIRA_ID_COL_PX
+    for sample in ("2026-075-1-STWD", "2026-Tanzim-1-1"):
+        assert defaults[DRAWING_COL_INDEX] >= len(sample) * CHAR_PX
+    assert defaults[PDF_COL_INDEX] == PDF_COL_PX
+    assert len("PDF") * CHAR_PX + HEADING_PAD_PX < PDF_COL_PX
+    assert PDF_COL_PX >= (8 + 5) * CHAR_PX
+    assert HEADER_TITLES[0][0] == "Pack"
+    assert HEADER_TITLES[1][0] == JIRA_ID_TITLE
+    assert all(title for title, _chars in HEADER_TITLES)
+    assert FROZEN_COLS == 2
+    assert DRAWING_COL_INDEX == 1
+    assert DESC_COL_INDEX == 2
+    for index, (title, _) in enumerate(HEADER_TITLES):
+        if index in (PACK_COL_INDEX, DRAWING_COL_INDEX, DESC_COL_INDEX, PDF_COL_INDEX):
+            continue
+        assert defaults[index] == floors[index]
+        assert floors[index] == max(MIN_COL_PX, len(title) * CHAR_PX + header_pad_px(index))
+    assert merge_col_px([80] * 20) == defaults
+    assert merge_col_px(defaults) == defaults
+
+
+def test_layout_revision_invalidates_stale_saved_widths() -> None:
+    defaults = default_col_px()
+    fat = list(defaults)
+    fat[DESC_COL_INDEX] = 564
+    fat[PACK_COL_INDEX] = 94
+    assert merge_col_px(fat) == defaults
+    assert merge_col_px(fat, 0) == defaults
+    assert merge_col_px(fat, 135) == defaults
+    kept = merge_col_px(fat, BOARD_LAYOUT_REV)
+    assert kept[DESC_COL_INDEX] == 564
+    assert kept[PACK_COL_INDEX] == 94
+    assert BOARD_LAYOUT_REV == 136
+
+
+def test_no_now_next_label_column() -> None:
+    root = _board_root()
+    try:
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.set_rows([_row()])
+        block = board._blocks["P2024-1"]
+        freeze_texts = [
+            str(child.cget("text"))
+            for child in board._freeze_inner.winfo_children()
+            if isinstance(child, ttk.Label)
+        ]
+        assert "Now" not in freeze_texts
+        assert "Next" not in freeze_texts
+        assert "" not in board.header_titles()
+        assert int(block.pack_mark.grid_info()["column"]) == PACK_COL_INDEX
+        assert int(block.drawing_label.grid_info()["column"]) == DRAWING_COL_INDEX
+        assert int(block.title_label.grid_info()["column"]) == DESC_COL_INDEX
+        now_row = int(block.title_label.grid_info()["row"])
+        next_row = int(block.title_next._doccon_cell.grid_info()["row"])
+        assert next_row == now_row + 1
+    finally:
+        root.destroy()
+
+
+def _tk_toplevels(root: tk.Misc) -> list[tk.Toplevel]:
+    found: list[tk.Toplevel] = []
+    stack = [root]
+    while stack:
+        widget = stack.pop()
+        try:
+            children = widget.winfo_children()
+        except tk.TclError:
+            continue
+        for child in children:
+            if isinstance(child, tk.Toplevel):
+                found.append(child)
+            stack.append(child)
+    return found
+
+
+def _click_twice(widget: tk.Misc) -> None:
+    """Tk will not synthesize <Double-1>; two presses are what a double-click is."""
+    for _ in range(2):
+        widget.event_generate("<ButtonPress-1>", x=4, y=4)
+        widget.event_generate("<ButtonRelease-1>", x=4, y=4)
+
+
+def test_double_click_text_next_does_not_open_toplevel() -> None:
+    root = _board_root()
+    try:
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.set_rows([_row(title="SPIRAL STAIRWAY: INSIDE HANDRAIL DETAIL")])
+        block = board._blocks["P2024-1"]
+        title = block.title_next
+        client = block.nexts["client_document_number"]
+        client.set("CNRL-T-101")
+        root.update_idletasks()
+        before = {id(win) for win in _tk_toplevels(root)}
+        _click_twice(title)
+        _click_twice(client)
+        _click_twice(block.title_label)
+        root.update()
+        after = {id(win) for win in _tk_toplevels(root)}
+        assert after == before
+        assert not hasattr(board, "_read_full")
+        assert title.bind("<Double-1>")
+        assert client.bind("<Double-1>")
+        assert not block.title_label.bind("<Double-1>")
+        title.set("Roof stair wording")
+        assert title.get() == "Roof stair wording"
+        assert client.get() == "CNRL-T-101"
+        pending = {row.drawing.key: row.drawing for row in board.pending_rows()}
+        assert pending["P2024-1"].title == "Roof stair wording"
+        assert pending["P2024-1"].client_document_number == "CNRL-T-101"
+    finally:
+        root.destroy()
+
+
+def test_entry_return_commits_and_leaves_editor() -> None:
+    root = _board_root()
+    try:
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.set_rows(
+            [
+                _row(key="P2024-1", drawing_id="2026-Tanzim-1-1"),
+                _row(key="P2024-2", drawing_id="2026-Tanzim-1-2"),
+            ]
+        )
+        box = board._blocks["P2024-1"].nexts["client_document_number"]
+        other = board._blocks["P2024-2"].nexts["client_document_number"]
+        box.focus_set()
+        root.update()
+        box.set("CNRL-T-101")
+        root.update_idletasks()
+        assert box.cget("style") == "Pending.TEntry"
+        box.event_generate("<Return>")
+        root.update()
+        assert box.get() == "CNRL-T-101"
+        assert root.focus_get() is not box
+        assert root.focus_get() is not other
+        pending = board.pending_rows()
+        assert len(pending) == 1
+        assert pending[0].drawing.client_document_number == "CNRL-T-101"
+        assert board._active_next is None
+    finally:
+        root.destroy()
+
+
+def test_combobox_return_leaves_editor_and_dropdown_still_sets() -> None:
+    root = _board_root()
+    try:
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.set_rows([_row()])
+        box = board._blocks["P2024-1"].status_next
+        box.focus_set()
+        root.update()
+        box.set("IFI")
+        box.event_generate("<<ComboboxSelected>>")
+        root.update_idletasks()
+        assert box.get() == "IFI"
+        box.event_generate("<Return>")
+        root.update()
+        assert box.get() == "IFI"
+        assert root.focus_get() is not box
+        pending = board.pending_rows()
+        assert len(pending) == 1
+        assert pending[0].drawing.status == "IFI"
+    finally:
+        root.destroy()
+
+
+def test_entry_focus_out_and_click_outside_commit() -> None:
+    root = _board_root()
+    try:
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.set_rows([_row()])
+        box = board._blocks["P2024-1"].nexts["client_document_number"]
+        box.focus_set()
+        root.update()
+        box.set("CNRL-T-101")
+        root.update_idletasks()
+        box.event_generate("<FocusOut>")
+        board._canvas.focus_set()
+        root.update()
+        assert box.get() == "CNRL-T-101"
+        assert board.pending_rows()
+        assert str(box._doccon_cell.cget("bg")).casefold() == "#fef3c7"
+
+        box.focus_set()
+        root.update()
+        box.set("CNRL-T-202")
+        root.update_idletasks()
+        board._on_global_press(SimpleNamespace(widget=board._canvas))
+        root.update()
+        assert box.get() == "CNRL-T-202"
+        assert root.focus_get() is not box
+        assert board.pending_rows()[0].drawing.client_document_number == "CNRL-T-202"
+
+        board._active_next = box
+        board._on_global_press(SimpleNamespace(widget=box))
+        root.update()
+        assert board._active_next is box
+    finally:
+        root.destroy()
+
+
+def test_escape_restores_now_and_leaves_editor() -> None:
+    root = _board_root()
+    try:
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.set_rows([_row(title="SPIRAL STAIRWAY", outgoing_rev="A")])
+        box = board._blocks["P2024-1"].nexts["outgoing_rev"]
+        box.set("0")
+        root.update_idletasks()
+        assert box.cget("style") == "Pending.TCombobox"
+        assert board._on_next_escape(SimpleNamespace(widget=box)) == "break"
+        root.update()
+        assert box.get() == "A"
+        assert "Pending" not in str(box.cget("style") or "TCombobox")
+        assert root.focus_get() is not box
+        assert board._active_next is None
+        assert board.pending_rows() == []
+    finally:
+        root.destroy()
+
+
+def test_pack_stamps_return_request_from_cover() -> None:
+    root = _board_root()
+    try:
+        board = DrawingBoard(
+            root, on_open_pdf=lambda _key: None, cover_return_stamp=lambda: "2026-09-22"
+        )
+        board.set_rows(
+            [
+                _row(key="P2024-1", drawing_id="2026-Tanzim-1-1"),
+                _row(key="P2024-2", drawing_id="2026-Tanzim-1-2"),
+            ],
+            checked=set(),
+        )
+        assert board._blocks["P2024-1"].nexts["return_request_date"].get() == ""
+        assert board._blocks["P2024-2"].nexts["return_request_date"].get() == ""
+        board._blocks["P2024-1"].include.set(True)
+        root.update_idletasks()
+        assert board._blocks["P2024-1"].nexts["return_request_date"].get() == "2026-09-22"
+        assert board._blocks["P2024-2"].nexts["return_request_date"].get() == ""
+        assert board._blocks["P2024-1"].nexts["return_request_date"].cget("style") == "Pending.TEntry"
+        board._blocks["P2024-1"].nexts["return_request_date"].set("2026-09-30")
+        board._blocks["P2024-2"].include.set(True)
+        root.update_idletasks()
+        assert board._blocks["P2024-1"].nexts["return_request_date"].get() == "2026-09-30"
+        assert board._blocks["P2024-2"].nexts["return_request_date"].get() == "2026-09-22"
+        board._blocks["P2024-1"].include.set(False)
+        assert board._blocks["P2024-1"].nexts["return_request_date"].get() == "2026-09-30"
+        assert board.restore_next_field("P2024-1", "return_request_date")
+        root.update_idletasks()
+        assert board._blocks["P2024-1"].nexts["return_request_date"].get() == ""
+    finally:
+        root.destroy()
+
+
+def test_cover_expected_change_restamps_packed_only() -> None:
+    root = _board_root()
+    try:
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.set_rows(
+            [
+                _row(key="P2024-1", drawing_id="2026-Tanzim-1-1"),
+                _row(key="P2024-2", drawing_id="2026-Tanzim-1-2"),
+            ],
+            checked={"P2024-1"},
+        )
+        assert board.stamp_packed_return_request("2026-09-22") == 1
+        assert board._blocks["P2024-1"].nexts["return_request_date"].get() == "2026-09-22"
+        assert board._blocks["P2024-2"].nexts["return_request_date"].get() == ""
+        assert board.stamp_packed_return_request("2026-10-01") == 1
+        assert board._blocks["P2024-1"].nexts["return_request_date"].get() == "2026-10-01"
+        assert board._blocks["P2024-2"].nexts["return_request_date"].get() == ""
+        assert board.stamp_packed_return_request("") == 0
+        assert board._blocks["P2024-1"].nexts["return_request_date"].get() == "2026-10-01"
+    finally:
+        root.destroy()
+
+
+def test_blank_expected_pack_does_not_clear_return_request() -> None:
+    root = _board_root()
+    try:
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None, cover_return_stamp=lambda: "")
+        board.set_rows(
+            [_row(key="P2024-1", drawing_id="2026-Tanzim-1-1", return_request_date="2026-08-01")],
+            checked=set(),
+        )
+        box = board._blocks["P2024-1"].nexts["return_request_date"]
+        box.set("2026-09-15")
+        board._blocks["P2024-1"].include.set(True)
+        root.update_idletasks()
+        assert box.get() == "2026-09-15"
+        assert board.stamp_packed_return_request("") == 0
+        assert box.get() == "2026-09-15"
+    finally:
+        root.destroy()
+
+
+def test_pack_stamps_submission_date_from_cover() -> None:
+    root = _board_root()
+    try:
+        board = DrawingBoard(
+            root,
+            on_open_pdf=lambda _key: None,
+            cover_issued_stamp=lambda: "2026-09-11",
+            cover_return_stamp=lambda: "2026-09-22",
+        )
+        board.set_rows(
+            [
+                _row(key="P2024-1", drawing_id="2026-Tanzim-1-1"),
+                _row(key="P2024-2", drawing_id="2026-Tanzim-1-2"),
+            ],
+            checked=set(),
+        )
+        assert board._blocks["P2024-1"].nexts["submission_date"].get() == ""
+        assert board._blocks["P2024-1"].nexts["return_request_date"].get() == ""
+        board._blocks["P2024-1"].include.set(True)
+        root.update_idletasks()
+        assert board._blocks["P2024-1"].nexts["submission_date"].get() == "2026-09-11"
+        assert board._blocks["P2024-1"].nexts["return_request_date"].get() == "2026-09-22"
+        assert board._blocks["P2024-2"].nexts["submission_date"].get() == ""
+        assert board._blocks["P2024-1"].nexts["submission_date"].cget("style") == "Pending.TEntry"
+        board._blocks["P2024-1"].nexts["submission_date"].set("2026-09-18")
+        board._blocks["P2024-2"].include.set(True)
+        root.update_idletasks()
+        assert board._blocks["P2024-1"].nexts["submission_date"].get() == "2026-09-18"
+        assert board._blocks["P2024-2"].nexts["submission_date"].get() == "2026-09-11"
+        board._blocks["P2024-1"].include.set(False)
+        assert board._blocks["P2024-1"].nexts["submission_date"].get() == "2026-09-18"
+        assert board.restore_next_field("P2024-1", "submission_date")
+        root.update_idletasks()
+        assert board._blocks["P2024-1"].nexts["submission_date"].get() == ""
+    finally:
+        root.destroy()
+
+
+def test_cover_issued_change_restamps_packed_only() -> None:
+    root = _board_root()
+    try:
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.set_rows(
+            [
+                _row(key="P2024-1", drawing_id="2026-Tanzim-1-1"),
+                _row(key="P2024-2", drawing_id="2026-Tanzim-1-2"),
+            ],
+            checked={"P2024-1"},
+        )
+        assert board.stamp_packed_submission_date("2026-09-11") == 1
+        assert board._blocks["P2024-1"].nexts["submission_date"].get() == "2026-09-11"
+        assert board._blocks["P2024-2"].nexts["submission_date"].get() == ""
+        assert board.stamp_packed_date("submission_date", "2026-09-15") == 1
+        assert board._blocks["P2024-1"].nexts["submission_date"].get() == "2026-09-15"
+        assert board._blocks["P2024-2"].nexts["submission_date"].get() == ""
+        assert board.stamp_packed_submission_date("") == 0
+        assert board._blocks["P2024-1"].nexts["submission_date"].get() == "2026-09-15"
+        assert board.stamp_packed_return_request("2026-09-22") == 1
+        assert board._blocks["P2024-1"].nexts["return_request_date"].get() == "2026-09-22"
+        assert board._blocks["P2024-1"].nexts["submission_date"].get() == "2026-09-15"
+    finally:
+        root.destroy()
+
+
+def test_blank_issued_pack_does_not_clear_submission_date() -> None:
+    root = _board_root()
+    try:
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None, cover_issued_stamp=lambda: "")
+        board.set_rows(
+            [_row(key="P2024-1", drawing_id="2026-Tanzim-1-1", submission_date="2026-08-01")],
+            checked=set(),
+        )
+        box = board._blocks["P2024-1"].nexts["submission_date"]
+        box.set("2026-09-15")
+        board._blocks["P2024-1"].include.set(True)
+        root.update_idletasks()
+        assert box.get() == "2026-09-15"
+        assert board.stamp_packed_cover_dates() == 0
+        assert box.get() == "2026-09-15"
+    finally:
+        root.destroy()
+
+
+def test_pack_stamp_does_not_write_jira(monkeypatch) -> None:
+    root = _board_root()
+    try:
+        from doccon import jira_client
+
+        writes: list[str] = []
+
+        def _bang(*_args, **_kwargs):
+            writes.append("jira")
+            raise AssertionError("pack stamp must not write Jira")
+
+        monkeypatch.setattr(jira_client, "apply_drawing_update", _bang)
+        monkeypatch.setattr(jira_client, "update_drawing_fields", _bang)
+        monkeypatch.setattr(jira_client, "transition_drawing", _bang)
+        monkeypatch.setattr(jira_client, "apply_jira_updates", _bang)
+        monkeypatch.setattr(jira_client, "run_jira_register_update", _bang)
+        board = DrawingBoard(
+            root, on_open_pdf=lambda _key: None, cover_return_stamp=lambda: "2026-09-22"
+        )
+        board.set_rows(
+            [
+                _row(key="P2024-1", drawing_id="2026-Tanzim-1-1"),
+                _row(key="P2024-2", drawing_id="2026-Tanzim-1-2"),
+            ],
+            checked=set(),
+        )
+        board._blocks["P2024-1"].include.set(True)
+        board.stamp_packed_return_request("2026-10-01")
+        assert writes == []
+        assert board._blocks["P2024-1"].nexts["return_request_date"].get() == "2026-10-01"
+        assert board._blocks["P2024-2"].nexts["return_request_date"].get() == ""
+    finally:
+        root.destroy()
+
+
+def test_pick_only_next_fields_are_readonly() -> None:
+    root = _board_root()
+    try:
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.set_rows([_row()])
+        block = board._blocks["P2024-1"]
+        assert field_is_pick_only("status")
+        assert {
+            "purpose",
+            "approval",
+            "shop_ifc_rev",
+            "field_ifc_rev",
+            "eddi_status",
+        } == PICK_ONLY_FIELDS
+        assert str(block.status_next.cget("state")) == "readonly"
+        before_status = block.status_next.get()
+        with contextlib.suppress(tk.TclError):
+            block.status_next.insert("end", "typed")
+        assert block.status_next.get() == before_status
+        for field in ("purpose", "approval", "shop_ifc_rev", "field_ifc_rev", "eddi_status"):
+            box = block.nexts[field]
+            assert isinstance(box, ttk.Combobox)
+            assert str(box.cget("state")) == "readonly"
+            before = box.get()
+            with contextlib.suppress(tk.TclError):
+                box.insert("end", "typed")
+            assert box.get() == before
+            assert str(board._batch_fields[field].cget("state")) == "readonly"
+        outgoing = block.nexts["outgoing_rev"]
+        incoming = block.nexts["incoming_rev"]
+        assert str(outgoing.cget("state")) == "readonly"
+        assert str(incoming.cget("state")) == "readonly"
+        board.enter_next_editor(outgoing)
+        board.enter_next_editor(incoming)
+        assert str(outgoing.cget("state")) == "normal"
+        assert str(incoming.cget("state")) == "normal"
+        outgoing.insert("end", "X")
+        assert outgoing.get().endswith("X")
+        incoming.insert("end", "Y")
+        assert incoming.get().endswith("Y")
+        board.leave_next_editor(outgoing)
+        board.leave_next_editor(incoming)
+        assert str(outgoing.cget("state")) == "readonly"
+        assert str(incoming.cget("state")) == "readonly"
+        assert str(board._batch_fields["outgoing_rev"].cget("state")) == "normal"
+        assert str(board._batch_fields["incoming_rev"].cget("state")) == "normal"
+        assert isinstance(block.title_next, NextEntry)
+        assert isinstance(block.nexts["client_document_number"], NextEntry)
+        assert isinstance(block.nexts["return_request_date"], NextEntry)
+    finally:
+        root.destroy()
+
+
+def test_apply_to_pack_pick_only_rejects_off_list() -> None:
+    root = _board_root()
+    try:
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.set_rows([_row()], checked={"P2024-1"})
+        count = board.apply_next_to_pack(fields={"purpose": "not-a-purpose", "outgoing_rev": "0"})
+        assert count == 1
+        assert board._blocks["P2024-1"].nexts["purpose"].get() == "Info"
+        assert board._blocks["P2024-1"].nexts["outgoing_rev"].get() == "0"
+        assert board.apply_next_to_pack(fields={"purpose": "Approval"}) == 1
+        assert board._blocks["P2024-1"].nexts["purpose"].get() == "Approval"
+    finally:
+        root.destroy()
+
+
+def test_cover_na_reverts_packed_dates_to_now() -> None:
+    root = _board_root()
+    try:
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.set_rows(
+            [
+                _row(
+                    key="P2024-1",
+                    submission_date="2026-08-01",
+                    return_request_date="2026-08-10",
+                ),
+                _row(
+                    key="P2024-2",
+                    drawing_id="2026-Tanzim-1-2",
+                    submission_date="2026-08-02",
+                    return_request_date="2026-08-11",
+                ),
+            ],
+            checked={"P2024-1"},
+        )
+        assert board.stamp_packed_submission_date("2026-09-11") == 1
+        assert board.stamp_packed_return_request("2026-09-22") == 1
+        assert board.apply_cover_date_change("return_request_date", "N/A") == 1
+        assert board._blocks["P2024-1"].nexts["return_request_date"].get() == "2026-08-10"
+        assert board._blocks["P2024-1"].nexts["submission_date"].get() == "2026-09-11"
+        assert board._blocks["P2024-2"].nexts["return_request_date"].get() == "2026-08-11"
+        assert board.apply_cover_date_change("submission_date", "") == 1
+        assert board._blocks["P2024-1"].nexts["submission_date"].get() == "2026-08-01"
+        assert board._blocks["P2024-2"].nexts["submission_date"].get() == "2026-08-02"
+    finally:
+        root.destroy()
+
+
+def test_cancel_next_restores_every_listed_row() -> None:
+    root = _board_root()
+    try:
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.set_rows(
+            [
+                _row(key="P2024-1", title="First", outgoing_rev="A"),
+                _row(key="P2024-2", drawing_id="2026-Tanzim-1-2", title="Second", outgoing_rev="B"),
+            ],
+            checked={"P2024-1"},
+        )
+        packed = board._blocks["P2024-1"]
+        loose = board._blocks["P2024-2"]
+        packed.status_next.set("IFI")
+        packed.nexts["outgoing_rev"].set("C")
+        packed.nexts["submission_date"].set("2026-09-11")
+        loose.title_next.set("Changed")
+        loose.nexts["client_document_number"].set("CNRL-T-101")
+        root.update_idletasks()
+        assert board.pending_rows()
+        count = board.revert_next()
+        assert count == 2
+        assert packed.status_next.get() == "To Do"
+        assert packed.nexts["outgoing_rev"].get() == "A"
+        assert packed.nexts["submission_date"].get() == ""
+        assert loose.title_next.get() == "Second"
+        assert loose.nexts["client_document_number"].get() == ""
+        assert board.selected_keys() == ("P2024-1",)
+        assert board.pending_rows() == []
+    finally:
+        root.destroy()
+
+
+def test_cancel_next_button_restores_without_jira(monkeypatch) -> None:
+    root = _board_root()
+    try:
+        from doccon import jira_client
+
+        writes: list[str] = []
+
+        def _bang(*_args, **_kwargs):
+            writes.append("jira")
+            raise AssertionError("Cancel Next must not write Jira")
+
+        monkeypatch.setattr(jira_client, "apply_drawing_update", _bang)
+        monkeypatch.setattr(jira_client, "update_drawing_fields", _bang)
+        monkeypatch.setattr("doccon.drawing_board.messagebox.askyesno", lambda *_a, **_k: True)
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.set_rows(
+            [
+                _row(key="P2024-1", title="First"),
+                _row(key="P2024-2", drawing_id="2026-Tanzim-1-2", title="Second"),
+            ],
+            checked={"P2024-1"},
+        )
+        board._blocks["P2024-1"].status_next.set("IFI")
+        board._blocks["P2024-2"].title_next.set("Changed")
+        root.update_idletasks()
+        board._cancel_next()
+        assert board._blocks["P2024-1"].status_next.get() == "To Do"
+        assert board._blocks["P2024-2"].title_next.get() == "Second"
+        assert board.selected_keys() == ("P2024-1",)
+        assert board.pending_rows() == []
+        assert writes == []
+    finally:
+        root.destroy()
+
+
+def test_single_click_entry_does_not_take_edit_focus() -> None:
+    root = _board_root()
+    try:
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.set_rows([_row(title="SPIRAL STAIRWAY")])
+        box = board._blocks["P2024-1"].title_next
+        date_box = board._blocks["P2024-1"].nexts["submission_date"]
+        board._canvas.focus_set()
+        root.update()
+        assert str(box.cget("state")) == "readonly"
+        box.event_generate("<Button-1>", x=4, y=4)
+        root.update()
+        assert root.focus_get() is not box
+        assert str(box.cget("state")) == "readonly"
+        assert board._active_next is not box
+        date_box.event_generate("<Button-1>", x=4, y=4)
+        root.update()
+        assert root.focus_get() is not date_box
+        assert str(date_box.cget("state")) == "readonly"
+    finally:
+        root.destroy()
+
+
+def test_double_click_entry_takes_edit_focus() -> None:
+    root = _board_root()
+    try:
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.set_rows([_row(title="SPIRAL STAIRWAY")])
+        box = board._blocks["P2024-1"].title_next
+        assert box.bind("<Double-1>")
+        before = {id(win) for win in _tk_toplevels(root)}
+        board._on_next_double1(SimpleNamespace(widget=box))
+        root.update()
+        after = {id(win) for win in _tk_toplevels(root)}
+        assert after == before
+        assert str(box.cget("state")) == "normal"
+        assert board._active_next is box
+        box.insert("end", " X")
+        assert box.get().endswith(" X")
+        board.leave_next_editor(box)
+        root.update()
+        assert root.focus_get() is not box
+        assert str(box.cget("state")) == "readonly"
+        assert board._active_next is None
+    finally:
+        root.destroy()
+
+
+def test_next_edits_round_trip_and_skips_stale() -> None:
+    root = _board_root()
+    try:
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.set_rows([_row(key="P2024-1", outgoing_rev="A"), _row(key="P2024-2", outgoing_rev="A")])
+        board._blocks["P2024-1"].nexts["outgoing_rev"].set("C")
+        board._blocks["P2024-1"].status_next.set("IFI")
+        edits = board.next_edits()
+        assert edits["P2024-1"]["outgoing_rev"] == "C"
+        assert edits["P2024-1"]["status"] == "IFI"
+        assert "P2024-2" not in edits
+        board.set_rows([_row(key="P2024-1", outgoing_rev="A")])
+        applied = board.apply_next_edits({**edits, "P2024-gone": {"outgoing_rev": "Z"}})
+        assert applied == 1
+        assert board._blocks["P2024-1"].nexts["outgoing_rev"].get() == "C"
+        assert board._blocks["P2024-1"].status_next.get() == "IFI"
     finally:
         root.destroy()

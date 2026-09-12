@@ -9,20 +9,32 @@ from openpyxl import load_workbook
 
 from doccon.client_log import (
     CLIENT_OUT,
+    BookCover,
     LogError,
     LogLine,
     client_status_from_jira,
+    cover_date_stamp,
+    cover_return_request_stamp,
+    cover_submission_date_stamp,
     empty_client_workbook,
+    empty_field_workbook,
+    empty_shop_workbook,
     file_client_transmittal,
     fill_client_transmittal,
     find_client_book,
+    inspect_book,
     inspect_client_book,
+    line_status,
     lines_from_rows,
     pages_needed,
     parse_expected_return,
     parse_issued_date,
+    pick_cover_fields,
     prepare_client_book,
+    read_book_cover,
 )
+from doccon.kinds import FIELD, SHOP
+from doccon.log_layout import FIELD_LAYOUT, SHOP_LAYOUT
 from doccon.match import MatchedRow, PdfHit
 from doccon.pep import DOC_CONTROL_FROM, PepCover
 from doccon.register import DrawingRow
@@ -48,6 +60,10 @@ def test_status_maps_jira_purpose() -> None:
     assert client_status_from_jira("Approval") == "APPROVAL"
     assert client_status_from_jira("Info") == "INFORMATION"
     assert client_status_from_jira("") == "APPROVAL"
+    assert line_status("Info", SHOP) == "INFORMATION"
+    assert line_status("Approval", SHOP) == "CONSTRUCTION"
+    assert line_status("NA", SHOP) == "PURCHASING ONLY"
+    assert line_status("NA", FIELD) == "INFORMATION"
 
 
 def test_pages_needed() -> None:
@@ -55,6 +71,9 @@ def test_pages_needed() -> None:
     assert pages_needed(18) == 1
     assert pages_needed(19) == 2
     assert pages_needed(80) == 3
+    assert pages_needed(20, SHOP_LAYOUT) == 1
+    assert pages_needed(25, SHOP_LAYOUT) == 2
+    assert pages_needed(23, FIELD_LAYOUT) == 1
 
 
 def test_lines_prefer_pdf_rev() -> None:
@@ -63,6 +82,13 @@ def test_lines_prefer_pdf_rev() -> None:
     lines = lines_from_rows([MatchedRow(drawing=drawing, pdf=hit, confidence="High")])
     assert lines[0].rev == "0"
     assert lines[0].status == "APPROVAL"
+
+
+def test_lines_blank_description_when_title_empty() -> None:
+    drawing = _drawing(summary="2026-075-ITP-1-1", drawing_id="2026-075-ITP-1-1", title="")
+    lines = lines_from_rows([MatchedRow(drawing=drawing, pdf=None, confidence="Missing")])
+    assert lines[0].document_no == "2026-075-ITP-1-1"
+    assert lines[0].description == ""
 
 
 def test_find_prefers_named_book(tmp_path: Path) -> None:
@@ -223,6 +249,151 @@ def test_file_writes_pep_cover_and_return_date(tmp_path: Path) -> None:
 def test_parse_dates() -> None:
     assert parse_issued_date("2026-09-01") == date(2026, 9, 1)
     assert parse_issued_date("") == date.today()
+    assert parse_issued_date("N/A") == date.today()
+    assert parse_issued_date("n/a") == date.today()
     assert parse_expected_return("") == "N/A"
     assert parse_expected_return("As soon as able") == "As soon as able"
     assert parse_expected_return("2026-09-15") == date(2026, 9, 15)
+    assert cover_return_request_stamp("") == ""
+    assert cover_return_request_stamp("N/A") == ""
+    assert cover_return_request_stamp("As soon as able") == ""
+    assert cover_return_request_stamp("2026-09-15") == "2026-09-15"
+    assert cover_return_request_stamp("09/15/2026") == "2026-09-15"
+    assert cover_date_stamp("") == ""
+    assert cover_date_stamp("N/A") == ""
+    assert cover_submission_date_stamp("") == ""
+    assert cover_submission_date_stamp("2026-09-11") == "2026-09-11"
+    assert cover_submission_date_stamp("09/11/2026") == "2026-09-11"
+
+
+def test_file_shop_uses_st_cells(tmp_path: Path) -> None:
+    path = tmp_path / "ST-2026-Tanzim.xlsx"
+    empty_shop_workbook().save(path)
+    pep = tmp_path / "pep.xlsx"
+    cover = PepCover(
+        path=pep,
+        from_address=DOC_CONTROL_FROM,
+        to_line="client@example.com",
+        cc_line="pm@eliteintegrityservices.com",
+        project_description="Client | Loc: Site",
+        client="Shop Co",
+        site="Yard",
+        tank_tag="",
+        po="",
+        wo="",
+    )
+    result = file_client_transmittal(
+        path,
+        "2026-Tanzim",
+        [LogLine("EIS-1", "4", "SMAW", "CONSTRUCTION")],
+        issued=date(2026, 9, 10),
+        cover=cover,
+        kind=SHOP,
+    )
+    assert result.cover_id == "ST-2026-Tanzim-1"
+    wb = load_workbook(path)
+    filed = wb["1"]
+    assert filed["I4"].value == "2026-Tanzim"
+    assert filed["C2"].value == 1
+    assert filed["A6"].value == DOC_CONTROL_FROM
+    assert filed["C6"].value is None
+    assert filed["J4"].value == "Shop Co"
+    assert filed["J6"].value == "Yard"
+    assert filed["A9"].value == "EIS-1"
+    assert filed["G9"].value == 4
+    assert filed["I9"].value == "SMAW"
+    assert filed["J9"].value == "CONSTRUCTION"
+    working = wb["TRANSMITTAL"]
+    assert working["C2"].value == 2
+    assert working["A9"].value is None
+    wb.close()
+    inspect = inspect_book(path, "2026-Tanzim", SHOP)
+    assert inspect.next_number == 2
+    assert inspect.cover_id == "ST-2026-Tanzim-2"
+
+
+def test_file_field_uses_ft_cells(tmp_path: Path) -> None:
+    path = tmp_path / "FT-2026-Tanzim.xlsx"
+    empty_field_workbook().save(path)
+    result = file_client_transmittal(
+        path,
+        "2026-Tanzim",
+        [LogLine("2026-Tanzim-1-1", "0", "Drawing-1", "INFORMATION")],
+        issued=date(2026, 9, 10),
+        kind=FIELD,
+    )
+    assert result.cover_id == "FT-2026-Tanzim-1"
+    wb = load_workbook(path)
+    filed = wb["1"]
+    assert filed["I6"].value == "2026-Tanzim"
+    assert filed["I4"].value is None
+    assert filed["A8"].value == DOC_CONTROL_FROM
+    assert filed["A10"].value == "2026-Tanzim-1-1"
+    assert filed["I10"].value == "Drawing-1"
+    assert filed["J10"].value == "INFORMATION"
+    working = wb["TRANSMITTAL"]
+    assert working["C2"].value == 2
+    wb.close()
+
+
+def test_read_book_cover_uses_existing_letter(tmp_path: Path) -> None:
+    path = tmp_path / "CT-2026-Tanzim.xlsx"
+    wb = empty_client_workbook()
+    ws = wb["TRANSMITTAL"]
+    ws["C6"] = "Zach.Hilsendager@cnrl.com"
+    ws["C8"] = "tanzim.nasir@eliteintegrityservices.com; sarah.chan@eliteintegrityservices.com"
+    ws["A10"] = "Canadian Natural Resources Ltd. | Loc: Alberta | Ref. Tag: To be confirmed"
+    wb.save(path)
+    wb.close()
+    cover = read_book_cover(path)
+    assert cover.to_line == "Zach.Hilsendager@cnrl.com"
+    assert "sarah.chan@eliteintegrityservices.com" in cover.cc_line
+    assert cover.project_description.startswith("Canadian Natural Resources Ltd.")
+
+
+def test_pick_cover_prefers_letter_over_pep() -> None:
+    pep = PepCover(
+        path=Path("pep.xlsx"),
+        from_address=DOC_CONTROL_FROM,
+        to_line="pep@example.com",
+        cc_line="cc@example.com",
+        project_description="IPL | Loc: Site | Ref. Tag: TK9 | PO#: 1 | WO#/MOC#: N/A",
+        client="IPL",
+        site="Site",
+        tank_tag="TK9",
+        po="1",
+        wo="",
+    )
+    book = BookCover(
+        to_line="Zach.Hilsendager@cnrl.com",
+        cc_line="sarah.chan@eliteintegrityservices.com",
+        project_description="CNRL letter line",
+    )
+    chosen = pick_cover_fields(
+        book=book,
+        pack_to="tanzim.nasir@eliteintegrityservices.com",
+        pack_cc="",
+        pack_project="saved json",
+        pep=pep,
+    )
+    assert chosen.to_line == "Zach.Hilsendager@cnrl.com"
+    assert chosen.cc_line == "sarah.chan@eliteintegrityservices.com"
+    assert chosen.project_description == "CNRL letter line"
+
+
+def test_pick_cover_falls_back_to_pep_when_letter_blank() -> None:
+    pep = PepCover(
+        path=Path("pep.xlsx"),
+        from_address=DOC_CONTROL_FROM,
+        to_line="pep@example.com",
+        cc_line="",
+        project_description="From PEP",
+        client="IPL",
+        site="",
+        tank_tag="",
+        po="",
+        wo="",
+    )
+    chosen = pick_cover_fields(book=BookCover(), pep=pep)
+    assert chosen.to_line == "pep@example.com"
+    assert chosen.project_description == "From PEP"

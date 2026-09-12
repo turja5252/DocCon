@@ -12,6 +12,7 @@ Desktop transmittal workstation in the same family as Elite Databook Engine. Jir
 - Planning and discussion until the user explicitly asks to code or to change files.
 - Do not replace Jira. Do not scrape the Jira UI. Do not auto-send mail.
 - Do not put API tokens, passwords, or `.env` secrets in this folder or anywhere on Dropbox. Operators enter/replace the Jira token in DocCon Settings; it is stored in Windows Credential Manager.
+- Do not change files in live Dropbox job folders. The only job folder that may be written is `2026-Tanzim`. Never File, Confirm, rename, or edit `2026-075` or any other live job.
 - Reuse Elite drawing-number patterns already used by Databook (e.g. `2025-033-1-2B`, `2026-075-1-1`). Do not invent a new scheme.
 - After a send (future): Outlook from the real mailbox, Jira comment/transition, dated copy in the job folder.
 
