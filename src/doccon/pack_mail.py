@@ -17,6 +17,7 @@ from doccon.excel_pdf import _ps_lit
 from doccon.kinds import CLIENT, PREFIX
 from doccon.match import MatchedRow
 from doccon.pep import DOC_CONTROL_FROM, email_line
+from doccon.winproc import hidden_run, powershell_hidden_argv
 
 
 def normalize_recipients(text: str) -> str:
@@ -218,16 +219,15 @@ def display_outlook_draft(
             ),
             encoding="utf-8",
         )
-        completed = subprocess.run(
-            [
+        completed = hidden_run(
+            powershell_hidden_argv(
                 "powershell",
-                "-NoProfile",
                 "-STA",
                 "-ExecutionPolicy",
                 "Bypass",
                 "-File",
                 str(script_path),
-            ],
+            ),
             capture_output=True,
             text=True,
             timeout=60,

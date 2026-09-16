@@ -111,12 +111,12 @@ def test_apply_jira_updates_rolls_back_on_later_failure(monkeypatch) -> None:
     applied: list[str] = []
     reverted: list[str] = []
 
-    def fake_apply(_site, _email, _token, _current, nxt) -> None:
+    def fake_apply(_site, _email, _token, _current, nxt, _options=()) -> None:
         if nxt.key == "P2024-2":
             raise JiraError("second failed")
         applied.append(nxt.key)
 
-    def fake_revert(_site, _email, _token, _current, nxt) -> None:
+    def fake_revert(_site, _email, _token, _current, nxt, _options=()) -> None:
         reverted.append(nxt.key)
 
     monkeypatch.setattr(jira_client, "apply_drawing_update", fake_apply)
@@ -243,6 +243,110 @@ def test_fetch_drawings_drops_generic(monkeypatch) -> None:
     assert [row.key for row in rows] == ["P2024-1"]
 
 
+def _capture_puts(monkeypatch) -> list[dict]:
+    """Every PUT body apply_drawing_update sends, so a second summary write would show."""
+    from doccon import jira_client
+
+    sent: list[dict] = []
+
+    def fake_request(_site, _email, _token, method, _path, body=None):
+        if method == "PUT":
+            sent.append(dict(body or {}))
+        return {}
+
+    monkeypatch.setattr(jira_client, "_request", fake_request)
+    return sent
+
+
+def _summaries(puts: list[dict]) -> list[str]:
+    return [
+        body["fields"]["summary"]
+        for body in puts
+        if isinstance(body.get("fields"), dict) and "summary" in body["fields"]
+    ]
+
+
+def _apply(current, nxt) -> None:
+    from doccon import jira_client
+
+    jira_client.apply_drawing_update(
+        "https://example.atlassian.net", "a@b.c", "token", current, nxt
+    )
+
+
+def test_summary_write_keeps_description_when_only_the_id_changed(monkeypatch) -> None:
+    from dataclasses import replace
+
+    puts = _capture_puts(monkeypatch)
+    current = _drawing(summary="2026-Tanzim-1-1 Drawing-1", drawing_id="2026-Tanzim-1-1", title="Drawing-1")
+    nxt = replace(current, drawing_id="2026-Tanzim-1-2")
+    _apply(current, nxt)
+    assert _summaries(puts) == ["2026-Tanzim-1-2 Drawing-1"]
+
+
+def test_summary_write_keeps_id_when_only_the_description_changed(monkeypatch) -> None:
+    from dataclasses import replace
+
+    puts = _capture_puts(monkeypatch)
+    current = _drawing(summary="2026-Tanzim-1-1 Drawing-1", drawing_id="2026-Tanzim-1-1", title="Drawing-1")
+    nxt = replace(current, title="Roof stair detail")
+    _apply(current, nxt)
+    assert _summaries(puts) == ["2026-Tanzim-1-1 Roof stair detail"]
+
+
+def test_both_halves_dirty_send_one_summary_field(monkeypatch) -> None:
+    from dataclasses import replace
+
+    puts = _capture_puts(monkeypatch)
+    current = _drawing(summary="2026-Tanzim-1-1 Drawing-1", drawing_id="2026-Tanzim-1-1", title="Drawing-1")
+    nxt = replace(current, drawing_id="2026-Tanzim-1-STWD", title="SPIRAL STAIRWAY")
+    _apply(current, nxt)
+    assert _summaries(puts) == ["2026-Tanzim-1-STWD SPIRAL STAIRWAY"]
+    assert sum(1 for body in puts if "summary" in (body.get("fields") or {})) == 1
+
+
+def test_summary_write_has_no_trailing_space_without_a_description(monkeypatch) -> None:
+    from dataclasses import replace
+
+    puts = _capture_puts(monkeypatch)
+    current = _drawing(summary="2026-Tanzim-ITP-1-1", drawing_id="2026-Tanzim-ITP-1-1", title="")
+    nxt = replace(current, drawing_id="2026-Tanzim-ITP-1-2")
+    _apply(current, nxt)
+    assert _summaries(puts) == ["2026-Tanzim-ITP-1-2"]
+
+
+def test_preflight_rejects_blank_or_spaced_jira_id(monkeypatch) -> None:
+    from dataclasses import replace
+
+    from doccon import jira_client
+
+    writes: list[str] = []
+    monkeypatch.setattr(
+        jira_client,
+        "apply_drawing_update",
+        lambda *_args, **_kwargs: writes.append("wrote"),
+    )
+    current = _drawing(key="P2024-77")
+    for bad in ("", "   ", "2026-Tanzim-1-1 Drawing-1"):
+        nxt = replace(current, drawing_id=bad)
+        with pytest.raises(JiraError) as caught:
+            jira_client.run_jira_register_update(
+                "https://example.atlassian.net", "a@b.c", "token", [(current, nxt)]
+            )
+        assert "P2024-77" in str(caught.value)
+    assert writes == []
+
+
+def test_preflight_leaves_an_untouched_multiword_id_alone() -> None:
+    from dataclasses import replace
+
+    from doccon.jira_client import preflight_drawing_update
+
+    current = _drawing(key="P2024-CWB", summary="CWB Certificate", drawing_id="CWB Certificate", title="")
+    nxt = replace(current, title="CWB Certification")
+    preflight_drawing_update("https://example.atlassian.net", "a@b.c", "token", current, nxt)
+
+
 def test_field_update_does_not_silence_watchers(monkeypatch) -> None:
     from doccon import jira_client
 
@@ -314,3 +418,173 @@ def test_fetch_rev_option_lists_stubs_editmeta(monkeypatch) -> None:
     assert jira_client.fetch_rev_option_lists(
         "https://example.atlassian.net", "a@b.c", "token", ""
     ) == {}
+
+
+EDDI_GROUP_5 = "5 - QC - WO, ITP, NDE Records, Procedures - EDDI"
+
+
+def _eddi_editmeta(*options) -> dict:
+    return {
+        "fields": {
+            "customfield_10289": {
+                "schema": {"type": "array", "items": "option"},
+                "allowedValues": list(options),
+            }
+        }
+    }
+
+
+def test_eddi_write_uses_option_id_from_that_issue(monkeypatch) -> None:
+    """Group 5 has commas inside the label. It must go as one option id, not four values."""
+    from doccon import jira_client
+
+    sent: list[dict] = []
+
+    def fake_request(_site, _email, _token, method, path, body=None):
+        if path.endswith("/editmeta"):
+            return _eddi_editmeta({"value": EDDI_GROUP_5, "id": "10420"})
+        sent.append(body or {})
+        return {}
+
+    monkeypatch.setattr(jira_client, "_request", fake_request)
+    options = jira_client.fetch_eddi_options(
+        "https://example.atlassian.net", "a@b.c", "token", "P2024-1"
+    )
+    jira_client.update_drawing_fields(
+        "https://example.atlassian.net",
+        "a@b.c",
+        "token",
+        _drawing(eddi_status=EDDI_GROUP_5),
+        options,
+    )
+    assert sent[0]["fields"]["customfield_10289"] == [{"id": "10420"}]
+
+
+def test_eddi_label_resolves_across_case_dash_and_whitespace() -> None:
+    from doccon.jira_client import parse_eddi_options
+    from doccon.register import eddi_field
+
+    options = parse_eddi_options(_eddi_editmeta({"value": EDDI_GROUP_5, "id": "10420"}))
+    typed = "5 – qc -  wo, itp, nde records, procedures – eddi  "
+    assert eddi_field(typed, options) == [{"id": "10420"}]
+
+
+def test_eddi_write_falls_back_to_label_without_an_id() -> None:
+    from doccon.jira_client import parse_eddi_options
+    from doccon.register import eddi_field
+
+    options = parse_eddi_options(_eddi_editmeta({"value": EDDI_GROUP_5}))
+    assert eddi_field("5 - qc - wo, itp, nde records, procedures - eddi", options) == [
+        {"value": EDDI_GROUP_5}
+    ]
+
+
+def test_preflight_aborts_when_eddi_option_is_not_on_that_issue() -> None:
+    from dataclasses import replace
+
+    from doccon.jira_client import parse_eddi_options, preflight_jira_updates
+
+    options = parse_eddi_options(
+        _eddi_editmeta({"value": "1 - Fabrication Drawings - EDDI", "id": "10401"})
+    )
+    current = _drawing(eddi_status="1 - Fabrication Drawings - EDDI")
+    nxt = replace(current, eddi_status=EDDI_GROUP_5)
+    with pytest.raises(JiraError) as caught:
+        preflight_jira_updates(
+            "https://example.atlassian.net",
+            "a@b.c",
+            "token",
+            [(current, nxt)],
+            {"P2024-1": options},
+        )
+    message = str(caught.value)
+    assert "P2024-1" in message
+    assert EDDI_GROUP_5 in message
+    assert "1 - Fabrication Drawings - EDDI" in message
+
+
+def test_confirm_preflight_failure_writes_nothing(monkeypatch) -> None:
+    from dataclasses import replace
+
+    from doccon import jira_client
+    from doccon.jira_client import parse_eddi_options
+
+    writes: list[str] = []
+    monkeypatch.setattr(
+        jira_client,
+        "apply_drawing_update",
+        lambda *_args, **_kwargs: writes.append("wrote"),
+    )
+    options = parse_eddi_options(
+        _eddi_editmeta({"value": "1 - Fabrication Drawings - EDDI", "id": "10401"})
+    )
+    current = _drawing()
+    nxt = replace(current, eddi_status=EDDI_GROUP_5)
+    with pytest.raises(JiraError, match="is not an option on that issue"):
+        jira_client.run_jira_register_update(
+            "https://example.atlassian.net",
+            "a@b.c",
+            "token",
+            [(current, nxt)],
+            {"P2024-1": options},
+        )
+    assert writes == []
+
+
+def test_eddi_contexts_fetch_one_editmeta_per_issue_type(monkeypatch) -> None:
+    from doccon import jira_client
+
+    asked: list[str] = []
+
+    def fake_request(_site, _email, _token, _method, path, body=None):
+        asked.append(path)
+        if "P2024-9" in path:
+            return _eddi_editmeta({"value": "8 - Document Control - EDDI", "id": "10408"})
+        return _eddi_editmeta({"value": EDDI_GROUP_5, "id": "10420"})
+
+    monkeypatch.setattr(jira_client, "_request", fake_request)
+    rows = [
+        _drawing(key="P2024-1", issue_type="Sub-task"),
+        _drawing(key="P2024-2", issue_type="Sub-task"),
+        _drawing(key="P2024-9", issue_type="Task"),
+    ]
+    contexts = jira_client.fetch_eddi_contexts(
+        "https://example.atlassian.net", "a@b.c", "token", rows
+    )
+    assert len(asked) == 2
+    assert contexts["P2024-1"] == contexts["P2024-2"]
+    assert [option.label for option in contexts["P2024-9"]] == ["8 - Document Control - EDDI"]
+    assert contexts["P2024-1"] != contexts["P2024-9"]
+
+
+def test_update_eddi_status_writes_by_id_and_refuses_a_foreign_option(monkeypatch) -> None:
+    from doccon import jira_client
+    from doccon.jira_client import parse_eddi_options
+
+    sent: list[dict] = []
+    monkeypatch.setattr(
+        jira_client, "_request", lambda *args, **kwargs: sent.append(args[-1] or {}) or {}
+    )
+    options = parse_eddi_options(
+        _eddi_editmeta({"value": "1 - Fabrication Drawings - EDDI", "id": "10401"})
+    )
+    jira_client.update_eddi_status(
+        "https://example.atlassian.net",
+        "a@b.c",
+        "token",
+        "P2024-1",
+        "1 - Fabrication Drawings - EDDI",
+        options,
+    )
+    assert sent[0]["fields"]["customfield_10289"] == [{"id": "10401"}]
+    with pytest.raises(JiraError, match="is not an option on that issue"):
+        jira_client.update_eddi_status(
+            "https://example.atlassian.net",
+            "a@b.c",
+            "token",
+            "P2024-1",
+            EDDI_GROUP_5,
+            options,
+        )
+    assert len(sent) == 1
+

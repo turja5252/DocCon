@@ -15,6 +15,7 @@ from doccon.client_log import (
     file_client_transmittal,
     inspect_book,
 )
+from doccon.drop_pdfs import delete_pack_dropped_copies
 from doccon.eddi import eddi_print_drawings, snapshot_eddi
 from doccon.excel_pdf import export_sheet_pdf
 from doccon.jira_client import (
@@ -35,7 +36,7 @@ from doccon.pack_mail import (
     write_drawings_zip,
 )
 from doccon.pep import PepCover
-from doccon.register import DrawingRow
+from doccon.register import DrawingRow, FieldOption
 
 
 class ConfirmDeliveryError(LogError):
@@ -85,10 +86,11 @@ def run_confirm_client_pack(
     kind: str = CLIENT,
     job_folder: Path | None = None,
     eddi_drawings: list[DrawingRow] | None = None,
+    eddi_contexts: dict[str, tuple[FieldOption, ...]] | None = None,
 ) -> ConfirmResult:
     """Check that every write can succeed, then Jira, then file. Abort leaves no tab."""
     if pairs:
-        preflight_jira_updates(site, email, token, pairs)
+        preflight_jira_updates(site, email, token, pairs, eddi_contexts)
     preflight_client_file(book, job, rows, kind)
     jira_written = False
     filed = False
@@ -97,7 +99,7 @@ def run_confirm_client_pack(
     pdf_note = ""
     try:
         if pairs:
-            apply_jira_updates(site, email, token, pairs)
+            apply_jira_updates(site, email, token, pairs, eddi_contexts)
             jira_written = True
         result = file_client_transmittal(
             book,
@@ -163,6 +165,7 @@ def run_confirm_client_pack(
             attachments=files,
             require_to=kind == CLIENT,
         )
+        delete_pack_dropped_copies(rows)
         return ConfirmResult(
             cover_id=cover_id,
             attach_note=note,
@@ -182,19 +185,26 @@ def run_confirm_client_pack(
             ) from exc
         if jira_written:
             try:
-                _rollback_jira(site, email, token, pairs)
+                _rollback_jira(site, email, token, pairs, eddi_contexts)
             except JiraError as rev:
                 raise JiraError(f"{exc}\n{rev}") from exc
         raise
 
 
 def _rollback_jira(
-    site: str, email: str, token: str, pairs: list[tuple[DrawingRow, DrawingRow]]
+    site: str,
+    email: str,
+    token: str,
+    pairs: list[tuple[DrawingRow, DrawingRow]],
+    eddi_contexts: dict[str, tuple[FieldOption, ...]] | None = None,
 ) -> None:
     errors: list[str] = []
     for current, nxt in reversed(pairs):
+        key = (nxt.key or current.key or "").strip()
         try:
-            revert_drawing_update(site, email, token, current, nxt)
+            revert_drawing_update(
+                site, email, token, current, nxt, (eddi_contexts or {}).get(key, ())
+            )
         except JiraError as exc:
             errors.append(f"{nxt.key or current.key}: {exc}")
     if errors:

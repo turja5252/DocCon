@@ -20,6 +20,7 @@ from pathlib import Path
 
 from doccon.pep import DOC_CONTROL_FROM, email_line
 from doccon.settings import load_settings, merge_saved_emails, save_settings
+from doccon.winproc import hidden_run, powershell_hidden_argv
 
 ELITE_MAIL_DOMAIN = "eliteintegrityservices.com"
 OPEN_OUTLOOK = "Could not read Outlook addresses. Open Outlook on this PC, then try again."
@@ -120,16 +121,15 @@ def _read_outlook_directory() -> dict[str, object]:
         payload_path.write_text(json.dumps(payload), encoding="utf-8")
         script_path.write_text(_list_script(str(payload_path)), encoding="utf-8")
         try:
-            completed = subprocess.run(
-                [
+            completed = hidden_run(
+                powershell_hidden_argv(
                     "powershell",
-                    "-NoProfile",
                     "-STA",
                     "-ExecutionPolicy",
                     "Bypass",
                     "-File",
                     str(script_path),
-                ],
+                ),
                 capture_output=True,
                 text=True,
                 timeout=_LIST_TIMEOUT_S,

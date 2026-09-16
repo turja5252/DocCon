@@ -7,11 +7,35 @@ from doccon.register import (
     adopted_summary,
     drawing_fields_payload,
     drawing_from_issue,
+    drawing_id_error,
     drawings_jql,
-    job_project_from_issues,
     jira_project_label,
+    job_project_from_issues,
     parse_summary,
+    summary_from_parts,
 )
+
+
+def test_summary_from_parts_joins_id_and_description() -> None:
+    assert summary_from_parts("2026-075-1-STWD", "SPIRAL STAIRWAY") == "2026-075-1-STWD SPIRAL STAIRWAY"
+    assert summary_from_parts("2026-075-ITP-1-1", "") == "2026-075-ITP-1-1"
+    assert summary_from_parts("2026-075-ITP-1-1", "   ") == "2026-075-ITP-1-1"
+    assert not summary_from_parts("2026-075-ITP-1-1", "").endswith(" ")
+
+
+def test_drawing_id_error_only_rejects_blank_and_inner_space() -> None:
+    assert drawing_id_error("P2024-1", "2026-075-1-STWD") == ""
+    assert drawing_id_error("P2024-1", "2026-075-ITP-1-1") == ""
+    assert drawing_id_error("P2024-1", "2026-Tanzim-1-1") == ""
+    assert drawing_id_error("P2024-1", "  2026-Tanzim-1-1  ") == ""
+    assert drawing_id_error("P2024-1", "EIS-1") == ""
+    assert drawing_id_error("P2024-1", "whatever-shape_1.2") == ""
+    blank = drawing_id_error("P2024-1", "   ")
+    assert "P2024-1" in blank and "blank" in blank
+    assert "P2024-1" in drawing_id_error("P2024-1", "")
+    spaced = drawing_id_error("P2024-9", "2026-075-1-1 Drawing")
+    assert "P2024-9" in spaced and "space" in spaced
+    assert drawing_id_error("P2024-9", "2026-075\t1")
 
 
 def test_parse_summary_live_shape() -> None:
@@ -269,6 +293,64 @@ def test_eddi_conflicts_from_multi_checkbox() -> None:
 
 def test_adopted_summary_keeps_title() -> None:
     assert adopted_summary("2026-096-1-1 Drawing-1", "2026-096-1-SK1") == "2026-096-1-SK1 Drawing-1"
+
+
+def test_eddi_field_never_splits_a_label_on_a_comma() -> None:
+    """1.54: group 5 sent four bogus options and Jira rejected 'Procedures - EDDI'."""
+    from doccon.register import eddi_field
+
+    label = "5 - QC - WO, ITP, NDE Records, Procedures - EDDI"
+    assert eddi_field(label) == [{"value": label}]
+    assert eddi_field("1 - Fabrication Drawings - EDDI; 4 - Engineering - EDDI") == [
+        {"value": "1 - Fabrication Drawings - EDDI"},
+        {"value": "4 - Engineering - EDDI"},
+    ]
+
+
+def test_eddi_helpers_use_that_issues_own_options() -> None:
+    from doccon.register import (
+        FieldOption,
+        drawing_from_issue,
+        eddi_conflicts,
+        eddi_fix_options,
+        eddi_option_labels,
+        unknown_eddi_options,
+    )
+
+    options = (
+        FieldOption(label="0 - Generic Task", option_id="10400"),
+        FieldOption(label="1 - Fabrication Drawings - EDDI", option_id="10401"),
+        FieldOption(label="8 - Document Control - EDDI", option_id="10408"),
+    )
+    assert eddi_fix_options(options) == (
+        "1 - Fabrication Drawings - EDDI",
+        "8 - Document Control - EDDI",
+    )
+    assert eddi_option_labels(options)[0] == ""
+    assert eddi_option_labels(()) == ()
+    assert unknown_eddi_options("4 - Engineering - EDDI", options) == ("4 - Engineering - EDDI",)
+    assert unknown_eddi_options("1 - fabrication drawings – eddi", options) == ()
+    assert unknown_eddi_options("4 - Engineering - EDDI", ()) == ()
+
+    row = drawing_from_issue(
+        {
+            "key": "P2024-15578",
+            "fields": {
+                "summary": "2026-Tanzim-1-1 Drawing-1",
+                "issuetype": {"name": "Sub-task"},
+                "customfield_10289": [
+                    {"value": "1 - Fabrication Drawings - EDDI"},
+                    {"value": "8 - Document Control - EDDI"},
+                ],
+            },
+        }
+    )
+    assert row.issue_type == "Sub-task"
+    conflicts = eddi_conflicts([row], {"P2024-15578": options})
+    assert conflicts[0].allowed == (
+        "1 - Fabrication Drawings - EDDI",
+        "8 - Document Control - EDDI",
+    )
 
 
 def test_due_date_follows_new_return_request_only() -> None:

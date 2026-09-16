@@ -28,18 +28,23 @@ from doccon.register import (
     SHOP_IFC_FIELD,
     SUBMISSION_DATE_FIELD,
     DrawingRow,
+    FieldOption,
     JobProject,
     children_of_jql,
     drawing_fields_payload,
     drawing_from_issue,
+    drawing_id_error,
     drawings_jql,
     eddi_field,
+    eddi_status_choices,
     iso_date,
     job_project_from_issues,
     job_project_jql,
+    normalize_option_key,
     option_value,
     sort_pack_rows,
     summary_from_parts,
+    unknown_eddi_options,
     visible_pack_rows,
 )
 
@@ -153,13 +158,115 @@ def parse_rev_option_lists(editmeta: object) -> dict[str, tuple[str, ...]]:
     return out
 
 
-def fetch_rev_option_lists(site: str, email: str, token: str, issue_key: str) -> dict[str, tuple[str, ...]]:
+def fetch_editmeta(site: str, email: str, token: str, issue_key: str) -> dict:
     """GET editmeta for one issue. Does not replace the Load fetch of Now values."""
     key = (issue_key or "").strip()
     if not key or "/" in key:
         return {}
-    payload = _request(site, email, token, "GET", f"/rest/api/3/issue/{key}/editmeta")
-    return parse_rev_option_lists(payload)
+    return _request(site, email, token, "GET", f"/rest/api/3/issue/{key}/editmeta")
+
+
+def fetch_rev_option_lists(site: str, email: str, token: str, issue_key: str) -> dict[str, tuple[str, ...]]:
+    """GET editmeta for one issue. Does not replace the Load fetch of Now values."""
+    return parse_rev_option_lists(fetch_editmeta(site, email, token, issue_key))
+
+
+def parse_field_options(field_meta: object) -> tuple[FieldOption, ...]:
+    """``allowedValues`` as label plus option id. Ids are safe across field contexts."""
+    if not isinstance(field_meta, dict):
+        return ()
+    allowed = field_meta.get("allowedValues")
+    if not isinstance(allowed, list):
+        return ()
+    out: list[FieldOption] = []
+    seen: set[str] = set()
+    for item in allowed:
+        label = option_value(item)
+        if not label:
+            continue
+        key = normalize_option_key(label)
+        if key in seen:
+            continue
+        seen.add(key)
+        option_id = str(item.get("id") or "").strip() if isinstance(item, dict) else ""
+        out.append(FieldOption(label=label, option_id=option_id))
+    return tuple(out)
+
+
+def parse_eddi_options(editmeta: object) -> tuple[FieldOption, ...]:
+    """EDDI Status options from one issue's editmeta. Empty when Jira sent none."""
+    if not isinstance(editmeta, dict):
+        return ()
+    fields = editmeta.get("fields")
+    if not isinstance(fields, dict):
+        return ()
+    return parse_field_options(fields.get(EDDI_FIELD))
+
+
+def fetch_eddi_options(site: str, email: str, token: str, issue_key: str) -> tuple[FieldOption, ...]:
+    return parse_eddi_options(fetch_editmeta(site, email, token, issue_key))
+
+
+def eddi_context_groups(rows: list[DrawingRow]) -> dict[str, str]:
+    """One representative issue key per issue type.
+
+    Jira option contexts are per project / issue type, so a Sub-task context does not
+    speak for a Task. One editmeta per type instead of one per row.
+    """
+    groups: dict[str, str] = {}
+    for row in rows:
+        key = (row.key or "").strip()
+        if not key:
+            continue
+        groups.setdefault(_context_key(row), key)
+    return groups
+
+
+def _context_key(row: DrawingRow) -> str:
+    return (row.issue_type or "").strip().casefold() or (row.key or "").strip()
+
+
+def fetch_eddi_contexts(
+    site: str, email: str, token: str, rows: list[DrawingRow]
+) -> dict[str, tuple[FieldOption, ...]]:
+    """That issue's own EDDI Status options, keyed by issue key. Missing context is omitted."""
+    groups = eddi_context_groups(rows)
+    by_type: dict[str, tuple[FieldOption, ...]] = {}
+
+    def run(context: str, issue_key: str) -> None:
+        try:
+            by_type[context] = fetch_eddi_options(site, email, token, issue_key)
+        except (JiraError, OSError, ValueError, TypeError):
+            by_type[context] = ()
+
+    threads = [
+        threading.Thread(target=run, args=(context, key), daemon=True)
+        for context, key in groups.items()
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    out: dict[str, tuple[FieldOption, ...]] = {}
+    for row in rows:
+        options = by_type.get(_context_key(row), ())
+        if options and row.key:
+            out[row.key] = options
+    return out
+
+
+def eddi_option_error(issue_key: str, label: str, options: tuple[FieldOption, ...]) -> str:
+    allowed = ", ".join(option.label for option in options) or "(none)"
+    return (
+        f"{issue_key}: EDDI Status \"{label}\" is not an option on that issue in Jira. "
+        f"That issue allows: {allowed}. Nothing was written."
+    )
+
+
+def _eddi_options_for(
+    issue_key: str, contexts: dict[str, tuple[FieldOption, ...]] | None
+) -> tuple[FieldOption, ...]:
+    return (contexts or {}).get((issue_key or "").strip(), ())
 
 
 def normalize_site(site: str) -> str:
@@ -413,13 +520,22 @@ def transition_drawing(site: str, email: str, token: str, issue_key: str, curren
     )
 
 
-def update_eddi_status(site: str, email: str, token: str, issue_key: str, status: str) -> None:
-    """Write one EDDI Status option. Does not file a transmittal or send mail."""
+def update_eddi_status(
+    site: str,
+    email: str,
+    token: str,
+    issue_key: str,
+    status: str,
+    options: tuple[FieldOption, ...] = (),
+) -> None:
+    """Write one EDDI Status option by id. Does not file a transmittal or send mail."""
     key = (issue_key or "").strip()
     chosen = (status or "").strip()
     if not key:
         raise JiraError("Issue key is required.")
-    payload = eddi_field(chosen)
+    for missing in unknown_eddi_options(chosen, options):
+        raise JiraError(eddi_option_error(key, missing, options))
+    payload = eddi_field(chosen, options)
     if not payload or len(payload) != 1:
         raise JiraError(f"{key}: pick one EDDI Status.")
     _request(
@@ -432,9 +548,15 @@ def update_eddi_status(site: str, email: str, token: str, issue_key: str, status
     )
 
 
-def update_drawing_fields(site: str, email: str, token: str, drawing: DrawingRow) -> None:
+def update_drawing_fields(
+    site: str,
+    email: str,
+    token: str,
+    drawing: DrawingRow,
+    eddi_options: tuple[FieldOption, ...] = (),
+) -> None:
     key = (drawing.key or "").strip()
-    fields = drawing_fields_payload(drawing)
+    fields = drawing_fields_payload(drawing, eddi_options)
     if not key:
         raise JiraError("Issue key is required.")
     if not fields:
@@ -459,17 +581,35 @@ DATE_ATTRS = (
 )
 
 
-def preflight_drawing_update(site: str, email: str, token: str, current: DrawingRow, nxt: DrawingRow) -> None:
+def preflight_drawing_update(
+    site: str,
+    email: str,
+    token: str,
+    current: DrawingRow,
+    nxt: DrawingRow,
+    eddi_options: tuple[FieldOption, ...] = (),
+) -> None:
     """Raise if this update cannot be applied. Does not write Jira."""
     key = (nxt.key or current.key or "").strip()
     if not key:
         raise JiraError("Issue key is required.")
+    if (nxt.drawing_id or "").strip() != (current.drawing_id or "").strip():
+        bad_id = drawing_id_error(key, nxt.drawing_id)
+        if bad_id:
+            raise JiraError(bad_id)
     for attr, label in DATE_ATTRS:
         raw = str(getattr(nxt, attr, "") or "").strip()
         if not raw or raw.casefold() in {"n/a", "na"}:
             continue
         if iso_date(raw) is None:
             raise JiraError(f"{key}: {label} must be YYYY-MM-DD (got {raw}).")
+    next_eddi = (nxt.eddi_status or "").strip()
+    if next_eddi and next_eddi != (current.eddi_status or "").strip():
+        choices = eddi_status_choices(next_eddi)
+        if len(choices) > 1:
+            raise JiraError(f"{key}: pick one EDDI Status (got {'; '.join(choices)}).")
+        for missing in unknown_eddi_options(next_eddi, eddi_options):
+            raise JiraError(eddi_option_error(key, missing, eddi_options))
     current_status = (current.status or "").strip()
     next_status = (nxt.status or "").strip()
     if next_status and next_status.casefold() != current_status.casefold():
@@ -483,13 +623,27 @@ def preflight_drawing_update(site: str, email: str, token: str, current: Drawing
 
 
 def preflight_jira_updates(
-    site: str, email: str, token: str, pairs: list[tuple[DrawingRow, DrawingRow]]
+    site: str,
+    email: str,
+    token: str,
+    pairs: list[tuple[DrawingRow, DrawingRow]],
+    eddi_contexts: dict[str, tuple[FieldOption, ...]] | None = None,
 ) -> None:
     for current, nxt in pairs:
-        preflight_drawing_update(site, email, token, current, nxt)
+        key = (nxt.key or current.key or "").strip()
+        preflight_drawing_update(
+            site, email, token, current, nxt, _eddi_options_for(key, eddi_contexts)
+        )
 
 
-def revert_drawing_update(site: str, email: str, token: str, current: DrawingRow, nxt: DrawingRow) -> None:
+def revert_drawing_update(
+    site: str,
+    email: str,
+    token: str,
+    current: DrawingRow,
+    nxt: DrawingRow,
+    eddi_options: tuple[FieldOption, ...] = (),
+) -> None:
     """Best-effort undo of apply_drawing_update (original values)."""
     key = (nxt.key or current.key or "").strip()
     if not key:
@@ -497,9 +651,9 @@ def revert_drawing_update(site: str, email: str, token: str, current: DrawingRow
     was_summary = (current.summary or "").strip()
     if was_summary and was_summary != (nxt.summary or "").strip():
         update_summary(site, email, token, key, was_summary)
-    fields = drawing_fields_payload(current)
+    fields = drawing_fields_payload(current, eddi_options)
     if fields:
-        update_drawing_fields(site, email, token, current)
+        update_drawing_fields(site, email, token, current, eddi_options)
     was_status = (current.status or "").strip()
     now_status = (nxt.status or "").strip()
     if was_status and now_status and was_status.casefold() != now_status.casefold():
@@ -507,19 +661,29 @@ def revert_drawing_update(site: str, email: str, token: str, current: DrawingRow
 
 
 def apply_jira_updates(
-    site: str, email: str, token: str, pairs: list[tuple[DrawingRow, DrawingRow]]
+    site: str,
+    email: str,
+    token: str,
+    pairs: list[tuple[DrawingRow, DrawingRow]],
+    eddi_contexts: dict[str, tuple[FieldOption, ...]] | None = None,
 ) -> None:
     """Write every drawing. If one fails, roll back those already written."""
     done: list[tuple[DrawingRow, DrawingRow]] = []
     try:
         for current, nxt in pairs:
-            apply_drawing_update(site, email, token, current, nxt)
+            key = (nxt.key or current.key or "").strip()
+            apply_drawing_update(
+                site, email, token, current, nxt, _eddi_options_for(key, eddi_contexts)
+            )
             done.append((current, nxt))
     except Exception:
         revert_errors: list[str] = []
         for current, nxt in reversed(done):
+            key = (nxt.key or current.key or "").strip()
             try:
-                revert_drawing_update(site, email, token, current, nxt)
+                revert_drawing_update(
+                    site, email, token, current, nxt, _eddi_options_for(key, eddi_contexts)
+                )
             except JiraError as exc:
                 revert_errors.append(f"{nxt.key or current.key}: {exc}")
         if revert_errors:
@@ -531,28 +695,40 @@ def apply_jira_updates(
 
 
 def run_jira_register_update(
-    site: str, email: str, token: str, pairs: list[tuple[DrawingRow, DrawingRow]]
+    site: str,
+    email: str,
+    token: str,
+    pairs: list[tuple[DrawingRow, DrawingRow]],
+    eddi_contexts: dict[str, tuple[FieldOption, ...]] | None = None,
 ) -> int:
     """Preflight, then write Next values. No Excel, no Outlook. Abort writes nothing."""
     if not pairs:
         raise JiraError("No Next changes to write.")
-    preflight_jira_updates(site, email, token, pairs)
-    apply_jira_updates(site, email, token, pairs)
+    preflight_jira_updates(site, email, token, pairs, eddi_contexts)
+    apply_jira_updates(site, email, token, pairs, eddi_contexts)
     return len(pairs)
 
 
-def apply_drawing_update(site: str, email: str, token: str, current: DrawingRow, nxt: DrawingRow) -> None:
+def apply_drawing_update(
+    site: str,
+    email: str,
+    token: str,
+    current: DrawingRow,
+    nxt: DrawingRow,
+    eddi_options: tuple[FieldOption, ...] = (),
+) -> None:
     key = (nxt.key or current.key or "").strip()
     if not key:
         raise JiraError("Issue key is required.")
     wrote = False
+    # JIRA ID and Description are both halves of `summary`: one composed write, never two.
     next_summary = summary_from_parts(nxt.drawing_id or current.drawing_id, nxt.title)
     if next_summary and next_summary != (current.summary or "").strip():
         update_summary(site, email, token, key, next_summary)
         wrote = True
-    fields = drawing_fields_payload(nxt)
+    fields = drawing_fields_payload(nxt, eddi_options)
     if fields:
-        update_drawing_fields(site, email, token, nxt)
+        update_drawing_fields(site, email, token, nxt, eddi_options)
         wrote = True
     current_status = (current.status or "").strip()
     next_status = (nxt.status or "").strip()

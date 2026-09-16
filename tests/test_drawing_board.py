@@ -5,6 +5,7 @@
 import contextlib
 import tkinter as tk
 from dataclasses import replace
+from pathlib import Path
 from tkinter import ttk
 from types import SimpleNamespace
 
@@ -17,6 +18,7 @@ from doccon.drawing_board import (
     DESC_COL_PX,
     DRAWING_COL_INDEX,
     FROZEN_COLS,
+    FROZEN_SYNC_MAX,
     HEADER_TITLES,
     HEADING_PAD_PX,
     JIRA_ID_COL_PX,
@@ -36,12 +38,14 @@ from doccon.drawing_board import (
     heading_floor_px,
     merge_col_px,
     next_outgoing_rev,
+    row_key_for_y,
     row_matches_filter,
     with_now_option,
 )
-from doccon.settings import BOARD_LAYOUT_REV
-from doccon.match import MatchedRow
+from doccon.match import EMAIL_DROPPED_LABEL, MatchedRow, PdfHit
 from doccon.register import DrawingRow
+from doccon.settings import BOARD_LAYOUT_REV
+from doccon.theme import BORDER, FOCUS_BG, FOCUS_RULE, PENDING_BG
 
 
 def _row(
@@ -429,6 +433,109 @@ def test_locate_button_browses_instead_of_opening(tmp_path) -> None:
         board._blocks["P2024-1"].open_btn.invoke()
         assert opened == ["P2024-1"]
         assert located == ["P2024-1"]
+        assert str(board._blocks["P2024-1"].pdf_label.cget("text")) == pdf.name
+        assert EMAIL_DROPPED_LABEL not in str(board._blocks["P2024-1"].pdf_label.cget("text"))
+    finally:
+        root.destroy()
+
+
+def test_email_dropped_pdf_address_is_yellow(tmp_path) -> None:
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("Tk is not available")
+    root.withdraw()
+    try:
+        from doccon.drop_pdfs import apply_row_drop, copy_into_dropped
+        from doccon.match import EMAIL_DROPPED_LABEL, EMAIL_DROPPED_SUFFIX, pair_pdf
+        from doccon.theme import BG, PENDING_BG
+
+        job = tmp_path / "2026-Tanzim"
+        src = tmp_path / "inbox" / "2026-Tanzim-1-1 REV 0.pdf"
+        src.parent.mkdir()
+        src.write_bytes(b"%PDF-fake")
+        copied = copy_into_dropped(job, src)
+        dropped_row, _leftover = apply_row_drop(
+            _row(key="P2024-1", drawing_id="2026-Tanzim-1-1"),
+            [copied],
+            "2026-Tanzim",
+        )
+        opened: list[str] = []
+        board = DrawingBoard(root, on_open_pdf=opened.append)
+        board.set_rows([dropped_row])
+        block = board._blocks["P2024-1"]
+        assert str(block.pdf_label.cget("text")) == f"{copied.name}{EMAIL_DROPPED_SUFFIX}"
+        assert str(block.pdf_label.cget("text")).startswith(copied.name)
+        assert board._pdf_tip_text("P2024-1") == f"{copied.name}{EMAIL_DROPPED_SUFFIX}\n{copied}"
+        assert str(block.pdf_cell.cget("bg")).casefold() == PENDING_BG.casefold()
+        assert str(block.pdf_label.cget("style")) == "Pending.TLabel"
+        assert str(block.match_label.cget("text")) == "High"
+        assert str(block.pack_mark.cget("bg")).casefold() != PENDING_BG.casefold()
+        assert board.next_edits() == {}
+        board._blocks["P2024-1"].open_btn.invoke()
+        assert opened == ["P2024-1"]
+        assert dropped_row.pdf is not None and dropped_row.pdf.path == copied
+
+        real = tmp_path / "Current PDF" / "2026-Tanzim-1-1 REV 0.pdf"
+        real.parent.mkdir()
+        real.write_bytes(b"%PDF-real")
+        board.apply_row(pair_pdf(dropped_row, real))
+        block = board._blocks["P2024-1"]
+        assert str(block.pdf_label.cget("text")) == real.name
+        assert EMAIL_DROPPED_LABEL not in str(block.pdf_label.cget("text"))
+        assert board._pdf_tip_text("P2024-1") == real.name
+        assert str(block.pdf_cell.cget("bg")).casefold() == BG.casefold()
+        assert str(block.pdf_label.cget("style")) == "Board.TLabel"
+        assert board.next_edits() == {}
+    finally:
+        root.destroy()
+
+
+def test_email_dropped_address_puts_the_filename_before_the_marker(tmp_path) -> None:
+    from doccon.match import EMAIL_DROPPED_SUFFIX, pdf_address_text, pdf_address_tip
+
+    long_name = "2026-Tanzim-1-14 SPIRAL STAIRWAY INSIDE HANDRAIL DETAIL REV 0.pdf"
+    staged = tmp_path / "2026-Tanzim" / "3.0 Doc Con" / "DocCon" / "dropped" / long_name
+    row = replace(
+        _row(key="P2024-1"),
+        pdf=PdfHit(path=staged, drawing_id="", rev="", email_dropped=True),
+        confidence="High",
+    )
+    address = pdf_address_text(row)
+    assert address == f"{long_name}{EMAIL_DROPPED_SUFFIX}"
+    # The cell clips from the right, so a long name spends the column on itself, not on the marker.
+    assert address.startswith(long_name)
+    assert address.endswith(EMAIL_DROPPED_LABEL)
+    assert PDF_COL_PX == 176, "the marker rides in the 1.31 column width; it does not widen it"
+    # Whatever the column eats, the hover still carries the full wording and where the copy is staged.
+    tip = pdf_address_tip(row)
+    assert tip == f"{address}\n{staged}"
+    assert EMAIL_DROPPED_LABEL in tip
+    assert str(staged) in tip
+
+
+def test_locate_inside_dropped_keeps_yellow_and_shows_that_filename(tmp_path) -> None:
+    from doccon.drop_pdfs import replace_paired_pdf, write_pdf_bytes_into_dropped
+    from doccon.match import EMAIL_DROPPED_SUFFIX, pair_pdf
+    from doccon.theme import PENDING_BG
+
+    root = _board_root()
+    try:
+        job = tmp_path / "2026-Tanzim"
+        first = write_pdf_bytes_into_dropped(job, "scan0042.pdf", b"%PDF-first")
+        second = write_pdf_bytes_into_dropped(job, "scan0043.pdf", b"%PDF-second")
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.set_rows([pair_pdf(_row(key="P2024-1"), first)])
+        block = board._blocks["P2024-1"]
+        assert str(block.pdf_label.cget("text")) == f"scan0042.pdf{EMAIL_DROPPED_SUFFIX}"
+
+        relocated = replace_paired_pdf(board._matches["P2024-1"], second)
+        board.apply_row(relocated)
+        block = board._blocks["P2024-1"]
+        assert str(block.pdf_label.cget("text")) == f"scan0043.pdf{EMAIL_DROPPED_SUFFIX}"
+        assert str(block.pdf_label.cget("style")) == "Pending.TLabel"
+        assert str(block.pdf_cell.cget("bg")).casefold() == PENDING_BG.casefold()
+        assert second.is_file(), "a Locate inside dropped keeps that copy"
     finally:
         root.destroy()
 
@@ -689,6 +796,55 @@ def test_frozen_rows_follow_wrapped_description_height() -> None:
         )
         assert abs(block.drawing_label.winfo_y() - block.title_label.winfo_y()) <= 2
         assert root.focus_get() is not title_next
+    finally:
+        root.destroy()
+
+
+def test_frozen_sync_stops_after_many_wrapped_rows() -> None:
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("Tk is not available")
+    root.withdraw()
+    try:
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+
+        def _bang(*_a, **_k):
+            raise AssertionError("update_idletasks nested in frozen sync freezes Load")
+
+        board.update_idletasks = _bang  # type: ignore[method-assign]
+        runs = {"n": 0}
+        original = board._run_frozen_row_sync
+
+        def _counted() -> None:
+            runs["n"] += 1
+            if runs["n"] > FROZEN_SYNC_MAX + 2:
+                raise AssertionError("frozen row sync loop")
+            original()
+
+        board._run_frozen_row_sync = _counted  # type: ignore[method-assign]
+        long_title = "SPIRAL STAIRWAY INSIDE HANDRAIL DETAIL " * 6
+        rows = [
+            _row(
+                key=f"P2024-{index}",
+                drawing_id=f"2026-Tanzim-1-{index}",
+                title=long_title,
+            )
+            for index in range(1, 13)
+        ]
+        finished: list[bool] = []
+        board.start_rows(rows, on_done=lambda: finished.append(True))
+        for _ in range(400):
+            if finished and not board._paint_after:
+                break
+            root.update()
+        assert finished
+        for _ in range(12):
+            root.update()
+        assert runs["n"] <= FROZEN_SYNC_MAX + 2
+        assert board._frozen_passes <= FROZEN_SYNC_MAX
+        assert board._frozen_syncing is False
+        assert not board._paint_queue
     finally:
         root.destroy()
 
@@ -1754,5 +1910,543 @@ def test_next_edits_round_trip_and_skips_stale() -> None:
         assert applied == 1
         assert board._blocks["P2024-1"].nexts["outgoing_rev"].get() == "C"
         assert board._blocks["P2024-1"].status_next.get() == "IFI"
+    finally:
+        root.destroy()
+
+
+def test_jira_id_next_is_a_plain_entry_in_the_frozen_column() -> None:
+    root = _board_root()
+    try:
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.set_rows([_row(drawing_id="2026-Tanzim-1-1", title="SPIRAL STAIRWAY")])
+        block = board._blocks["P2024-1"]
+        box = block.drawing_id_next
+        assert isinstance(box, NextEntry)
+        assert not isinstance(box, ttk.Combobox)
+        assert box.get() == "2026-Tanzim-1-1"
+        assert box.master.master is board._freeze_inner
+        cell = board._next_cell(box)
+        assert cell is not None
+        assert int(cell.grid_info()["column"]) == DRAWING_COL_INDEX
+        assert int(cell.grid_info()["row"]) == int(block.drawing_label.grid_info()["row"]) + 1
+        assert board.header_titles()[DRAWING_COL_INDEX] == JIRA_ID_TITLE
+        assert "drawing_id" not in board._batch_fields
+    finally:
+        root.destroy()
+
+
+def test_jira_id_next_single_click_selects_double_click_edits() -> None:
+    root = _board_root()
+    try:
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.set_rows([_row(drawing_id="2026-Tanzim-1-1")])
+        box = board._blocks["P2024-1"].drawing_id_next
+        board._canvas.focus_set()
+        root.update()
+        assert str(box.cget("state")) == "readonly"
+        box.event_generate("<Button-1>", x=4, y=4)
+        root.update()
+        assert root.focus_get() is not box
+        assert str(box.cget("state")) == "readonly"
+        before = {id(win) for win in _tk_toplevels(root)}
+        assert box.bind("<Double-1>")
+        board._on_next_double1(SimpleNamespace(widget=box))
+        root.update()
+        assert {id(win) for win in _tk_toplevels(root)} == before
+        assert str(box.cget("state")) == "normal"
+        assert board._active_next is box
+        box.insert("end", "-B")
+        assert box.get() == "2026-Tanzim-1-1-B"
+        assert board._on_next_return(SimpleNamespace(widget=box)) == "break"
+        root.update()
+        assert box.get() == "2026-Tanzim-1-1-B"
+        assert root.focus_get() is not box
+        assert str(box.cget("state")) == "readonly"
+        assert board._active_next is None
+        assert board.pending_rows()[0].drawing.drawing_id == "2026-Tanzim-1-1-B"
+
+        board._on_next_double1(SimpleNamespace(widget=box))
+        board._on_global_press(SimpleNamespace(widget=board._canvas))
+        root.update()
+        assert str(box.cget("state")) == "readonly"
+        assert board._active_next is None
+    finally:
+        root.destroy()
+
+
+def test_jira_id_next_turns_yellow_and_restores_now() -> None:
+    root = _board_root()
+    try:
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.set_rows([_row(drawing_id="2026-Tanzim-1-1", title="Drawing")])
+        block = board._blocks["P2024-1"]
+        box = block.drawing_id_next
+        assert "Pending" not in str(box.cget("style") or "")
+        box.set("2026-Tanzim-1-STWD")
+        root.update_idletasks()
+        assert box.cget("style") == "Pending.TEntry"
+        assert str(board._next_cell(box).cget("bg")).casefold() == "#fef3c7"
+        assert "Pending" not in str(block.title_next.cget("style") or "TEntry")
+        assert board._on_restore_next(SimpleNamespace(widget=box)) == "break"
+        root.update_idletasks()
+        assert box.get() == "2026-Tanzim-1-1"
+        assert "Pending" not in str(box.cget("style") or "TEntry")
+        assert board.pending_rows() == []
+
+        box.set("2026-Tanzim-1-STWD")
+        root.update_idletasks()
+        assert board._on_next_escape(SimpleNamespace(widget=box)) == "break"
+        root.update()
+        assert box.get() == "2026-Tanzim-1-1"
+        assert board._active_next is None
+    finally:
+        root.destroy()
+
+
+def test_cancel_next_restores_jira_id() -> None:
+    root = _board_root()
+    try:
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.set_rows([_row(drawing_id="2026-Tanzim-1-1", title="Drawing")])
+        block = board._blocks["P2024-1"]
+        block.drawing_id_next.set("2026-Tanzim-9-9")
+        block.title_next.set("Changed")
+        root.update_idletasks()
+        assert board.pending_rows()
+        assert board.revert_next() == 1
+        assert block.drawing_id_next.get() == "2026-Tanzim-1-1"
+        assert block.title_next.get() == "Drawing"
+        assert board.pending_rows() == []
+    finally:
+        root.destroy()
+
+
+def test_jira_id_next_composes_one_summary() -> None:
+    root = _board_root()
+    try:
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.set_rows(
+            [
+                _row(key="P2024-1", drawing_id="2026-Tanzim-1-1", title="Drawing-1"),
+                _row(key="P2024-2", drawing_id="2026-Tanzim-ITP-1-1", title=""),
+            ]
+        )
+        board._blocks["P2024-1"].drawing_id_next.set("2026-Tanzim-1-STWD")
+        board._blocks["P2024-2"].drawing_id_next.set("2026-Tanzim-ITP-1-2")
+        rows = {row.drawing.key: row.drawing for row in board.pending_rows()}
+        assert rows["P2024-1"].drawing_id == "2026-Tanzim-1-STWD"
+        assert rows["P2024-1"].title == "Drawing-1"
+        assert rows["P2024-1"].summary == "2026-Tanzim-1-STWD Drawing-1"
+        assert rows["P2024-2"].summary == "2026-Tanzim-ITP-1-2"
+        assert not rows["P2024-2"].summary.endswith(" ")
+        board._blocks["P2024-1"].title_next.set("SPIRAL STAIRWAY")
+        both = {row.drawing.key: row.drawing for row in board.pending_rows()}
+        assert both["P2024-1"].summary == "2026-Tanzim-1-STWD SPIRAL STAIRWAY"
+    finally:
+        root.destroy()
+
+
+def test_jira_id_next_round_trips_through_next_edits() -> None:
+    root = _board_root()
+    try:
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.set_rows([_row(key="P2024-1", drawing_id="2026-Tanzim-1-1", title="Drawing")])
+        board._blocks["P2024-1"].drawing_id_next.set("2026-Tanzim-1-STWD")
+        edits = board.next_edits()
+        assert edits == {"P2024-1": {"drawing_id": "2026-Tanzim-1-STWD"}}
+        board.set_rows([_row(key="P2024-1", drawing_id="2026-Tanzim-1-1", title="Drawing")])
+        assert board._blocks["P2024-1"].drawing_id_next.get() == "2026-Tanzim-1-1"
+        assert board.apply_next_edits(edits) == 1
+        root.update_idletasks()
+        assert board._blocks["P2024-1"].drawing_id_next.get() == "2026-Tanzim-1-STWD"
+        assert board._blocks["P2024-1"].drawing_id_next.cget("style") == "Pending.TEntry"
+        assert board._blocks["P2024-1"].title_next.get() == "Drawing"
+    finally:
+        root.destroy()
+
+
+def test_paired_pdf_survives_a_jira_id_edit(tmp_path) -> None:
+    root = _board_root()
+    try:
+        from doccon.match import pair_pdf
+
+        pdf = tmp_path / "2026-Tanzim-1-1 REV 0.pdf"
+        pdf.write_bytes(b"%PDF")
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.set_rows([pair_pdf(_row(key="P2024-1", drawing_id="2026-Tanzim-1-1"), pdf)])
+        block = board._blocks["P2024-1"]
+        block.drawing_id_next.set("2026-Tanzim-1-STWD")
+        root.update_idletasks()
+        assert str(block.pdf_label.cget("text")) == pdf.name
+        assert "disabled" not in str(block.open_btn.cget("state"))
+        row = board.pending_rows()[0]
+        assert row.pdf is not None and row.pdf.path == pdf
+        assert row.confidence == "High"
+        assert board.current_rows()[0].pdf is not None
+        assert board.selected_rows()[0].pdf is not None
+    finally:
+        root.destroy()
+
+
+def test_letter_and_eddi_print_the_effective_jira_id(tmp_path) -> None:
+    root = _board_root()
+    try:
+        from doccon.client_log import lines_from_rows
+        from doccon.eddi import eddi_print_drawings, item_values
+        from doccon.match import pair_pdf
+
+        pdf = tmp_path / "2026-Tanzim-1-1 REV 0.pdf"
+        pdf.write_bytes(b"%PDF")
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.set_rows(
+            [
+                pair_pdf(
+                    _row(
+                        key="P2024-1",
+                        drawing_id="2026-Tanzim-1-1",
+                        title="Drawing",
+                        eddi_status="1 - Fabrication Drawings - EDDI",
+                    ),
+                    pdf,
+                )
+            ]
+        )
+        board._blocks["P2024-1"].drawing_id_next.set("2026-Tanzim-1-STWD")
+        assert [line.document_no for line in lines_from_rows(board.selected_rows())] == [
+            "2026-Tanzim-1-STWD"
+        ]
+        printed = eddi_print_drawings(board.current_rows())
+        assert [item_values(drawing)[0] for drawing in printed] == ["2026-Tanzim-1-STWD"]
+    finally:
+        root.destroy()
+
+
+def test_row_key_for_y_maps_band() -> None:
+    bands = [("P2024-1", 100, 180), ("P2024-2", 180, 260)]
+    assert row_key_for_y(bands, 100) == "P2024-1"
+    assert row_key_for_y(bands, 179) == "P2024-1"
+    assert row_key_for_y(bands, 180) == "P2024-2"
+    assert row_key_for_y(bands, 259) == "P2024-2"
+    assert row_key_for_y(bands, 99) is None
+    assert row_key_for_y(bands, 260) is None
+    assert row_key_for_y([], 120) is None
+
+
+def test_row_key_at_y_on_stub_board(tmp_path) -> None:
+    root = _board_root()
+    try:
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.set_rows(
+            [
+                _row(key="P2024-1", drawing_id="2026-Tanzim-1-1"),
+                _row(key="P2024-2", drawing_id="2026-Tanzim-1-2"),
+            ]
+        )
+        root.update_idletasks()
+        first = board._blocks["P2024-1"].drawing_label
+        second = board._blocks["P2024-2"].drawing_label
+        x = int(first.winfo_rootx()) + 2
+        y1 = int(first.winfo_rooty()) + max(int(first.winfo_height()) // 2, 1)
+        y2 = int(second.winfo_rooty()) + max(int(second.winfo_height()) // 2, 1)
+        assert board.row_key_at(x, y1) == "P2024-1"
+        assert board.row_key_at(x, y2) == "P2024-2"
+        assert row_key_for_y(board.row_bands(), y1) == "P2024-1"
+        assert row_key_for_y(board.row_bands(), y2) == "P2024-2"
+        widgets = board.drop_target_widgets()
+        assert board._inner in widgets
+        assert board._freeze_inner in widgets
+        dest = tmp_path / "2026-Tanzim"
+        dest.mkdir()
+        assert dest.name == "2026-Tanzim"
+    finally:
+        root.destroy()
+
+
+def test_eddi_picker_offers_only_that_rows_own_options() -> None:
+    root = _board_root()
+    try:
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        sub_task = ("", "1 - Fabrication Drawings - EDDI", "4 - Engineering - EDDI")
+        task = ("", "8 - Document Control - EDDI", "4 - Engineering - EDDI")
+        board.set_eddi_options({"P2024-1": sub_task, "P2024-9": task})
+        board.set_rows(
+            [
+                _row(key="P2024-1", drawing_id="2026-Tanzim-1-1"),
+                _row(key="P2024-9", drawing_id="2026-Tanzim-ITP-1"),
+                _row(key="P2024-3", drawing_id="2026-Tanzim-1-3"),
+            ]
+        )
+        first = [str(item) for item in board._blocks["P2024-1"].nexts["eddi_status"].cget("values")]
+        other = [str(item) for item in board._blocks["P2024-9"].nexts["eddi_status"].cget("values")]
+        assert first == list(sub_task)
+        assert "8 - Document Control - EDDI" not in first
+        assert "1 - Fabrication Drawings - EDDI" not in other
+        # No context for this row: the Elite convenience list stays.
+        unmapped = [str(item) for item in board._blocks["P2024-3"].nexts["eddi_status"].cget("values")]
+        assert "0 - Generic Task" in unmapped
+        # Batch stamp only offers what every listed issue's context has.
+        batch = [str(item) for item in board._batch_fields["eddi_status"].cget("values")]
+        assert batch == ["", "4 - Engineering - EDDI"]
+        board._apply_next_to_block(
+            board._blocks["P2024-9"], fields={"eddi_status": "1 - Fabrication Drawings - EDDI"}
+        )
+        assert board._blocks["P2024-9"].nexts["eddi_status"].get() == ""
+    finally:
+        root.destroy()
+
+
+def _click(widget: tk.Misc) -> None:
+    widget.event_generate("<Button-1>", x=4, y=4)
+
+
+def _two_rows() -> list[MatchedRow]:
+    return [
+        _row(key="P2024-1", drawing_id="2026-Tanzim-1-1"),
+        _row(key="P2024-2", drawing_id="2026-Tanzim-1-2"),
+    ]
+
+
+def test_clicking_a_row_bands_it_and_clears_the_one_it_left() -> None:
+    root = _board_root()
+    try:
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.set_rows(_two_rows())
+        first = board._blocks["P2024-1"]
+        second = board._blocks["P2024-2"]
+        assert board.explicit_focus_key() == ""
+        assert not first.focused and not second.focused
+
+        _click(first.drawing_label)
+        root.update_idletasks()
+        assert board.explicit_focus_key() == "P2024-1"
+        assert first.focused and not second.focused
+        assert str(first.drawing_label.cget("style")) == "Focus.TLabel"
+        assert str(second.drawing_label.cget("style")) == "Board.TLabel"
+
+        _click(second.title_label)
+        root.update_idletasks()
+        assert board.explicit_focus_key() == "P2024-2"
+        assert second.focused and not first.focused
+        assert str(second.drawing_label.cget("style")) == "Focus.TLabel"
+        # The row it left goes all the way back, not just the cell that was clicked.
+        assert str(first.drawing_label.cget("style")) == "Board.TLabel"
+        assert str(first.title_label.cget("style")) == "Board.TLabel"
+        assert all(str(line.cget("background")) == BORDER for line in first.rules)
+    finally:
+        root.destroy()
+
+
+def test_focus_band_covers_the_frozen_and_the_scrolling_pane() -> None:
+    root = _board_root()
+    try:
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.set_rows(_two_rows())
+        block = board._blocks["P2024-1"]
+        board.focus_key("P2024-1")
+        root.update_idletasks()
+        # Frozen pane (Pack / JIRA ID) and scrolling pane are two separate grids.
+        assert block.drawing_label.master is board._freeze_inner
+        assert block.title_label.master is board._inner
+        assert str(block.drawing_label.cget("style")) == "Focus.TLabel"
+        for label in (block.title_label, block.status_label, *block.originals.values()):
+            assert str(label.cget("style")) == "Focus.TLabel"
+        assert str(block.match_label.cget("style")) == "FocusBad.TLabel"
+        # The rules bracket the block in both panes, so a sideways scroll cannot split it.
+        assert {line.master for line in block.rules} == {board._inner, board._freeze_inner}
+        assert all(str(line.cget("background")) == FOCUS_RULE for line in block.rules)
+    finally:
+        root.destroy()
+
+
+def test_pack_tick_does_not_band_a_row_even_when_it_stamps_a_cover_date() -> None:
+    root = _board_root()
+    try:
+        board = DrawingBoard(
+            root,
+            on_open_pdf=lambda _key: None,
+            cover_return_stamp=lambda: "2026-09-15",
+        )
+        board.set_rows(_two_rows(), checked=set())
+        for key in ("P2024-1", "P2024-2"):
+            board._blocks[key].include.set(True)
+        root.update_idletasks()
+        # The tick really did stamp Next, so this is not passing by doing nothing.
+        assert board._blocks["P2024-1"].nexts["return_request_date"].get() == "2026-09-15"
+        assert board._blocks["P2024-2"].nexts["return_request_date"].get() == "2026-09-15"
+        # A Pack tick is not a cursor: nothing is banded and a paste still has no target.
+        assert board.explicit_focus_key() == ""
+        assert not any(block.focused for block in board._blocks.values())
+        assert str(board._blocks["P2024-2"].drawing_label.cget("style")) == "Board.TLabel"
+    finally:
+        root.destroy()
+
+
+def test_batch_apply_does_not_band_a_row() -> None:
+    root = _board_root()
+    try:
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.set_rows(_two_rows())
+        assert board.apply_next_to_pack(status="IFI") == 2
+        assert board.bump_packed_revs() == 2
+        root.update_idletasks()
+        assert board._blocks["P2024-1"].status_next.get() == "IFI"
+        assert board.explicit_focus_key() == ""
+        assert not any(block.focused for block in board._blocks.values())
+    finally:
+        root.destroy()
+
+
+def test_dirty_next_stays_yellow_on_a_banded_row() -> None:
+    root = _board_root()
+    try:
+        assert FOCUS_BG != PENDING_BG
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.set_rows(_two_rows())
+        block = board._blocks["P2024-1"]
+        board.focus_key("P2024-1")
+        box = block.nexts["client_document_number"]
+        box.set("CNRL-T-101")
+        root.update_idletasks()
+        assert block.focused
+        assert box.cget("style") == "Pending.TEntry"
+        cell = board._next_cell(box)
+        assert cell is not None
+        # The band never reaches into a Next cell, so yellow is still the only amber.
+        assert str(cell.cget("bg")).casefold() == PENDING_BG.casefold()
+        assert str(block.drawing_label.cget("style")) == "Focus.TLabel"
+    finally:
+        root.destroy()
+
+
+def test_stamp_outgoing_rev_from_filename_does_not_move_focus() -> None:
+    root = _board_root()
+    try:
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.set_rows(
+            [
+                _row(key="P2024-1", drawing_id="2026-Tanzim-1-1", outgoing_rev="A"),
+                _row(key="P2024-2", drawing_id="2026-Tanzim-1-2", outgoing_rev="A"),
+            ]
+        )
+        board.focus_key("P2024-2")
+        assert board.stamp_outgoing_rev("P2024-1", "0")
+        assert board.explicit_focus_key() == "P2024-2"
+        box = board._blocks["P2024-1"].nexts["outgoing_rev"]
+        assert box.get() == "0"
+        assert box.cget("style") == "Pending.TCombobox"
+        pending = {row.drawing.key: row.drawing.outgoing_rev for row in board.pending_rows()}
+        assert pending["P2024-1"] == "0"
+        assert not board.stamp_outgoing_rev("P2024-1", "")
+        assert box.get() == "0"
+        assert board.stamp_outgoing_rev("P2024-2", "A")
+        same = board._blocks["P2024-2"].nexts["outgoing_rev"]
+        assert same.get() == "A"
+        assert "Pending" not in str(same.cget("style") or "")
+    finally:
+        root.destroy()
+
+
+def test_set_rows_does_not_stamp_outgoing_rev_from_a_pdf_filename() -> None:
+    """Load hunt paints the match; it must not yellow Next Outgoing Rev."""
+    root = _board_root()
+    try:
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        hit = PdfHit(
+            path=Path("2026-Tanzim-1-1 REV 0.pdf"),
+            drawing_id="2026-Tanzim-1-1",
+            rev="0",
+        )
+        board.set_rows(
+            [
+                replace(
+                    _row(key="P2024-1", drawing_id="2026-Tanzim-1-1", outgoing_rev="A"),
+                    pdf=hit,
+                    confidence="High",
+                )
+            ]
+        )
+        box = board._blocks["P2024-1"].nexts["outgoing_rev"]
+        assert box.get() == "A"
+        assert "Pending" not in str(box.cget("style") or "")
+        assert board.pending_rows() == []
+    finally:
+        root.destroy()
+
+
+def test_email_dropped_pdf_keeps_its_yellow_on_a_banded_row(tmp_path) -> None:
+    root = _board_root()
+    try:
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        dropped = replace(
+            _row(key="P2024-1", drawing_id="2026-Tanzim-1-1"),
+            pdf=PdfHit(path=tmp_path / "scan0042.pdf", drawing_id="", rev="", email_dropped=True),
+            confidence="High",
+        )
+        board.set_rows([dropped])
+        block = board._blocks["P2024-1"]
+        board.focus_key("P2024-1")
+        root.update_idletasks()
+        assert block.focused
+        assert str(block.pdf_label.cget("text")) == "scan0042.pdf — email dropped"
+        assert EMAIL_DROPPED_LABEL in str(block.pdf_label.cget("text"))
+        assert str(block.pdf_label.cget("style")) == "Pending.TLabel"
+        assert str(block.pdf_cell.cget("bg")).casefold() == PENDING_BG.casefold()
+    finally:
+        root.destroy()
+
+
+def test_load_repaint_clears_a_stale_focus() -> None:
+    root = _board_root()
+    try:
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.set_rows(_two_rows())
+        board.focus_key("P2024-2")
+        root.update_idletasks()
+        assert board.explicit_focus_key() == "P2024-2"
+
+        board.set_rows(_two_rows())
+        root.update_idletasks()
+        assert board.explicit_focus_key() == ""
+        assert not any(block.focused for block in board._blocks.values())
+        block = board._blocks["P2024-2"]
+        assert str(block.drawing_label.cget("style")) == "Board.TLabel"
+        assert all(str(line.cget("background")) == BORDER for line in block.rules)
+    finally:
+        root.destroy()
+
+
+def test_banding_a_row_leaves_the_next_editor_gestures_alone() -> None:
+    root = _board_root()
+    try:
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.set_rows([_row(title="SPIRAL STAIRWAY")])
+        block = board._blocks["P2024-1"]
+        box = block.title_next
+        board._canvas.focus_set()
+        root.update()
+
+        # Single click bands the row and leaves the editor shut (1.34 gesture).
+        _click(box)
+        root.update()
+        assert block.focused
+        assert board.explicit_focus_key() == "P2024-1"
+        assert str(box.cget("state")) == "readonly"
+        assert board._active_next is not box
+
+        before = {id(win) for win in _tk_toplevels(root)}
+        board._on_next_double1(SimpleNamespace(widget=box))
+        root.update()
+        assert {id(win) for win in _tk_toplevels(root)} == before
+        assert str(box.cget("state")) == "normal"
+        assert board._active_next is box
+        box.insert("end", " X")
+        board._on_next_escape(SimpleNamespace(widget=box))
+        root.update()
+        assert box.get() == "SPIRAL STAIRWAY"
+        assert str(box.cget("state")) == "readonly"
+        assert board._active_next is None
+        # Leaving the editor does not clear the band: the row is still the paste target.
+        assert block.focused
+        assert board.explicit_focus_key() == "P2024-1"
     finally:
         root.destroy()

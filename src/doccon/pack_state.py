@@ -10,6 +10,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from doccon.kinds import FIELD, SHOP
+from doccon.match import LocatedPdf, coerce_located_pdfs
 
 PACK_DIR = Path("3.0 Doc Con") / "DocCon"
 PACK_NAME = "client-pack.json"
@@ -30,7 +31,7 @@ class ClientPack:
     field_cc: str = ""
     project_description: str = ""
     selected_keys: tuple[str, ...] = ()
-    located_pdfs: dict[str, str] = field(default_factory=dict)
+    located_pdfs: dict[str, LocatedPdf] = field(default_factory=dict)
     next_edits: dict[str, dict[str, str]] = field(default_factory=dict)
     job_folder: str = ""
     schema_version: int = PACK_SCHEMA
@@ -40,16 +41,21 @@ def pack_path(job_folder: Path) -> Path:
     return Path(job_folder) / PACK_DIR / PACK_NAME
 
 
-def _located_pdfs(raw: object) -> dict[str, str]:
-    located: dict[str, str] = {}
+def _located_pdfs(raw: object) -> dict[str, LocatedPdf]:
     if not isinstance(raw, dict):
-        return located
-    for item_key, item_path in raw.items():
-        key = str(item_key).strip()
-        path = str(item_path).strip()
-        if key and path:
-            located[key] = path
-    return located
+        return {}
+    return coerce_located_pdfs(raw)
+
+
+def _dump_located_pdfs(located: dict[str, LocatedPdf]) -> dict[str, str | dict[str, object]]:
+    """String path for Locate…; object with email_dropped for a drag-drop bypass."""
+    payload: dict[str, str | dict[str, object]] = {}
+    for key, rec in located.items():
+        if rec.email_dropped:
+            payload[key] = {"path": rec.path, "email_dropped": True}
+        else:
+            payload[key] = rec.path
+    return payload
 
 
 def _next_edits(raw: object) -> dict[str, dict[str, str]]:
@@ -128,7 +134,7 @@ def save_client_pack(job_folder: Path, pack: ClientPack) -> Path:
         "field_cc": pack.field_cc,
         "project_description": pack.project_description,
         "selected_keys": list(pack.selected_keys),
-        "located_pdfs": dict(pack.located_pdfs),
+        "located_pdfs": _dump_located_pdfs(pack.located_pdfs),
         "next_edits": {key: dict(fields) for key, fields in pack.next_edits.items()},
         "job_folder": pack.job_folder,
     }

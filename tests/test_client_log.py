@@ -14,11 +14,13 @@ from doccon.client_log import (
     LogLine,
     client_status_from_jira,
     cover_date_stamp,
+    cover_issued_default,
     cover_return_request_stamp,
     cover_submission_date_stamp,
     empty_client_workbook,
     empty_field_workbook,
     empty_shop_workbook,
+    expected_return_from_issued,
     file_client_transmittal,
     fill_client_transmittal,
     find_client_book,
@@ -264,6 +266,15 @@ def test_parse_dates() -> None:
     assert cover_submission_date_stamp("") == ""
     assert cover_submission_date_stamp("2026-09-11") == "2026-09-11"
     assert cover_submission_date_stamp("09/11/2026") == "2026-09-11"
+    assert cover_issued_default(today=date(2026, 9, 16)) == "2026-09-16"
+    assert expected_return_from_issued("2026-09-16", 0) == "2026-09-16"
+    assert expected_return_from_issued("2026-09-16", 1) == "2026-09-17"
+    assert expected_return_from_issued("2026-09-16", 7) == "2026-09-23"
+    assert expected_return_from_issued("2026-09-16", 14) == "2026-09-30"
+    # Calendar days, not business days: Friday + 1 is Saturday.
+    assert expected_return_from_issued("2026-09-18", 1) == "2026-09-19"
+    assert expected_return_from_issued("N/A", 0, today=date(2026, 9, 16)) == "2026-09-16"
+    assert expected_return_from_issued("", 1, today=date(2026, 9, 16)) == "2026-09-17"
 
 
 def test_file_shop_uses_st_cells(tmp_path: Path) -> None:

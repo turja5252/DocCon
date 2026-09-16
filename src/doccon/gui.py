@@ -19,6 +19,8 @@ from doccon.client_log import (
     LogError,
     book_cover_for_job,
     cover_date_stamp,
+    cover_issued_default,
+    expected_return_from_issued,
     find_book,
     inspect_book,
     lines_from_rows,
@@ -27,12 +29,27 @@ from doccon.client_log import (
     pick_cover_fields,
     prepare_book,
 )
+from doccon.clip_paste import NO_PDF_ON_CLIPBOARD, clipboard_pdfs
 from doccon.confirm import ConfirmDeliveryError, run_confirm_client_pack
-from doccon.date_picker import attach_calendar, set_na_text
+from doccon.date_picker import attach_calendar, set_entry_date, set_na_text
+from doccon.diag import log, log_session_start, open_log_folder
 from doccon.drawing_board import DrawingBoard
+from doccon.drop_pdfs import (
+    LOAD_FIRST,
+    NEED_FOLDER,
+    NOT_PDF,
+    apply_board_drop,
+    apply_row_drop,
+    ingest_sources,
+    replace_paired_pdf,
+    resolve_drop_row_key,
+    sources_from_paths,
+    sweep_replaced_dropped_copies,
+)
 from doccon.eddi import eddi_print_drawings, snapshot_eddi
 from doccon.jira_client import (
     JiraError,
+    fetch_eddi_contexts,
     fetch_job_pack,
     fetch_rev_option_lists,
     ping,
@@ -41,7 +58,15 @@ from doccon.jira_client import (
 )
 from doccon.jobs import job_folder_identity, resolve_job_folder
 from doccon.kinds import CLIENT, FIELD, LABELS, PREFIX, SHOP
-from doccon.match import MatchedRow, apply_located_pdfs, match_pdf_hits, pair_pdf, scan_current_pdfs
+from doccon.match import (
+    LocatedPdf,
+    MatchedRow,
+    apply_located_pdfs,
+    keep_located_pdfs,
+    match_pdf_hits,
+    outgoing_rev_from_filename,
+    scan_current_pdfs,
+)
 from doccon.outlook_contacts import OutlookContactsError, import_saved_emails_from_outlook
 from doccon.pack_mail import draft_subject
 from doccon.pack_state import (
@@ -55,9 +80,11 @@ from doccon.pep import DOC_CONTROL_FROM, SALES_DIR, PepCover, PepError, email_li
 from doccon.register import (
     DrawingRow,
     EddiConflict,
+    FieldOption,
     JobProject,
     eddi_conflicts,
     eddi_fix_options,
+    eddi_option_labels,
     jira_project_label,
 )
 from doccon.secrets import load_token, save_token
@@ -84,9 +111,21 @@ from doccon.theme import (
     style_text,
 )
 from doccon.transmittal_books import adopt_transmittal_books
+from doccon.watch_inbox import POLL_MS as WATCH_POLL_MS
+from doccon.watch_inbox import InboxWatcher, plan_watch_hits
 
 NO_ROW_PDF = "No PDF for this row — use Locate…"
 PACK_SAVE_MS = 1000
+SELECT_ROW_FIRST = (
+    "That PDF does not match any drawing on this job by filename.\n\n"
+    "Click the drawing row you want, then Paste PDF — the selected row always wins. "
+    "Several files wait in New PDFs: click a row, pick one, then Assign to selected row."
+)
+
+
+def _drop_path_token(path: Path | str) -> str:
+    """Compare drop paths without Path.resolve() (Dropbox resolve can hang)."""
+    return str(path).replace("/", "\\").strip().rstrip("\\").casefold()
 
 
 
@@ -137,7 +176,7 @@ class EddiConflictDialog(tk.Toplevel):
         apply_theme(self)
         self.result: dict[str, str] = {}
         self._picks: dict[str, ttk.Combobox] = {}
-        choices = ("",) + eddi_fix_options()
+        fallback = ("",) + eddi_fix_options()
         ttk.Label(
             self,
             text=(
@@ -165,6 +204,7 @@ class EddiConflictDialog(tk.Toplevel):
                 text="Current: " + "; ".join(item.options),
                 style="Muted.TLabel",
             ).pack(anchor="w")
+            choices = ("",) + item.allowed if item.allowed else fallback
             box = ttk.Combobox(row, width=48, values=choices, state="readonly")
             box.pack(anchor="w", pady=(2, 0))
             self._picks[item.key] = box
@@ -252,8 +292,17 @@ class SettingsDialog(tk.Toplevel):
 
         buttons = ttk.Frame(self)
         buttons.grid(row=7, column=0, columnspan=2, sticky="e", padx=12, pady=(8, 14))
+        ttk.Button(buttons, text="Open log folder", command=self._open_log_folder).pack(
+            side="left", padx=(0, 8)
+        )
         ttk.Button(buttons, text="Test connection", command=self._test).pack(side="left", padx=(0, 8))
         ttk.Button(buttons, text="Save", style="Accent.TButton", command=self._save).pack(side="left")
+
+    def _open_log_folder(self) -> None:
+        try:
+            open_log_folder()
+        except OSError as exc:
+            messagebox.showerror("Settings", str(exc), parent=self)
 
     def _fill_addresses(self, emails: tuple[str, ...] | list[str]) -> None:
         self._addresses.delete(0, "end")
@@ -378,13 +427,22 @@ class DocConApp(tk.Tk):
         self._pep_path: Path | None = None
         self._cover_loading = False
         self._jira_loading = False
-        self._located_pdfs: dict[str, str] = {}
+        self._located_pdfs: dict[str, LocatedPdf] = {}
         self._job_project: JobProject | None = None
+        self._eddi_contexts: dict[str, tuple[FieldOption, ...]] = {}
         self._open_path = _os_open_path
         self._pack_save_after = ""
         self._reloading_after_eddi_fix = False
+        self._drop_hover_after = ""
+        self._drop_hover_pt = (0, 0)
+        self._watcher: InboxWatcher | None = None
+        self._watch_after = ""
+        self._new_pdfs: list[Path] = []
         self.kind = tk.StringVar(value=CLIENT)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.bind_all("<Control-v>", self._on_paste_key, add="+")
+        self.bind_all("<Control-V>", self._on_paste_key, add="+")
+        log("INFO", "session", f"gui init pid={os.getpid()} paste + watched folder")
 
         chrome = tk.Frame(self, bg=NAVY, padx=16, pady=12)
         chrome.pack(fill="x")
@@ -440,6 +498,20 @@ class DocConApp(tk.Tk):
 
         identity = tk.Frame(chrome, bg=NAVY)
         identity.pack(fill="x", pady=(10, 0))
+        ttk.Button(
+            identity,
+            text="Paste PDF",
+            style="Brand.TButton",
+            command=self._paste_pdf,
+        ).pack(side="right", padx=(8, 0))
+        self._drop_hint = tk.Label(
+            identity,
+            text="Drop a PDF on a drawing row",
+            bg=NAVY,
+            fg=FOLDER,
+            font=FONT_SMALL,
+        )
+        self._drop_hint.pack(side="right", padx=(12, 0))
         self._jira_bar, self._jira_title, self._jira_value = self._identity_chip(
             identity, "Jira", JIRA
         )
@@ -471,7 +543,7 @@ class DocConApp(tk.Tk):
         self._meta.pack(fill="x")
         ttk.Label(self._meta, text="Date issued").pack(side="left")
         self.issued = ttk.Entry(self._meta, width=12)
-        set_na_text(self.issued)
+        set_entry_date(self.issued, date.today())
         self.issued.pack(side="left", padx=(4, 0))
         attach_calendar(self.issued, parent=self, on_change=self._on_issued_change, allow_na=True)
         ttk.Label(self._meta, text="Expected return").pack(side="left")
@@ -481,6 +553,17 @@ class DocConApp(tk.Tk):
         attach_calendar(
             self.expected, parent=self, on_change=self._on_expected_return_change, allow_na=True
         )
+        for label, days in (
+            ("Urgent same day", 0),
+            ("Urgent +1", 1),
+            ("7 days", 7),
+            ("14 days", 14),
+        ):
+            ttk.Button(
+                self._meta,
+                text=label,
+                command=lambda offset=days: self._apply_expected_preset(offset),
+            ).pack(side="left", padx=(2, 0))
         ttk.Button(self._meta, text="Locate PEP…", command=self._locate_pep).pack(side="left", padx=(16, 0))
         ttk.Button(self._meta, text="Save", command=self._save_pack).pack(side="left", padx=(8, 0))
         self.pep_label = ttk.Label(self._meta, text="PEP: load a job", style="Muted.TLabel")
@@ -490,16 +573,25 @@ class DocConApp(tk.Tk):
             self,
             style="Hint.TLabel",
             text=(
-                "Load starts Date issued and Expected return at N/A with Pack off. "
-                "Set Date issued, then tick Pack — packed rows take that date as Next Submission Date. "
-                "Set Expected return, then tick Pack — packed rows take that date as Next Return Request Date "
+                "Load starts Date issued at today and Expected return at N/A, with Pack off. "
+                "Tick Pack — packed rows take Date issued as Next Submission Date. "
+                "Set Expected return (calendar, or Urgent same day / Urgent +1 / 7 days / 14 days), "
+                "then tick Pack — packed rows take that date as Next Return Request Date "
                 "(same day on the letter and Jira Next; not written until Confirm). "
                 "N/A on a cover date puts that packed Next date back to Now. "
-                "Cancel Next restores every Next field to Now and sets both cover dates to N/A. "
+                "Cancel Next restores every Next field to Now, Date issued to today, "
+                "and Expected return to N/A. "
                 "Double-click a Next text or date box to edit; single-click only selects the row. "
                 "Open the job, tick Pack, use Packed only to hide the rest, then Bump packed or Set packed to… "
                 "for Outgoing Rev, or Batch Next / edit a row. "
-                "Missing or wrong PDF: click Locate…. Open beside it opens the matched PDF. "
+                "Missing or wrong PDF: in Outlook select one or more attachments, Copy, "
+                "then Paste PDF (Ctrl+V). One file pairs the clicked row; several wait in "
+                "New PDFs so you can Assign them one by one. "
+                "Or drag the attachment onto your Desktop or Downloads — DocCon watches both "
+                "and pairs new PDFs by filename; the rest wait in New PDFs for a row. "
+                "Pasted files are copied into DocCon/dropped, then that copy is deleted "
+                "after a real job PDF is paired or Confirm succeeds. Locate… still browses. "
+                "Open beside it opens the matched PDF. "
                 "Type a date, or click the date dropdown for a calendar. "
                 "Update Jira… writes Next edits to Jira only (Pack ticks do not matter). "
                 "Confirm writes Jira, files the pack, "
@@ -550,6 +642,35 @@ class DocConApp(tk.Tk):
 
         body = ttk.Frame(self, padding=(8, 0, 8, 0))
         body.pack(fill="both", expand=True)
+        self._new_pdf_bar = tk.Frame(body, bg=NAVY, highlightthickness=0, bd=0)
+        tk.Label(
+            self._new_pdf_bar,
+            text="New PDFs",
+            bg=NAVY,
+            fg=FOLDER,
+            font=FONT_SMALL,
+        ).pack(side="left", padx=(10, 8), pady=6)
+        self._new_pdf_list = tk.Listbox(
+            self._new_pdf_bar,
+            height=2,
+            font=FONT_SMALL,
+            activestyle="none",
+            exportselection=False,
+        )
+        self._new_pdf_list.pack(side="left", fill="x", expand=True, pady=6)
+        self._new_pdf_list.bind("<Double-Button-1>", lambda _event: self._assign_new_pdf())
+        ttk.Button(
+            self._new_pdf_bar,
+            text="Assign to selected row",
+            style="Brand.TButton",
+            command=self._assign_new_pdf,
+        ).pack(side="left", padx=8)
+        ttk.Button(
+            self._new_pdf_bar,
+            text="Dismiss",
+            style="Brand.TButton",
+            command=self._dismiss_new_pdf,
+        ).pack(side="left", padx=(0, 10))
         self.board = DrawingBoard(
             body,
             on_open_pdf=self._open_pdf_key,
@@ -694,7 +815,7 @@ class DocConApp(tk.Tk):
             self._set_text(self.to_box, "")
             self._set_text(self.cc_box, "")
             self._set_text(self.project_box, "")
-            self._write_cover_dates_na()
+            self._write_cover_date_defaults()
         finally:
             self._cover_loading = False
 
@@ -727,21 +848,27 @@ class DocConApp(tk.Tk):
             self._email_value(self.cc_box),
         )
 
-    def _write_cover_dates_na(self) -> None:
-        set_na_text(self.issued)
+    def _write_cover_date_defaults(self) -> None:
+        set_entry_date(self.issued, date.fromisoformat(cover_issued_default()))
         set_na_text(self.expected)
 
-    def _set_cover_dates_na(self) -> None:
-        """Put both cover dates at N/A without stamping packed Next."""
+    def _reset_cover_dates(self) -> None:
+        """Date issued = today, Expected return = N/A. Does not stamp packed Next."""
         self._cover_loading = True
         try:
-            self._write_cover_dates_na()
+            self._write_cover_date_defaults()
         finally:
             self._cover_loading = False
 
     def _on_cancel_next(self) -> None:
-        self._set_cover_dates_na()
+        self._reset_cover_dates()
         self._save_pack(quiet=True)
+
+    def _apply_expected_preset(self, days: int) -> None:
+        """Set Expected return to Date issued plus calendar days. Does not write Jira."""
+        stamp = expected_return_from_issued(self.issued.get(), days)
+        set_entry_date(self.expected, date.fromisoformat(stamp))
+        self._on_expected_return_change()
 
     def _stamp_packed_from_cover_dates(self) -> None:
         self.board.stamp_packed_cover_dates()
@@ -808,11 +935,26 @@ class DocConApp(tk.Tk):
     def _on_close(self) -> None:
         self._cancel_pack_save()
         self._save_loaded_pack()
+        self._clear_drop_hover()
+        self._stop_drop()
         self.destroy()
 
     def destroy(self) -> None:
         self._cancel_pack_save()
+        with contextlib.suppress(Exception):
+            self._clear_drop_hover()
+        self._stop_drop()
         super().destroy()
+
+    def _stop_watcher(self) -> None:
+        if self._watch_after:
+            with contextlib.suppress(Exception):
+                self.after_cancel(self._watch_after)
+            self._watch_after = ""
+        self._watcher = None
+
+    def _stop_drop(self) -> None:
+        self._stop_watcher()
 
     def _restore_pack(self, folder: Path | None, job: str, cover: PepCover | None) -> None:
         pack = load_client_pack(folder, job)
@@ -832,7 +974,7 @@ class DocConApp(tk.Tk):
             self._set_text(self.to_box, email_line(chosen.to_line))
             self._set_text(self.cc_box, email_line(chosen.cc_line))
             self._set_text(self.project_box, chosen.project_description)
-            self._write_cover_dates_na()
+            self._write_cover_date_defaults()
             if pack is not None:
                 self.board.apply_next_edits(pack.next_edits)
         finally:
@@ -1052,6 +1194,9 @@ class DocConApp(tk.Tk):
         self._job_number = job
         self._job_folder = None
         self._job_project = None
+        self._eddi_contexts = {}
+        self._new_pdfs.clear()
+        self._show_new_pdfs()
         self._start_progress(f"Loading {job}…")
         self._set_job_identity(None, None, loading=True)
         with contextlib.suppress(tk.TclError):
@@ -1062,14 +1207,16 @@ class DocConApp(tk.Tk):
             rows: list = []
             project: JobProject | None = None
             rev_options: dict[str, tuple[str, ...]] = {}
+            eddi_contexts: dict[str, tuple[FieldOption, ...]] = {}
             folder: Path | None = None
             hits: list = []
             folder_label = ""
             orphans = 0
             matched: list[MatchedRow] = []
+            located: dict = {}
 
             def jira_work() -> None:
-                nonlocal error, rows, project, rev_options
+                nonlocal error, rows, project, rev_options, eddi_contexts
                 try:
                     self._post_status(gen, f"Fetching Jira for {job}…")
                     rows, project = fetch_job_pack(
@@ -1082,6 +1229,12 @@ class DocConApp(tk.Tk):
                             )
                         except (JiraError, OSError, ValueError, TypeError):
                             rev_options = {}
+                        try:
+                            eddi_contexts = fetch_eddi_contexts(
+                                settings.site, settings.email, token, rows
+                            )
+                        except (JiraError, OSError, ValueError, TypeError):
+                            eddi_contexts = {}
                 except (JiraError, OSError, ValueError, TypeError) as exc:
                     error = str(exc)
 
@@ -1113,7 +1266,28 @@ class DocConApp(tk.Tk):
             if error is None:
                 self._post_status(gen, f"Matching PDFs for {job}…")
                 matched, orphans = match_pdf_hits(rows, hits, job)
-            self._pending_rows = (gen, job, matched, error, folder_label, orphans, folder, project, rev_options)
+                try:
+                    self._post_status(gen, f"Restoring pack for {job}…")
+                    pack = load_client_pack(folder, job)
+                    previous_located = dict(pack.located_pdfs) if pack else {}
+                    matched = apply_located_pdfs(matched, previous_located)
+                    located = keep_located_pdfs(matched, previous_located)
+                    sweep_replaced_dropped_copies(matched, previous_located)
+                except (OSError, ValueError, TypeError):
+                    located = {}
+            self._pending_rows = (
+                gen,
+                job,
+                matched,
+                error,
+                folder_label,
+                orphans,
+                folder,
+                project,
+                rev_options,
+                located,
+                eddi_contexts,
+            )
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -1179,9 +1353,12 @@ class DocConApp(tk.Tk):
         job_folder: Path | None = None,
         job_project: JobProject | None = None,
         rev_options: dict[str, tuple[str, ...]] | None = None,
+        located: dict | None = None,
+        eddi_contexts: dict[str, tuple[FieldOption, ...]] | None = None,
     ) -> None:
         if gen != self._load_gen:
             return
+        self._eddi_contexts = dict(eddi_contexts or {})
         self._matches = {}
         self._job_folder = job_folder
         self._job_number = job
@@ -1199,24 +1376,25 @@ class DocConApp(tk.Tk):
             return
         if self._resolve_eddi_conflicts([row.drawing for row in matched]):
             return
-        pack = load_client_pack(job_folder, job)
-        self._located_pdfs = dict(pack.located_pdfs) if pack else {}
-        matched = apply_located_pdfs(matched, self._located_pdfs)
+        self._located_pdfs = dict(located or {})
         missing = 0
         for row in matched:
             self._matches[row.drawing.key] = row
             if row.confidence == "Missing":
                 missing += 1
         extra = f"  |  {orphans} extra PDF(s) not in Jira" if orphans else ""
-        self._set_status(f"Painting {len(matched)} item(s) on {job}…")
+        self._set_status(f"Painting 0 of {len(matched)} on {job}…")
         self.board.set_rev_options(rev_options)
+        self.board.set_eddi_options(
+            {key: eddi_option_labels(options) for key, options in self._eddi_contexts.items()}
+        )
         self._paint_progress(0, max(len(matched), 1))
 
         def on_progress(done: int, count: int) -> None:
             if gen != self._load_gen:
                 return
             self._paint_progress(done, count)
-            self._set_status(f"Drawing {done} of {count} on {job}…")
+            self._set_status(f"Painting {done} of {count} on {job}…")
 
         def on_done() -> None:
             self._finish_load(gen, job, matched, missing, folder_label, extra)
@@ -1239,7 +1417,7 @@ class DocConApp(tk.Tk):
         painted = max(len(matched), 1)
         self._paint_progress(painted, painted)
         self._set_status(f"{job}: cover dates N/A, Pack off…")
-        self.after_idle(lambda: self._finish_cover(gen, job, matched, missing, folder_label, extra))
+        self.after(1, lambda: self._finish_cover(gen, job, matched, missing, folder_label, extra))
 
     def _finish_cover(
         self,
@@ -1267,6 +1445,7 @@ class DocConApp(tk.Tk):
         self._set_status(
             f"{job}: {len(matched)} drawing(s), {missing} missing PDF  |  {folder_label}{extra}{cover}{pep}"
         )
+        self._start_watcher()
 
     def _picker_dir(self) -> str:
         fallback = str(self._job_folder) if self._job_folder is not None else os.getcwd()
@@ -1279,13 +1458,16 @@ class DocConApp(tk.Tk):
         return self.board.selected_rows()
 
     def _ask_eddi_fixes(self, conflicts: list[EddiConflict]) -> dict[str, str]:
+        if threading.current_thread() is not threading.main_thread():
+            log("WARN", "load", "EDDI fixer skipped: not on the UI thread")
+            return {}
         dialog = EddiConflictDialog(self, conflicts)
         self.wait_window(dialog)
         return dict(dialog.result)
 
     def _resolve_eddi_conflicts(self, drawings: list[DrawingRow]) -> bool:
         """Prompt for multi-status EDDI. True when Jira was written and Load will re-run."""
-        conflicts = eddi_conflicts(drawings)
+        conflicts = eddi_conflicts(drawings, self._eddi_contexts)
         if not conflicts:
             return False
         self._set_status(f"{len(conflicts)} issue(s) have more than one EDDI Status…")
@@ -1298,7 +1480,14 @@ class DocConApp(tk.Tk):
             return False
         try:
             for key, status in picks.items():
-                update_eddi_status(settings.site, settings.email, token, key, status)
+                update_eddi_status(
+                    settings.site,
+                    settings.email,
+                    token,
+                    key,
+                    status,
+                    self._eddi_contexts.get(key, ()),
+                )
         except (JiraError, OSError) as exc:
             messagebox.showerror("EDDI Status", str(exc))
             return False
@@ -1425,6 +1614,7 @@ class DocConApp(tk.Tk):
             if row.drawing.key in self._matches
         }
         pairs = [(originals.get(row.drawing.key, row.drawing), row.drawing) for row in pending]
+        eddi_contexts = dict(self._eddi_contexts)
         self._busy = True
         self._work = "jira"
         self._start_progress()
@@ -1433,7 +1623,9 @@ class DocConApp(tk.Tk):
         def work() -> None:
             error: str | None = None
             try:
-                run_jira_register_update(settings.site, settings.email, token, pairs)
+                run_jira_register_update(
+                    settings.site, settings.email, token, pairs, eddi_contexts
+                )
             except (JiraError, OSError) as exc:
                 error = str(exc)
             except Exception as exc:
@@ -1504,6 +1696,7 @@ class DocConApp(tk.Tk):
             for row in jira_rows
             if row.drawing.key in self._matches
         }
+        eddi_contexts = dict(self._eddi_contexts)
         settings, token = _session()
         if jira_rows and (not settings.email or not token):
             messagebox.showinfo("Settings", "Open Settings and save your Jira email and API token first.")
@@ -1579,6 +1772,7 @@ class DocConApp(tk.Tk):
                     kind=kind,
                     job_folder=folder,
                     eddi_drawings=eddi_drawings,
+                    eddi_contexts=eddi_contexts,
                 )
                 cover_id = result.cover_id
                 saved_attach = result.attach_note
@@ -1643,6 +1837,409 @@ class DocConApp(tk.Tk):
         self._matches[row.drawing.key] = row
         self.board.apply_row(row)
 
+    def _clear_drop_hover(self) -> None:
+        if self._drop_hover_after:
+            with contextlib.suppress(tk.TclError):
+                self.after_cancel(self._drop_hover_after)
+            self._drop_hover_after = ""
+        with contextlib.suppress(tk.TclError):
+            self.configure(cursor="")
+        self.board.set_drop_hover(None)
+
+    def _on_paste_key(self, event) -> None:
+        """Ctrl+V anywhere except a text box the operator is typing in."""
+        widget = getattr(event, "widget", None)
+        if isinstance(widget, tk.Text | tk.Entry | ttk.Entry):
+            return
+        self._paste_pdf()
+
+    def _paste_pdf(self) -> None:
+        """Outlook Copy on one or more attachments, then Paste PDF here."""
+        log("INFO", "paste", "Paste PDF clicked")
+        try:
+            if self._busy:
+                log("WARN", "paste", "ignored: console busy")
+                return
+            if not self._job_number or not self._matches:
+                messagebox.showinfo("Paste PDF", LOAD_FIRST)
+                return
+            if self._job_folder is None:
+                messagebox.showinfo("Paste PDF", NEED_FOLDER)
+                return
+            self._set_status("Reading the clipboard…")
+            paths = clipboard_pdfs()
+            log("INFO", "paste", f"clipboard pdfs={len(paths)}")
+            if not paths:
+                self._set_status("No PDF on the clipboard.")
+                messagebox.showinfo("Paste PDF", NO_PDF_ON_CLIPBOARD)
+                return
+            self._ingest_pasted_pdfs(paths)
+        except Exception as vis:
+            log("WARN", "paste", f"paste {vis}")
+            messagebox.showinfo("Paste PDF", NO_PDF_ON_CLIPBOARD)
+
+    def _ingest_pasted_pdfs(self, paths: list[Path]) -> None:
+        """One file still pairs the selected row. Two or more wait in New PDFs for Assign."""
+        self._claim_inbox_paths(paths)
+        if len(paths) > 1:
+            self._park_pasted_batch(paths)
+            return
+        self._apply_drop(sources_from_paths(paths), -1, -1, strip_leftovers=True)
+
+    def _park_pasted_batch(self, paths: list[Path]) -> None:
+        """Multi Copy: stage every PDF, then Assign one by one. Do not pair the focused row."""
+        if self._job_folder is None:
+            messagebox.showinfo("Paste PDF", NEED_FOLDER)
+            return
+        try:
+            staged, skipped = ingest_sources(self._job_folder, sources_from_paths(paths))
+        except OSError as vis:
+            messagebox.showerror("Paste PDF", str(vis) or "Could not copy those PDFs.")
+            return
+        extra = f"  ({skipped[0]})" if skipped else ""
+        if not staged:
+            messagebox.showinfo("Paste PDF", skipped[0] if skipped else NOT_PDF)
+            return
+        self._new_pdfs.extend(staged)
+        self._show_new_pdfs()
+        names = ", ".join(path.name for path in staged[:4])
+        more = "…" if len(staged) > 4 else ""
+        log("INFO", "paste", f"parked batch={len(staged)} in New PDFs: {names}")
+        self._set_status(
+            f"{len(staged)} PDF(s) waiting in New PDFs: {names}{more} — click a row, then Assign.{extra}"
+        )
+
+    def _claim_inbox_paths(self, paths: list[Path]) -> None:
+        """Paste stages into the inbox, which the watcher also scans.
+
+        Without this the operator's own paste came back ~1.5s later as a fresh
+        'new PDF' and landed in the New PDFs strip, which looked like paste
+        needing a second Assign step.
+        """
+        watcher = self._watcher
+        if watcher is None:
+            return
+        for path in paths:
+            watcher.mark_seen(path)
+        log("INFO", "watch", f"claimed {len(paths)} staged file(s) from the watcher")
+
+    def _start_watcher(self) -> None:
+        """Watch Downloads / Desktop / inbox while a job is loaded. No COM, no Dropbox."""
+        if self._watcher is None:
+            self._watcher = InboxWatcher()
+            log("INFO", "watch", f"watching {', '.join(str(f) for f in self._watcher.folders)}")
+        self._arm_watch()
+
+    def _arm_watch(self) -> None:
+        if self._watch_after:
+            return
+
+        def tick() -> None:
+            self._watch_after = ""
+            try:
+                self._poll_watch()
+            except Exception as vis:
+                log("WARN", "watch", f"poll {vis}")
+            self._arm_watch()
+
+        with contextlib.suppress(tk.TclError):
+            self._watch_after = self.after(WATCH_POLL_MS, tick)
+
+    def _poll_watch(self) -> None:
+        watcher = self._watcher
+        if watcher is None or self._busy:
+            return
+        if not self._job_number or not self._matches or self._job_folder is None:
+            return
+        found = watcher.poll()
+        if not found:
+            return
+        names = ", ".join(path.name for path in found[:4])
+        log("INFO", "watch", f"new pdfs={len(found)} names={names}")
+        rows = list(self._matches.values())
+        pairs, unmatched = plan_watch_hits(rows, found, self._job_number)
+        paired = 0
+        for key, path in pairs:
+            row = self._matches.get(key)
+            if row is None:
+                continue
+            try:
+                staged, _skipped = ingest_sources(self._job_folder, sources_from_paths([path]))
+            except OSError as vis:
+                log("WARN", "watch", f"ingest {vis}")
+                continue
+            if not staged:
+                continue
+            updated, _leftover = apply_row_drop(row, staged, self._job_number)
+            self._pair_located(updated, remember_folder=False, save=False)
+            paired += 1
+            log("INFO", "watch", f"paired row={key} pdf={staged[0].name}")
+        if paired:
+            self._save_pack(quiet=True)
+            self._refresh_cover_hint()
+        if unmatched:
+            self._new_pdfs.extend(unmatched)
+            self._show_new_pdfs()
+        if paired and not unmatched:
+            self._set_status(f"Picked up {paired} new PDF(s) from Downloads/Desktop.")
+        elif unmatched:
+            self._set_status(
+                f"Picked up {paired} new PDF(s); {len(unmatched)} need a row — see New PDFs."
+            )
+
+    def _show_new_pdfs(self) -> None:
+        self._new_pdf_list.delete(0, "end")
+        for path in self._new_pdfs:
+            self._new_pdf_list.insert("end", path.name)
+        if not self._new_pdfs:
+            with contextlib.suppress(tk.TclError):
+                self._new_pdf_bar.pack_forget()
+            return
+        with contextlib.suppress(tk.TclError):
+            if not self._new_pdf_bar.winfo_ismapped():
+                self._new_pdf_bar.pack(fill="x", pady=(0, 4), before=self.board)
+        self._new_pdf_list.selection_clear(0, "end")
+        self._new_pdf_list.selection_set(0)
+
+    def _selected_new_pdf(self) -> int:
+        try:
+            picked = self._new_pdf_list.curselection()
+        except tk.TclError:
+            return -1
+        if not picked:
+            return -1
+        index = int(picked[0])
+        return index if 0 <= index < len(self._new_pdfs) else -1
+
+    def _dismiss_new_pdf(self) -> None:
+        index = self._selected_new_pdf()
+        if index < 0:
+            return
+        dropped = self._new_pdfs.pop(index)
+        log("INFO", "watch", f"dismissed {dropped.name}")
+        self._show_new_pdfs()
+
+    def _assign_new_pdf(self) -> None:
+        index = self._selected_new_pdf()
+        if index < 0:
+            messagebox.showinfo("New PDFs", "Pick a PDF in the New PDFs list first.")
+            return
+        key = self._paste_target_key()
+        row = self._matches.get(key) if key else None
+        if row is None:
+            messagebox.showinfo("New PDFs", "Click the drawing row you want this PDF on first.")
+            return
+        if self._job_folder is None:
+            messagebox.showinfo("New PDFs", NEED_FOLDER)
+            return
+        path = self._new_pdfs[index]
+        try:
+            staged, skipped = ingest_sources(self._job_folder, sources_from_paths([path]))
+        except OSError as vis:
+            messagebox.showerror("New PDFs", str(vis) or "Could not copy that PDF.")
+            return
+        if not staged:
+            messagebox.showinfo("New PDFs", skipped[0] if skipped else NOT_PDF)
+            return
+        updated, _leftover = apply_row_drop(row, staged, self._job_number)
+        self._pair_located(updated, remember_folder=False, save=True)
+        self._new_pdfs.pop(index)
+        self._show_new_pdfs()
+        ident = updated.drawing.drawing_id or updated.drawing.key
+        log("INFO", "watch", f"assigned {staged[0].name} row={updated.drawing.key}")
+        self._set_status(f"Paired {staged[0].name} for {ident}.")
+
+    def _apply_drop(self, sources, root_x: int, root_y: int, *, strip_leftovers: bool = False) -> None:
+        try:
+            self._apply_drop_body(sources, root_x, root_y, strip_leftovers=strip_leftovers)
+        except Exception as vis:
+            log("WARN", "drop", f"apply {vis}")
+
+    def _apply_drop_body(self, sources, root_x: int, root_y: int, *, strip_leftovers: bool = False) -> None:
+        self._clear_drop_hover()
+        names = ",".join((item.name or "?")[:80] for item in list(sources)[:6]) or "none"
+        log("INFO", "drop", f"ingest names={names} count={len(list(sources))} pt={int(root_x)},{int(root_y)}")
+        if self._busy:
+            log("WARN", "drop", "ignored: console busy")
+            return
+        if not self._job_number or not self._matches:
+            log("INFO", "drop", "fail: no job loaded")
+            self.after(0, lambda: messagebox.showinfo("Paste PDF", LOAD_FIRST))
+            return
+        if self._job_folder is None:
+            log("INFO", "drop", "fail: no job folder")
+            self.after(0, lambda: messagebox.showinfo("Paste PDF", NEED_FOLDER))
+            return
+        try:
+            pdfs, skipped = ingest_sources(self._job_folder, list(sources))
+        except OSError as exc:
+            msg = str(exc) or "Could not copy that PDF."
+            log("WARN", "drop", f"ingest failed {msg}")
+            self.after(0, lambda message=msg: messagebox.showerror("Paste PDF", message))
+            return
+        log(
+            "INFO",
+            "drop",
+            f"ingest pdfs={len(pdfs)} skipped={skipped[0] if skipped else 'none'}",
+        )
+        self.after(
+            0,
+            lambda files=list(pdfs), notes=list(skipped), x=root_x, y=root_y, strip=strip_leftovers: (
+                self._finish_drop(files, notes, x, y, strip_leftovers=strip)
+            ),
+        )
+
+    def _finish_drop(
+        self,
+        pdfs: list[Path],
+        skipped: list[str],
+        root_x: int,
+        root_y: int,
+        *,
+        strip_leftovers: bool = False,
+    ) -> None:
+        try:
+            self._finish_drop_inner(pdfs, skipped, root_x, root_y, strip_leftovers=strip_leftovers)
+        except Exception as vis:
+            log("WARN", "drop", f"finish {vis}")
+
+    def _row_ident(self, row: MatchedRow) -> str:
+        """JIRA ID for the status line, falling back to the Jira issue key."""
+        return (row.drawing.drawing_id or "").strip() or row.drawing.key
+
+    def _paste_target_key(self) -> str:
+        """Where an explicit paste lands: the clicked row, else a lone Pack tick.
+
+        Deliberately strict. 'First of several packed rows' is a guess, and a
+        wrong silent pair is worse than falling through to the filename match.
+        """
+        key = self.board.explicit_focus_key()
+        if key and self._matches.get(key) is not None:
+            return key
+        packed = [item for item in self.board.selected_keys() if self._matches.get(item) is not None]
+        if len(packed) == 1:
+            return packed[0]
+        return ""
+
+    def _finish_drop_inner(
+        self,
+        pdfs: list[Path],
+        skipped: list[str],
+        root_x: int,
+        root_y: int,
+        *,
+        strip_leftovers: bool = False,
+    ) -> None:
+        if not pdfs:
+            note = skipped[0] if skipped else NOT_PDF
+            log("INFO", "drop", f"fail: {note}")
+            messagebox.showinfo("Paste PDF", note)
+            return
+        hit = None
+        if int(root_x) >= 0 and int(root_y) >= 0:
+            hit = self.board.row_key_at(root_x, root_y)
+        hover = None
+        hx, hy = self._drop_hover_pt
+        if hx or hy:
+            hover = self.board.row_key_at(hx, hy)
+        if strip_leftovers:
+            # Paste: only a real pick may claim the file.
+            focused_key = self._paste_target_key() or None
+        else:
+            focused = self.board.focused_row()
+            focused_key = focused.drawing.key if focused is not None else None
+        key = (
+            resolve_drop_row_key(focused_key, hit, hover)
+            if int(root_x) < 0
+            else resolve_drop_row_key(hit, hover)
+        )
+        leftover: list[Path] = []
+        landed: list[tuple[str, str]] = []
+        if key and self._matches.get(key) is not None:
+            # An explicit selection always beats the filename guess.
+            self.board.focus_key(key)
+            updated, leftover = apply_row_drop(self._matches[key], pdfs, self._job_number)
+            self._pair_located(updated, remember_folder=False, save=False)
+            landed.append((self._row_ident(updated), self._paired_name(updated, pdfs)))
+            log("INFO", "drop", f"paired selected row={key} leftover={len(leftover)}")
+        else:
+            rows = list(self._matches.values())
+            updated_rows, leftover = apply_board_drop(rows, pdfs, self._job_number)
+            dropped = {_drop_path_token(path) for path in pdfs}
+            for row in updated_rows:
+                if row.pdf is None:
+                    continue
+                if _drop_path_token(row.pdf.path) not in dropped:
+                    continue
+                self._pair_located(row, remember_folder=False, save=False)
+                landed.append((self._row_ident(row), Path(row.pdf.path).name))
+            log("INFO", "drop", f"paired board={len(landed)} leftover={len(leftover)}")
+            leftover_key = resolve_drop_row_key(focused_key)
+            if leftover and leftover_key and self._matches.get(leftover_key) is not None:
+                self.board.focus_key(leftover_key)
+                updated, leftover = apply_row_drop(self._matches[leftover_key], leftover, self._job_number)
+                self._pair_located(updated, remember_folder=False, save=False)
+                landed.append((self._row_ident(updated), self._paired_name(updated, pdfs)))
+                log("INFO", "drop", f"paired selected={leftover_key} leftover={len(leftover)}")
+        self._save_pack(quiet=True)
+        self._refresh_cover_hint()
+        extra = f"  ({skipped[0]})" if skipped else ""
+        if leftover:
+            self._park_new_pdfs(leftover, landed, extra)
+            return
+        self._set_status(f"Paired {self._landed_text(landed)}.{extra}")
+
+    def _paired_name(self, row: MatchedRow, pdfs: list[Path]) -> str:
+        if row.pdf is not None:
+            return Path(row.pdf.path).name
+        return pdfs[0].name if pdfs else "PDF"
+
+    def _landed_text(self, landed: list[tuple[str, str]]) -> str:
+        """`2026-Tanzim-1-1 REV A.pdf onto 2026-Tanzim-1-1` — filename and JIRA ID."""
+        if not landed:
+            return "0 PDF(s)"
+        if len(landed) == 1:
+            ident, name = landed[0]
+            return f"{name} onto {ident}"
+        shown = ", ".join(f"{name} onto {ident}" for ident, name in landed[:3])
+        more = "…" if len(landed) > 3 else ""
+        return f"{len(landed)} PDF(s): {shown}{more}"
+
+    def _park_new_pdfs(
+        self, leftover: list[Path], landed: list[tuple[str, str]], extra: str
+    ) -> None:
+        """Paste with nothing selected and no filename hit. Park, and say why."""
+        self._new_pdfs.extend(leftover)
+        self._show_new_pdfs()
+        names = ", ".join(path.name for path in leftover[:4])
+        log("INFO", "paste", f"parked {len(leftover)} in New PDFs: {names}")
+        if landed:
+            self._set_status(
+                f"Paired {self._landed_text(landed)}; "
+                f"{len(leftover)} in New PDFs — select a row, then Assign.{extra}"
+            )
+            return
+        self._set_status(f"{names} did not match a row — select a drawing row, then Paste PDF.{extra}")
+        messagebox.showinfo("Paste PDF", SELECT_ROW_FIRST)
+
+    def _pair_located(self, row: MatchedRow, *, remember_folder: bool = True, save: bool = True) -> None:
+        if row.pdf is None:
+            return
+        pdf_path = row.pdf.path
+        self._located_pdfs[row.drawing.key] = LocatedPdf(
+            path=str(pdf_path),
+            email_dropped=bool(row.pdf.email_dropped),
+        )
+        if remember_folder:
+            remember_locate_dir(pdf_path)
+        self._apply_row(row)
+        rev = outgoing_rev_from_filename(pdf_path.name)
+        if rev:
+            self.board.stamp_outgoing_rev(row.drawing.key, rev)
+        if save:
+            self._save_pack(quiet=True)
+            self._refresh_cover_hint()
+
     def _locate_pdf(self, key: str = "") -> None:
         if key:
             self.board.focus_key(key)
@@ -1662,12 +2259,8 @@ class DocConApp(tk.Tk):
         if not pdf_path.is_file():
             messagebox.showerror("Locate PDF", "That file is not available.")
             return
-        updated = pair_pdf(row, pdf_path)
-        self._located_pdfs[row.drawing.key] = str(pdf_path)
-        remember_locate_dir(pdf_path)
-        self._apply_row(updated)
-        self._save_pack(quiet=True)
-        self._refresh_cover_hint()
+        updated = replace_paired_pdf(row, pdf_path)
+        self._pair_located(updated, remember_folder=True)
         self._set_status(f"Located {pdf_path.name} for {updated.drawing.drawing_id or updated.drawing.key}.")
 
     def _open_pdf_key(self, key: str) -> None:
@@ -1686,6 +2279,16 @@ class DocConApp(tk.Tk):
 
 
 def main() -> int:
+    if "--paste" in sys.argv[1:]:
+        from doccon.drop_host import main as helper_main
+
+        return int(helper_main(sys.argv[1:]) or 0)
+    log_session_start(step="session")
+    log(
+        "INFO",
+        "session",
+        "DocConApp init (Paste PDF + watched folder; no OLE overlay)",
+    )
     app = DocConApp()
     app.mainloop()
     return 0

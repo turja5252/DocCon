@@ -14,7 +14,7 @@ import contextlib
 import os
 import re
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from openpyxl import Workbook, load_workbook
@@ -467,6 +467,19 @@ def parse_expected_return(text: str) -> date | str:
         return "N/A"
     parsed = _try_date(token)
     return parsed if parsed is not None else token
+
+
+def cover_issued_default(*, today: date | None = None) -> str:
+    """Console Date issued on open / Load / Cancel Next. Always a calendar day, never N/A."""
+    return (today or date.today()).isoformat()
+
+
+def expected_return_from_issued(
+    issued_text: str, days: int, *, today: date | None = None
+) -> str:
+    """Calendar-day offset from Date issued. Blank/N/A issued uses today. days=0 is same day."""
+    base = parse_issued_date(issued_text, default=today or date.today())
+    return (base + timedelta(days=int(days))).isoformat()
 
 
 def cover_date_stamp(text: str) -> str:

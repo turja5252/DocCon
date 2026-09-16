@@ -9,6 +9,7 @@ from doccon.match import (
     attach_pdfs,
     compact_drawing_id,
     match_keys,
+    outgoing_rev_from_filename,
     parse_pdf_stem,
     scan_current_pdfs,
     wps_library_roots,
@@ -29,6 +30,15 @@ def test_parse_eis_procedure_stem() -> None:
     assert parse_pdf_stem("EIS-13 (Rev. 1)") == ("EIS-13", "1")
     assert parse_pdf_stem("EIS-2-LT (Rev.0)") == ("EIS-2-LT", "0")
     assert parse_pdf_stem("EIS-6SS (Rev 0)") == ("EIS-6SS", "0")
+
+
+def test_outgoing_rev_from_filename() -> None:
+    assert outgoing_rev_from_filename("2026-075-STWD REV 0.pdf") == "0"
+    assert outgoing_rev_from_filename("2025-124-1-TL REV 0.pdf") == "0"
+    assert outgoing_rev_from_filename("ITP-2026-075-1-1 REV 0 Signed.pdf") == "0"
+    assert outgoing_rev_from_filename("EIS-1 (Rev 4).pdf") == "4"
+    assert outgoing_rev_from_filename("scan0042.pdf") == ""
+    assert outgoing_rev_from_filename("") == ""
 
 
 def test_compact_stair_id() -> None:

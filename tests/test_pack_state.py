@@ -2,9 +2,11 @@
 # Copyright (c) 2026 Tanzim Nasir.
 # Built for Elite Integrity Services.
 # Unauthorized use by other companies is prohibited.
+import json
 from pathlib import Path
 
 from doccon.kinds import CLIENT, FIELD, SHOP
+from doccon.match import LocatedPdf
 from doccon.pack_state import (
     PACK_SCHEMA,
     ClientPack,
@@ -26,7 +28,7 @@ def test_round_trip_pack(tmp_path: Path) -> None:
         cc_line="pm@eliteintegrityservices.com",
         project_description="Client | Loc: Site",
         selected_keys=("P2024-15578",),
-        located_pdfs={"P2024-15578": str(tmp_path / "sheet.pdf")},
+        located_pdfs={"P2024-15578": LocatedPdf(str(tmp_path / "sheet.pdf"))},
         next_edits={"P2024-15578": {"outgoing_rev": "B", "status": "IFI"}},
     )
     dest = save_client_pack(tmp_path, pack)
@@ -76,6 +78,56 @@ def test_round_trip_next_edits(tmp_path: Path) -> None:
     assert loaded.schema_version == PACK_SCHEMA
     assert loaded.next_edits == pack.next_edits
     assert loaded.selected_keys == ()
+
+
+def test_located_pdfs_keep_email_dropped_metadata(tmp_path: Path) -> None:
+    dropped = tmp_path / "3.0 Doc Con" / "DocCon" / "dropped" / "sheet.pdf"
+    dropped.parent.mkdir(parents=True)
+    dropped.write_bytes(b"%PDF")
+    pack = ClientPack(
+        job_number="2026-Tanzim",
+        located_pdfs={"P2024-15578": LocatedPdf(str(dropped), email_dropped=True)},
+    )
+    dest = save_client_pack(tmp_path, pack)
+    raw = dest.read_text(encoding="utf-8")
+    assert '"email_dropped": true' in raw
+    assert "token" not in raw.casefold()
+    loaded = load_client_pack(tmp_path, "2026-Tanzim")
+    assert loaded is not None
+    rec = loaded.located_pdfs["P2024-15578"]
+    assert rec.path == str(dropped)
+    assert rec.email_dropped is True
+
+
+def test_load_legacy_dropped_path_is_email_dropped(tmp_path: Path) -> None:
+    dest = pack_path(tmp_path)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dropped = tmp_path / "3.0 Doc Con" / "DocCon" / "dropped" / "sheet.pdf"
+    dest.write_text(
+        json.dumps({"job_number": "2026-Tanzim", "located_pdfs": {"P2024-1": str(dropped)}}) + "\n",
+        encoding="utf-8",
+    )
+    loaded = load_client_pack(tmp_path, "2026-Tanzim")
+    assert loaded is not None
+    rec = loaded.located_pdfs["P2024-1"]
+    assert rec.email_dropped is True
+    assert rec.path == str(dropped)
+
+
+def test_round_trip_jira_id_next(tmp_path: Path) -> None:
+    pack = ClientPack(
+        job_number="2026-Tanzim",
+        selected_keys=("P2024-15578",),
+        issued="2026-09-11",
+        expected="2026-09-22",
+        next_edits={"P2024-15578": {"drawing_id": "2026-Tanzim-1-STWD", "title": "SPIRAL STAIRWAY"}},
+    )
+    save_client_pack(tmp_path, pack)
+    loaded = load_client_pack(tmp_path, "2026-Tanzim")
+    assert loaded is not None
+    assert loaded.next_edits == {
+        "P2024-15578": {"drawing_id": "2026-Tanzim-1-STWD", "title": "SPIRAL STAIRWAY"}
+    }
 
 
 def test_load_skips_junk_next_edits(tmp_path: Path) -> None:

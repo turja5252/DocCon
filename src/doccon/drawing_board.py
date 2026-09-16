@@ -14,7 +14,7 @@ from dataclasses import dataclass, replace
 from tkinter import messagebox, ttk
 
 from doccon.date_picker import CalendarPopup, attach_calendar
-from doccon.match import MatchedRow
+from doccon.match import MatchedRow, pdf_address_text, pdf_address_tip, pdf_is_email_dropped
 from doccon.register import (
     APPROVAL_VALUES,
     DRAWING_STATUSES,
@@ -23,11 +23,25 @@ from doccon.register import (
     due_date_from_return_request,
     eddi_group_title,
     is_generic_eddi,
+    normalize_option_key,
     pack_sort_key,
     summary_from_parts,
 )
 from doccon.settings import BOARD_LAYOUT_REV, load_settings, remember_board_col_px
-from doccon.theme import BG, BORDER, FONT_SMALL, NAVY_MID, OK, PENDING_BG, SURFACE, apply_theme, match_style
+from doccon.theme import (
+    ACCENT,
+    BG,
+    BORDER,
+    FOCUS_BG,
+    FOCUS_RULE,
+    FONT_SMALL,
+    NAVY_MID,
+    OK,
+    PENDING_BG,
+    SURFACE,
+    apply_theme,
+    match_style,
+)
 
 # Convenience list when Jira editmeta does not send allowedValues (text schema or fetch missed).
 # Option-schema rev fields use Jira's allowedValues. Now values still come from Load, not this list.
@@ -47,6 +61,15 @@ REV_VALUES = (
 PURPOSE_VALUES = ("", "Approval", "Info", "Planned", "NA")
 # Blank Now Outgoing Rev bumps to 0 (Elite IFC / numeric jobs such as 2026-075), not A.
 BLANK_OUTGOING_REV = "0"
+
+
+def row_key_for_y(bands: list[tuple[str, int, int]], y: int) -> str | None:
+    """Map a screen (or canvas) y to the drawing row whose [top, bottom) band contains it."""
+    point = int(y)
+    for key, top, bottom in bands:
+        if int(top) <= point < int(bottom):
+            return key
+    return None
 
 
 def _next_alpha(token: str) -> str:
@@ -128,6 +151,8 @@ def field_is_typeable_combo(field: str) -> bool:
     return field in TYPEABLE_REV_FIELDS
 
 PAINT_BATCH = 16
+PAINT_SLICE_MS = 1
+FROZEN_SYNC_MAX = 4
 PACK_COL_INDEX = 0
 DRAWING_COL_INDEX = 1
 DESC_COL_INDEX = 2
@@ -393,17 +418,22 @@ class _Block:
     originals: dict[str, ttk.Label]
     nexts: dict[str, NextWidget]
     drawing_label: ttk.Label
+    drawing_id_next: NextEntry
     title_label: ttk.Label
     title_next: NextEntry
     status_label: ttk.Label
     status_next: ttk.Combobox
     match_label: ttk.Label
     pdf_label: ttk.Label
+    pdf_cell: tk.Frame
     pack_mark: PackMark
     locate_btn: ttk.Button
     open_btn: ttk.Button
     widgets: list[tk.Misc]
+    # The four 1px separators (top/bottom × scrolling/frozen pane) that bracket this row.
+    rules: tuple[tk.Frame, ...]
     shown: bool = True
+    focused: bool = False
 
 
 class DrawingBoard(ttk.Frame):
@@ -433,10 +463,12 @@ class DrawingBoard(ttk.Frame):
         self._matches: dict[str, MatchedRow] = {}
         self._blocks: dict[str, _Block] = {}
         self._focus_key = ""
+        self._focus_painted = ""
         self._active_next: NextWidget | None = None
         self._batch_status: ttk.Combobox
         self._batch_fields: dict[str, NextWidget] = {}
         self._rev_options: dict[str, tuple[str, ...]] = {}
+        self._eddi_options: dict[str, tuple[str, ...]] = {}
         self._batch_note: ttk.Label
         self._packed_rev: ttk.Combobox
         self._packed_only_btn: ttk.Button
@@ -466,11 +498,13 @@ class DrawingBoard(ttk.Frame):
         self._syncing = False
         self._frozen_row_after = ""
         self._frozen_syncing = False
+        self._frozen_passes = 0
         self._filter_var = tk.StringVar()
         self._filter_needle = ""
         self._filter_hidden = False
         self._packed_only = tk.BooleanVar(value=False)
         self._pack_filter_after = ""
+        self._drop_hover_key = ""
 
         batch = ttk.LabelFrame(self, text="Batch Next — applies to Pack ticks only", padding=4)
         batch.pack(fill="x", padx=8, pady=(0, 4))
@@ -519,6 +553,7 @@ class DrawingBoard(ttk.Frame):
                 "Leave a box blank to skip. Date: type it, or click ▾ for a calendar. "
                 "Submitted to Client For, Client Approval, Shop/Field IFC Rev, and EDDI Status are pick-only. "
                 "Double-click a text Next box to edit (single-click selects the row). "
+                "JIRA ID and Description are typed on the row; Confirm writes them as one Jira summary. "
                 "Edited Next boxes turn yellow. Right-click a Next box to restore Now. "
                 "Bump packed steps each packed Outgoing Rev from Now; Set packed to… stamps one rev. "
                 "Cancel Next restores every Next field on every listed drawing to Now (Jira is untouched)."
@@ -597,6 +632,65 @@ class DrawingBoard(ttk.Frame):
         self._draw_header()
         self._apply_col_sizes()
 
+    def drop_target_widgets(self) -> list[tk.Misc]:
+        """Fixed board HWNDs for OLE (canvas + inner panes). Not per-row children."""
+        return [self, self._canvas, self._inner, self._freeze_inner, self._header_canvas]
+
+    def row_bands(self) -> list[tuple[str, int, int]]:
+        """Visible drawing rows as (key, root_y0, root_y1) for hit-testing a drop."""
+        bands: list[tuple[str, int, int]] = []
+        for key, block in self._blocks.items():
+            if not block.shown:
+                continue
+            ys: list[int] = []
+            for item in (block.drawing_label, block.pack_mark, block.title_next, block.pdf_cell):
+                try:
+                    ys.append(int(item.winfo_rooty()))
+                    ys.append(int(item.winfo_rooty()) + max(int(item.winfo_height()), 1))
+                except (tk.TclError, TypeError, ValueError):
+                    continue
+            if not ys:
+                continue
+            bands.append((key, min(ys), max(ys)))
+        bands.sort(key=lambda item: item[1])
+        return bands
+
+    def set_drop_hover(self, key: str | None) -> None:
+        """Cheap row outline so an Outlook drag does not feel like nothing."""
+        token = key or ""
+        if token == self._drop_hover_key:
+            return
+        self._drop_hover_key = token
+        with contextlib.suppress(tk.TclError):
+            self._canvas.delete("drop_hover")
+        if not token:
+            return
+        block = self._blocks.get(token)
+        if block is None:
+            return
+        try:
+            canvas_root = int(self._canvas.winfo_rooty())
+            y0 = int(block.drawing_label.winfo_rooty())
+            y1 = y0 + max(int(block.drawing_label.winfo_height()), 8)
+            with contextlib.suppress(tk.TclError):
+                box = block.title_next
+                y1 = max(y1, int(box.winfo_rooty()) + max(int(box.winfo_height()), 1))
+            top = float(self._canvas.canvasy(y0 - canvas_root))
+            bot = float(self._canvas.canvasy(y1 - canvas_root))
+            width = max(int(self._canvas.winfo_width()), 8)
+            self._canvas.create_rectangle(
+                1,
+                top,
+                width - 1,
+                bot,
+                outline=ACCENT,
+                width=2,
+                fill="",
+                tags="drop_hover",
+            )
+        except (tk.TclError, TypeError, ValueError):
+            return
+
     def _xview(self, *args) -> None:
         self._canvas.xview(*args)
         self._header_canvas.xview(*args)
@@ -625,7 +719,12 @@ class DrawingBoard(ttk.Frame):
 
     def _schedule_frozen_row_sync(self) -> None:
         """Match freeze-pane row heights after wrap has a real requested size."""
-        if self._suspend_layout or self._frozen_row_after or self._frozen_syncing:
+        if (
+            self._suspend_layout
+            or self._frozen_row_after
+            or self._frozen_syncing
+            or self._frozen_passes >= FROZEN_SYNC_MAX
+        ):
             return
         try:
             self._frozen_row_after = self.after_idle(self._run_frozen_row_sync)
@@ -634,12 +733,14 @@ class DrawingBoard(ttk.Frame):
 
     def _run_frozen_row_sync(self) -> None:
         self._frozen_row_after = ""
-        if self._suspend_layout:
+        if self._suspend_layout or self._frozen_syncing:
+            return
+        if self._frozen_passes >= FROZEN_SYNC_MAX:
             return
         self._frozen_syncing = True
+        self._frozen_passes += 1
         try:
-            with contextlib.suppress(tk.TclError):
-                self.update_idletasks()
+            # Do not call update_idletasks: nested idle + Configure/OLE freeze Load.
             self._sync_frozen_rows()
             self._sync_scroll()
         finally:
@@ -661,9 +762,9 @@ class DrawingBoard(ttk.Frame):
                 continue
         return height
 
-    def _sync_frozen_rows(self) -> None:
+    def _sync_frozen_rows(self) -> bool:
         if self._suspend_layout:
-            return
+            return False
         rows: set[int] = set()
         for frame in (self._freeze_inner, self._inner):
             for child in frame.grid_slaves():
@@ -671,14 +772,23 @@ class DrawingBoard(ttk.Frame):
                     rows.add(int(child.grid_info()["row"]))
                 except (tk.TclError, KeyError, TypeError, ValueError):
                     continue
+        changed = False
         for row in rows:
             height = max(
                 self._row_needed_height(self._freeze_inner, row),
                 self._row_needed_height(self._inner, row),
             )
-            if height:
-                self._freeze_inner.rowconfigure(row, minsize=height, weight=0)
-                self._inner.rowconfigure(row, minsize=height, weight=0)
+            if not height:
+                continue
+            for frame in (self._freeze_inner, self._inner):
+                try:
+                    current = int(frame.grid_rowconfigure(row).get("minsize") or 0)
+                except (tk.TclError, TypeError, ValueError):
+                    continue
+                if current != height:
+                    frame.rowconfigure(row, minsize=height, weight=0)
+                    changed = True
+        return changed
 
     def _sync_scroll(self, canvas_width: int | None = None) -> None:
         if self._suspend_layout or self._syncing:
@@ -744,7 +854,8 @@ class DrawingBoard(ttk.Frame):
         if col is None or col in (DRAWING_COL_INDEX, DESC_COL_INDEX):
             self._apply_body_wraps(col)
         if not self._suspend_layout:
-            self._sync_frozen_rows()
+            if not self._frozen_syncing:
+                self._frozen_passes = 0
             self._size_frozen()
             self._pin_frozen()
             self._schedule_frozen_row_sync()
@@ -838,6 +949,38 @@ class DrawingBoard(ttk.Frame):
             return override
         return _values_for_field(field)
 
+    def _eddi_values_for(self, key: str) -> tuple[str, ...]:
+        """EDDI Status ▼ for one row: that issue's own Jira options, else the Elite list."""
+        return self._eddi_options.get(key) or _values_for_field("eddi_status")
+
+    def _shared_eddi_options(self) -> tuple[str, ...]:
+        """Batch EDDI list: only options every listed issue's own context has."""
+        if not self._eddi_options:
+            return _values_for_field("eddi_status")
+        lists = list(self._eddi_options.values())
+        shared = [normalize_option_key(label) for label in lists[0]]
+        for values in lists[1:]:
+            folded = {normalize_option_key(label) for label in values}
+            shared = [key for key in shared if key in folded]
+        keep = set(shared)
+        return tuple(label for label in lists[0] if normalize_option_key(label) in keep)
+
+    def set_eddi_options(self, options: dict[str, tuple[str, ...]] | None) -> None:
+        """Per-issue EDDI Status lists. Never offer another issue's context options."""
+        self._eddi_options = {key: tuple(values) for key, values in (options or {}).items() if values}
+        shared = self._shared_eddi_options()
+        box = self._batch_fields.get("eddi_status")
+        if isinstance(box, ttk.Combobox):
+            box.configure(values=shared)
+            if box.get().strip() and box.get().strip() not in shared:
+                box.set("")
+        for block in self._blocks.values():
+            nxt = block.nexts.get("eddi_status")
+            if isinstance(nxt, ttk.Combobox):
+                row = self._matches.get(block.key)
+                now = (row.drawing.eddi_status or "") if row is not None else ""
+                nxt.configure(values=with_now_option(self._eddi_values_for(block.key), now))
+
     def set_rev_options(self, options: dict[str, tuple[str, ...]] | None) -> None:
         """Use Jira allowedValues for rev Comboboxes. Empty/omitted fields keep REV_VALUES."""
         self._rev_options = {key: tuple(values) for key, values in (options or {}).items() if values}
@@ -868,9 +1011,10 @@ class DrawingBoard(ttk.Frame):
         field: str,
         readonly: bool = False,
         kind: str = "option",
+        host: tk.Misc | None = None,
     ) -> NextWidget:
         """Next editor in a colored cell. ttk fill is ignored on Windows, so the cell is yellow."""
-        cell = tk.Frame(self._inner, bg=SURFACE, highlightthickness=0, bd=0)
+        cell = tk.Frame(host if host is not None else self._inner, bg=SURFACE, highlightthickness=0, bd=0)
         cell.grid(row=row, column=col, sticky="nsew", padx=(6, SASH_PX), pady=1)
         if kind in {"text", "date"}:
             box: NextWidget = NextEntry(cell, width=1)
@@ -1063,7 +1207,7 @@ class DrawingBoard(ttk.Frame):
             return False
         extra = ""
         try:
-            extra = block.title_next.get()
+            extra = f"{block.drawing_id_next.get()} {block.title_next.get()}"
         except tk.TclError:
             extra = ""
         return row_matches_filter(row, self._filter_needle, extra=extra)
@@ -1203,6 +1347,8 @@ class DrawingBoard(ttk.Frame):
         self._paint_on_done = None
         self._suspend_layout = False
         self._drag_col = None
+        self._frozen_passes = 0
+        self._frozen_syncing = False
         self._map_inner()
 
     def clear(self) -> None:
@@ -1215,7 +1361,9 @@ class DrawingBoard(ttk.Frame):
         self._matches.clear()
         self._group_headers.clear()
         self._group_frozen.clear()
+        # A repaint drops the band with the blocks it was painted on: no stale focused row.
         self._focus_key = ""
+        self._focus_painted = ""
         self._filter_hidden = False
         self._refresh_filter()
         self._sync_scroll()
@@ -1245,6 +1393,7 @@ class DrawingBoard(ttk.Frame):
     def _begin_rows(self, rows: list[MatchedRow], *, checked: set[str] | None = None) -> None:
         self.clear()
         self._suspend_layout = True
+        self._frozen_passes = 0
         self._unmap_inner()
         ordered = sorted(
             (row for row in rows if not is_generic_eddi(row.drawing.eddi_status)),
@@ -1258,7 +1407,10 @@ class DrawingBoard(ttk.Frame):
         self._paint_done = 0
 
     def _schedule_paint(self) -> None:
-        self._paint_after = self.after_idle(self._paint_batch)
+        try:
+            self._paint_after = self.after(PAINT_SLICE_MS, self._paint_batch)
+        except tk.TclError:
+            self._paint_after = ""
 
     def _paint_batch(self) -> None:
         self._paint_after = ""
@@ -1296,6 +1448,7 @@ class DrawingBoard(ttk.Frame):
         self._paint_queue = deque()
         self._map_inner()
         self._suspend_layout = False
+        self._frozen_passes = 0
         self._refresh_filter()
         self._apply_col_sizes()
         done = self._paint_on_done
@@ -1418,6 +1571,16 @@ class DrawingBoard(ttk.Frame):
             parent=self._freeze_inner,
         )
         self._place(drawing_label, now_row, DRAWING_COL_INDEX)
+        drawing_id_next = self._next_box(
+            next_row,
+            DRAWING_COL_INDEX,
+            values=(),
+            initial=drawing.drawing_id or "",
+            key=drawing.key,
+            field="drawing_id",
+            kind="text",
+            host=self._freeze_inner,
+        )
         title_text = drawing.title or ""
         title_label = self._clip_label(title_text or "—", wrap_col=DESC_COL_INDEX)
         self._place(title_label, now_row, DESC_COL_INDEX)
@@ -1444,9 +1607,8 @@ class DrawingBoard(ttk.Frame):
         )
         match_label = self._clip_label(row.confidence, match_style(row.confidence))
         self._place(match_label, now_row, MATCH_COL_INDEX)
-        pdf_name = row.pdf.path.name if row.pdf else ""
-        pdf_label = self._clip_label(pdf_name)
-        self._place(pdf_label, now_row, PDF_COL_INDEX)
+        pdf_cell, pdf_label = self._pdf_address_cell(row)
+        self._place(pdf_cell, now_row, PDF_COL_INDEX)
         pdf_label.bind("<Double-1>", lambda _event, key=drawing.key: self._on_open_pdf(key))
         pdf_actions = ttk.Frame(self._inner, style="Board.TFrame")
         locate_btn = ttk.Button(
@@ -1467,11 +1629,11 @@ class DrawingBoard(ttk.Frame):
         open_btn.pack(side="left")
         open_btn.configure(state="normal" if row.pdf else "disabled")
         self._place(pdf_actions, next_row, PDF_COL_INDEX)
-        for widget in (drawing_label, title_label, status_label, match_label, pdf_label):
+        for widget in (drawing_label, title_label, status_label, match_label, pdf_label, pdf_cell):
             widget.bind("<Button-1>", lambda _event, key=drawing.key: self._set_focus(key))
         self._bind_overflow(drawing_label, lambda w=drawing_label: str(w.cget("text")), 12)
         self._bind_overflow(title_label, lambda w=title_label: str(w.cget("text")), 12)
-        self._bind_overflow(pdf_label, lambda w=pdf_label: str(w.cget("text")), 12)
+        self._bind_overflow(pdf_label, lambda key=drawing.key: self._pdf_tip_text(key), 12)
 
         originals: dict[str, ttk.Label] = {}
         nexts: dict[str, NextWidget] = {}
@@ -1482,7 +1644,8 @@ class DrawingBoard(ttk.Frame):
             self._place(original, now_row, col)
             originals[field] = original
             now_text = getattr(drawing, field) or ""
-            list_values = with_now_option(self._field_values(field), now_text) if kind in {"option", "eddi"} else values
+            base = self._eddi_values_for(drawing.key) if kind == "eddi" else self._field_values(field)
+            list_values = with_now_option(base, now_text) if kind in {"option", "eddi"} else values
             box = self._next_box(
                 next_row,
                 col,
@@ -1498,7 +1661,7 @@ class DrawingBoard(ttk.Frame):
         h_bot, h_bot_f = self._hline(top + 3)
         next_cells = [
             cell
-            for box in (title_next, status_next, *nexts.values())
+            for box in (drawing_id_next, title_next, status_next, *nexts.values())
             if (cell := self._next_cell(box)) is not None
         ]
         widgets: list[tk.Misc] = [
@@ -1509,7 +1672,7 @@ class DrawingBoard(ttk.Frame):
             title_label,
             status_label,
             match_label,
-            pdf_label,
+            pdf_cell,
             pdf_actions,
             *originals.values(),
             *next_cells,
@@ -1523,19 +1686,25 @@ class DrawingBoard(ttk.Frame):
             originals=originals,
             nexts=nexts,
             drawing_label=drawing_label,
+            drawing_id_next=drawing_id_next,
             title_label=title_label,
             title_next=title_next,
             status_label=status_label,
             status_next=status_next,
             match_label=match_label,
             pdf_label=pdf_label,
+            pdf_cell=pdf_cell,
             pack_mark=pack_mark,
             locate_btn=locate_btn,
             open_btn=open_btn,
             widgets=widgets,
+            rules=(h_top, h_top_f, h_bot, h_bot_f),
         )
         pack.trace_add("write", lambda *_args, drawing_key=drawing.key: self._on_pack_tick(drawing_key))
         self._watch_next(self._blocks[drawing.key])
+        if drawing.key == self._focus_key:
+            self._focus_painted = drawing.key
+            self._style_row_focus(self._blocks[drawing.key])
 
     def set_pack(self, checked: bool) -> None:
         filtering = bool(self._filter_needle.strip())
@@ -1560,7 +1729,12 @@ class DrawingBoard(ttk.Frame):
     def _apply_next_to_block(
         self, block: _Block, *, status: str = "", fields: dict[str, str] | None = None
     ) -> None:
-        """Set Next on one row (same dirty/yellow path as Apply to Pack). Does not write Jira."""
+        """Set Next on one row (same dirty/yellow path as Apply to Pack). Does not write Jira.
+
+        Does not move the focused row: a batch stamp, a cover-date pack tick, and a Load
+        restore are not the operator pointing at a drawing, and `explicit_focus_key` is
+        what a paste lands on.
+        """
         status_value = (status or "").strip()
         if status_value:
             block.status_next.set(status_value)
@@ -1571,7 +1745,17 @@ class DrawingBoard(ttk.Frame):
             if box is not None:
                 box.set(value)
         self._refresh_next_marks(block)
-        self._set_focus(block.key)
+
+    def stamp_outgoing_rev(self, key: str, rev: str) -> bool:
+        """Set Next Outgoing Rev from a paired PDF filename. Does not write Jira or move focus."""
+        value = (rev or "").strip()
+        if not value:
+            return False
+        block = self._blocks.get((key or "").strip())
+        if block is None:
+            return False
+        self._apply_next_to_block(block, fields={"outgoing_rev": value})
+        return True
 
     def apply_next_to_pack(self, *, status: str = "", fields: dict[str, str] | None = None) -> int:
         updates = {key: value.strip() for key, value in (fields or {}).items() if value.strip()}
@@ -1666,7 +1850,6 @@ class DrawingBoard(ttk.Frame):
             box.set(next_outgoing_rev(row.drawing.outgoing_rev))
             self._refresh_next_marks(block)
             count += 1
-            self._set_focus(key)
         return count
 
     def set_packed_rev(self, rev: str) -> int:
@@ -1697,6 +1880,8 @@ class DrawingBoard(ttk.Frame):
         self._batch_note.configure(text="Tick Pack on at least one drawing first.")
 
     def _next_widget(self, block: _Block, field: str) -> NextWidget | None:
+        if field == "drawing_id":
+            return block.drawing_id_next
         if field == "title":
             return block.title_next
         if field == "status":
@@ -1774,7 +1959,8 @@ class DrawingBoard(ttk.Frame):
         if not messagebox.askyesno(
             "Cancel Next?",
             f"Throw away Next edits on {pending} drawing(s) and put Now back on every field?\n"
-            "Jira is not written. Pack ticks stay. Date issued and Expected return go back to N/A.",
+            "Jira is not written. Pack ticks stay. Date issued goes back to today. "
+            "Expected return goes back to N/A.",
             parent=self.winfo_toplevel(),
         ):
             return
@@ -1800,10 +1986,13 @@ class DrawingBoard(ttk.Frame):
             drawing = row.drawing
             dirty: dict[str, str] = {}
             try:
+                ident = block.drawing_id_next.get().strip()
                 title = block.title_next.get().strip()
                 status = block.status_next.get().strip()
             except tk.TclError:
                 continue
+            if ident != (drawing.drawing_id or "").strip():
+                dirty["drawing_id"] = ident
             if title != (drawing.title or "").strip():
                 dirty["title"] = title
             if status and status != (drawing.status or "").strip():
@@ -1838,11 +2027,14 @@ class DrawingBoard(ttk.Frame):
                 continue
             status = str(fields.get("status") or "")
             title = fields.get("title")
+            ident = fields.get("drawing_id")
             payload = {
                 name: str(value)
                 for name, value in fields.items()
-                if name not in {"status", "title"}
+                if name not in {"status", "title", "drawing_id"}
             }
+            if ident is not None:
+                block.drawing_id_next.set(str(ident))
             if title is not None:
                 block.title_next.set(str(title))
             self._apply_next_to_block(block, status=status, fields=payload)
@@ -1879,18 +2071,73 @@ class DrawingBoard(ttk.Frame):
             updates.get("return_request_date", ""),
         )
         status = block.status_next.get().strip() or row.drawing.status
+        ident = block.drawing_id_next.get().strip()
         title = block.title_next.get().strip()
-        summary = summary_from_parts(row.drawing.drawing_id, title)
+        # JIRA ID and Description are two halves of one Jira field, so compose once here.
+        summary = summary_from_parts(ident, title)
         return replace(
             row,
-            drawing=replace(row.drawing, status=status, title=title, summary=summary, **updates),
+            drawing=replace(
+                row.drawing,
+                status=status,
+                drawing_id=ident,
+                title=title,
+                summary=summary,
+                **updates,
+            ),
         )
 
     def _set_focus(self, key: str) -> None:
-        self._focus_key = key
+        token = (key or "").strip()
+        if token == self._focus_key:
+            return
+        self._focus_key = token
+        # Only the row that lost the band and the row that gained it repaint. Never the list.
+        for touched in (self._focus_painted, token):
+            block = self._blocks.get(touched)
+            if block is not None:
+                self._style_row_focus(block)
+        self._focus_painted = token
+
+    def _style_row_focus(self, block: _Block) -> None:
+        """Band the focused drawing so the operator sees where Ctrl+V will land.
+
+        The Now labels carry the band and the 1px rules bracket the block, both in the
+        frozen pane (Pack / JIRA ID) and the scrolling pane, so it survives a sideways
+        scroll with no sync loop. Next cells keep their own white / PENDING amber: the
+        band must never be mistaken for a dirty Next, or make one harder to read.
+        """
+        on = block.key == self._focus_key
+        if on == block.focused:
+            return
+        block.focused = on
+        want = "Focus.TLabel" if on else "Board.TLabel"
+        for label in (block.drawing_label, block.title_label, block.status_label, *block.originals.values()):
+            with contextlib.suppress(tk.TclError):
+                if str(label.cget("style")) != want:
+                    label.configure(style=want)
+        row = self._matches.get(block.key)
+        if row is not None:
+            with contextlib.suppress(tk.TclError):
+                block.match_label.configure(style=match_style(row.confidence, focused=on))
+            self._style_pdf_address(block, row)
+        rule = FOCUS_RULE if on else BORDER
+        for line in block.rules:
+            with contextlib.suppress(tk.TclError):
+                if str(line.cget("background")) != rule:
+                    line.configure(background=rule)
 
     def focus_key(self, key: str) -> None:
         self._set_focus(key)
+
+    def explicit_focus_key(self) -> str:
+        """The row the operator actually clicked. A Pack tick is not a cursor.
+
+        `focused_row` falls back to the first packed row, which is fine for a
+        positional drop but must never decide where an explicit paste lands.
+        """
+        key = (self._focus_key or "").strip()
+        return key if key and key in self._matches else ""
 
     def focused_row(self) -> MatchedRow | None:
         if self._focus_key:
@@ -1900,6 +2147,68 @@ class DrawingBoard(ttk.Frame):
         selected = self.selected_rows()
         return selected[0] if selected else None
 
+    def row_key_at(self, root_x: int, root_y: int) -> str | None:
+        """Jira issue key for the drawing under a screen point, or None (board drop)."""
+        try:
+            widget = self.winfo_containing(int(root_x), int(root_y))
+        except (tk.TclError, TypeError, ValueError):
+            widget = None
+        owners: dict[int, str] = {}
+        for key, block in self._blocks.items():
+            items = [
+                *block.widgets,
+                block.locate_btn,
+                block.open_btn,
+                block.pack_mark,
+                block.drawing_id_next,
+                block.title_next,
+                block.status_next,
+                *block.nexts.values(),
+            ]
+            for item in items:
+                owners[id(item)] = key
+        current: object | None = widget
+        seen: set[int] = set()
+        while current is not None and id(current) not in seen:
+            seen.add(id(current))
+            key = owners.get(id(current))
+            if key:
+                return key
+            if current is self:
+                break
+            current = getattr(current, "master", None)
+        return row_key_for_y(self.row_bands(), int(root_y))
+
+    def _pdf_tip_text(self, key: str) -> str:
+        row = self._matches.get(key)
+        return pdf_address_tip(row) if row is not None else ""
+
+    def _pdf_address_cell(self, row: MatchedRow) -> tuple[tk.Frame, ttk.Label]:
+        dropped = pdf_is_email_dropped(row)
+        fill = PENDING_BG if dropped else BG
+        cell = tk.Frame(self._inner, bg=fill, highlightthickness=0, bd=0)
+        label = ttk.Label(
+            cell,
+            text=pdf_address_text(row),
+            style="Pending.TLabel" if dropped else "Board.TLabel",
+            anchor="w",
+            width=1,
+        )
+        label.pack(fill="both", expand=True, padx=2, pady=1)
+        return cell, label
+
+    def _style_pdf_address(self, block: _Block, row: MatchedRow) -> None:
+        # email dropped outranks the focus band: the bypass must stay unmistakably amber.
+        if pdf_is_email_dropped(row):
+            fill, want = PENDING_BG, "Pending.TLabel"
+        elif block.focused:
+            fill, want = FOCUS_BG, "Focus.TLabel"
+        else:
+            fill, want = BG, "Board.TLabel"
+        if str(block.pdf_cell.cget("bg")) != fill:
+            block.pdf_cell.configure(bg=fill)
+        block.pdf_label.configure(text=pdf_address_text(row), style=want)
+
     def apply_row(self, row: MatchedRow) -> None:
         drawing = row.drawing
         self._matches[drawing.key] = row
@@ -1907,12 +2216,13 @@ class DrawingBoard(ttk.Frame):
         if block is None:
             return
         block.drawing_label.configure(text=drawing.drawing_id or drawing.key)
+        block.drawing_id_next.set(drawing.drawing_id or "")
         block.title_label.configure(text=drawing.title or "—")
         block.title_next.set(drawing.title or "")
         block.status_label.configure(text=drawing.status)
         block.status_next.set(drawing.status)
-        block.match_label.configure(text=row.confidence, style=match_style(row.confidence))
-        block.pdf_label.configure(text=row.pdf.path.name if row.pdf else "")
+        block.match_label.configure(text=row.confidence, style=match_style(row.confidence, focused=block.focused))
+        self._style_pdf_address(block, row)
         block.open_btn.configure(state="normal" if row.pdf else "disabled")
         for field, _title, _values, _width, _kind in FIELD_KEYS:
             value = getattr(drawing, field) or ""
@@ -2136,7 +2446,7 @@ class DrawingBoard(ttk.Frame):
         def ping(_event: object = None) -> None:
             self.after_idle(lambda watched=block: self._refresh_next_marks(watched))
 
-        for box in (block.title_next, block.status_next, *block.nexts.values()):
+        for box in (block.drawing_id_next, block.title_next, block.status_next, *block.nexts.values()):
             var = tk.StringVar(value=box.get())
             box.configure(textvariable=var)
             box._doccon_var = var
@@ -2160,6 +2470,7 @@ class DrawingBoard(ttk.Frame):
             return
         drawing = row.drawing
         self._style_next(block.status_next, _field_pending(drawing.status, block.status_next.get(), status=True))
+        self._style_next(block.drawing_id_next, _field_pending(drawing.drawing_id, block.drawing_id_next.get()))
         self._style_next(block.title_next, _field_pending(drawing.title, block.title_next.get()))
         for field, *_rest in FIELD_KEYS:
             box = block.nexts.get(field)
@@ -2201,6 +2512,8 @@ class DrawingBoard(ttk.Frame):
             changed = False
             nxt_status = block.status_next.get().strip()
             if nxt_status and nxt_status != (drawing.status or "").strip():
+                changed = True
+            if not changed and block.drawing_id_next.get().strip() != (drawing.drawing_id or "").strip():
                 changed = True
             if not changed and block.title_next.get().strip() != (drawing.title or "").strip():
                 changed = True

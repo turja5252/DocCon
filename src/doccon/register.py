@@ -96,6 +96,46 @@ class DrawingRow:
     shop_ifc_date: str = ""
     field_ifc_date: str = ""
     eddi_status: str = ""
+    issue_type: str = ""
+
+
+DASH_CHARS = "\u2010\u2011\u2012\u2013\u2014\u2015\u2212"
+
+
+def normalize_option_key(text: str) -> str:
+    """Match option labels across case, dash character, and stray/doubled whitespace."""
+    token = text or ""
+    for dash in DASH_CHARS:
+        token = token.replace(dash, "-")
+    return " ".join(token.split()).casefold()
+
+
+@dataclass(frozen=True)
+class FieldOption:
+    """One option from a single issue's own Jira field context.
+
+    Multi-checkbox contexts are per project / issue type, so an option read from one
+    issue is not valid on another. ``option_id`` is context-safe; write that when Jira
+    sends it.
+    """
+
+    label: str
+    option_id: str = ""
+
+
+def resolve_field_option(label: str, options: tuple[FieldOption, ...]) -> FieldOption | None:
+    """That issue's option for this label, or None when its context has no such option."""
+    want = normalize_option_key(label)
+    if not want:
+        return None
+    for option in options:
+        if normalize_option_key(option.label) == want:
+            return option
+    return None
+
+
+def option_payload(option: FieldOption) -> dict:
+    return {"id": option.option_id} if option.option_id else {"value": option.label}
 
 
 # EDDI group 6 — QC Welding. Jira summary is the code, then this wording.
@@ -185,6 +225,22 @@ def summary_from_parts(drawing_id: str, description: str) -> str:
     return drawing or desc
 
 
+def drawing_id_error(issue_key: str, drawing_id: str) -> str:
+    """Operator message for a rejected JIRA ID Next. Empty string when it is usable.
+
+    Light on purpose: the ID is the single leading code of the summary, so blank
+    leaves nothing to write and an inner space would silently push the rest into
+    the description. Elite numbering itself is not enforced here.
+    """
+    token = (drawing_id or "").strip()
+    who = (issue_key or "").strip() or "This issue"
+    if not token:
+        return f"{who}: JIRA ID cannot be blank. Type the leading code, or restore Now."
+    if any(char.isspace() for char in token):
+        return f"{who}: JIRA ID cannot contain a space (got {token}). Put wording in Description."
+    return ""
+
+
 def option_value(field: object) -> str:
     if field is None:
         return ""
@@ -233,9 +289,30 @@ def has_multiple_eddi(status: str) -> bool:
     return len(eddi_status_choices(status)) > 1
 
 
-def eddi_fix_options() -> tuple[str, ...]:
-    """Console groups 1–9. Generic (0) is not offered on the Load fixer."""
-    return tuple(name for name in EDDI_VALUES if name and 1 <= eddi_group_rank(name) <= 9)
+def eddi_fix_options(options: tuple[FieldOption, ...] = ()) -> tuple[str, ...]:
+    """Groups 1–9 for the Load fixer. Generic (0) is not offered.
+
+    That issue's own Jira labels when its field context is known; otherwise the Elite list.
+    """
+    names = [option.label for option in options] if options else [name for name in EDDI_VALUES if name]
+    return tuple(name for name in names if name and 1 <= eddi_group_rank(name) <= 9)
+
+
+def eddi_option_labels(options: tuple[FieldOption, ...]) -> tuple[str, ...]:
+    """Board ▼ list for one row: blank, then only that issue's own options."""
+    labels = tuple(option.label for option in options if option.label)
+    if not labels:
+        return ()
+    return ("",) + labels
+
+
+def unknown_eddi_options(status: str, options: tuple[FieldOption, ...]) -> tuple[str, ...]:
+    """Chosen labels that this issue's own EDDI context does not have. Empty when unknown."""
+    if not options:
+        return ()
+    return tuple(
+        part for part in eddi_status_choices(status) if resolve_field_option(part, options) is None
+    )
 
 
 def iso_date(value: str) -> str | None:
@@ -285,6 +362,7 @@ def drawing_from_issue(issue: dict) -> DrawingRow:
         shop_ifc_date=date_value(fields.get(SHOP_IFC_DATE_FIELD)),
         field_ifc_date=date_value(fields.get(FIELD_IFC_DATE_FIELD)),
         eddi_status=eddi_value(fields.get(EDDI_FIELD)),
+        issue_type=option_value(fields.get("issuetype")),
     )
 
 
@@ -293,14 +371,23 @@ def option_field(value: str) -> dict | None:
     return {"value": token} if token else None
 
 
-def eddi_field(value: str) -> list[dict] | None:
-    parts = [part.strip() for part in (value or "").replace(",", ";").split(";") if part.strip()]
+def eddi_field(value: str, options: tuple[FieldOption, ...] = ()) -> list[dict] | None:
+    """EDDI Status payload. Option ids when this issue's own context is known.
+
+    Options are separated by ``;`` only — a comma is part of an option name
+    (``5 - QC - WO, ITP, NDE Records, Procedures - EDDI``), never a separator.
+    """
+    parts = eddi_status_choices(value)
     if not parts:
         return None
-    return [{"value": part} for part in parts]
+    payload: list[dict] = []
+    for part in parts:
+        option = resolve_field_option(part, options)
+        payload.append(option_payload(option) if option is not None else {"value": part})
+    return payload
 
 
-def drawing_fields_payload(drawing: DrawingRow) -> dict:
+def drawing_fields_payload(drawing: DrawingRow, eddi_options: tuple[FieldOption, ...] = ()) -> dict:
     payload: dict = {}
     options = {
         OUTGOING_REV_FIELD: drawing.outgoing_rev,
@@ -329,7 +416,7 @@ def drawing_fields_payload(drawing: DrawingRow) -> dict:
         token = iso_date(value)
         if token:
             payload[key] = token
-    eddi = eddi_field(drawing.eddi_status)
+    eddi = eddi_field(drawing.eddi_status, eddi_options)
     if eddi:
         payload[EDDI_FIELD] = eddi
     return payload
@@ -436,10 +523,17 @@ class EddiConflict:
     drawing_id: str
     summary: str
     options: tuple[str, ...]
+    allowed: tuple[str, ...] = ()
 
 
-def eddi_conflicts(rows: list[DrawingRow]) -> list[EddiConflict]:
-    """Issues whose EDDI Status has more than one option. Generic-only is not a conflict."""
+def eddi_conflicts(
+    rows: list[DrawingRow], contexts: dict[str, tuple[FieldOption, ...]] | None = None
+) -> list[EddiConflict]:
+    """Issues whose EDDI Status has more than one option. Generic-only is not a conflict.
+
+    ``allowed`` is what the fixer may offer for that issue: its own Jira options
+    (groups 1–9), or the Elite list when Jira did not send a context.
+    """
     found: list[EddiConflict] = []
     for row in rows:
         options = eddi_status_choices(row.eddi_status)
@@ -450,6 +544,7 @@ def eddi_conflicts(rows: list[DrawingRow]) -> list[EddiConflict]:
                     drawing_id=row.drawing_id,
                     summary=row.summary,
                     options=options,
+                    allowed=eddi_fix_options((contexts or {}).get(row.key, ())),
                 )
             )
     return found

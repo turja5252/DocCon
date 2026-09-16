@@ -26,6 +26,10 @@ FOLDER = "#2DD4BF"
 IDENTITY_MISSING = "#FCA5A5"
 PENDING_BG = "#FEF3C7"
 PENDING_BORDER = "#E8B86D"
+# Focused row (the drawing a paste lands on). Pale teal wash + ACCENT rules. Never amber —
+# PENDING_BG stays the only yellow, so a dirty Next and email dropped still read as edits.
+FOCUS_BG = "#D5EFEB"
+FOCUS_RULE = ACCENT
 # Scrollbar: pale thumb on a slate trough so the slider is findable on navy and board BG.
 SCROLL_TROUGH = "#486581"
 SCROLL_THUMB = "#D9E2EC"
@@ -78,8 +82,12 @@ def apply_theme(root: tk.Misc) -> ttk.Style:
     style.configure("Now.TLabel", background=BG, foreground=MUTED, font=FONT_SMALL)
     style.configure("Next.TLabel", background=BG, foreground=ACCENT, font=FONT_SMALL)
     style.configure("Board.TLabel", background=BG, foreground=TEXT, font=FONT)
+    style.configure("Pending.TLabel", background=PENDING_BG, foreground=TEXT, font=FONT)
     style.configure("Ok.TLabel", background=BG, foreground=OK, font=FONT_BOLD)
     style.configure("Bad.TLabel", background=BG, foreground=BAD, font=FONT_BOLD)
+    style.configure("Focus.TLabel", background=FOCUS_BG, foreground=TEXT, font=FONT)
+    style.configure("FocusOk.TLabel", background=FOCUS_BG, foreground=OK, font=FONT_BOLD)
+    style.configure("FocusBad.TLabel", background=FOCUS_BG, foreground=BAD, font=FONT_BOLD)
 
     style.configure(
         "TLabelframe",
@@ -154,7 +162,13 @@ def apply_theme(root: tk.Misc) -> ttk.Style:
         darkcolor=BORDER,
         padding=5,
     )
-    style.map("TEntry", bordercolor=[("focus", ACCENT)], lightcolor=[("focus", ACCENT)])
+    style.map(
+        "TEntry",
+        bordercolor=[("focus", ACCENT)],
+        lightcolor=[("focus", ACCENT)],
+        fieldbackground=[("focus", FOCUS_BG)],
+        background=[("focus", FOCUS_BG)],
+    )
     style.configure(
         "Pending.TEntry",
         fieldbackground=PENDING_BG,
@@ -185,7 +199,8 @@ def apply_theme(root: tk.Misc) -> ttk.Style:
     )
     style.map(
         "TCombobox",
-        fieldbackground=[("readonly", SURFACE), ("!disabled", SURFACE)],
+        fieldbackground=[("focus", FOCUS_BG), ("readonly", SURFACE), ("!disabled", SURFACE)],
+        background=[("focus", FOCUS_BG), ("readonly", SURFACE), ("!disabled", SURFACE)],
         bordercolor=[("focus", ACCENT)],
         lightcolor=[("focus", ACCENT)],
     )
@@ -341,12 +356,12 @@ def style_text(widget: tk.Text) -> None:
     )
 
 
-def match_style(confidence: str) -> str:
+def match_style(confidence: str, *, focused: bool = False) -> str:
     if confidence == "High":
-        return "Ok.TLabel"
+        return "FocusOk.TLabel" if focused else "Ok.TLabel"
     if confidence == "Missing":
-        return "Bad.TLabel"
-    return "Board.TLabel"
+        return "FocusBad.TLabel" if focused else "Bad.TLabel"
+    return "Focus.TLabel" if focused else "Board.TLabel"
 
 
 class ThemeProgress(tk.Canvas):

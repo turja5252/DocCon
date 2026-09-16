@@ -110,7 +110,7 @@ def test_confirm_rolls_back_jira_if_file_fails(monkeypatch, tmp_path: Path) -> N
     monkeypatch.setattr(
         confirm,
         "revert_drawing_update",
-        lambda _site, _email, _token, _current, nxt: reverted.append(nxt.key),
+        lambda _site, _email, _token, _current, nxt, _options=(): reverted.append(nxt.key),
     )
     with pytest.raises(LogError, match="excel busy"):
         run_confirm_client_pack(
@@ -265,4 +265,98 @@ def test_confirm_eddi_failure_still_mails(monkeypatch, tmp_path: Path) -> None:
     )
     assert "eddi locked" in result.pdf_note
     assert result.jira_written
+
+
+def test_confirm_success_deletes_packed_dropped_copies(monkeypatch, tmp_path: Path) -> None:
+    from doccon import confirm
+    from doccon.drop_pdfs import write_pdf_bytes_into_dropped
+    from doccon.match import PdfHit
+
+    _succeeding_file(monkeypatch, tmp_path)
+    job = tmp_path / "2026-Tanzim"
+    dropped = write_pdf_bytes_into_dropped(job, "2026-Tanzim-1-1 REV 0.pdf", b"%PDF-drop")
+    current = job / "2.0 Drafting" / "2.1 Tank Const DWG" / "2.1.1 Current PDF"
+    current.mkdir(parents=True)
+    real = current / "2026-Tanzim-1-2 REV 0.pdf"
+    real.write_bytes(b"%PDF-current")
+    monkeypatch.setattr(confirm, "snapshot_eddi", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(confirm, "display_outlook_draft", lambda **_kwargs: None)
+    monkeypatch.setattr(confirm, "_eddi_snapshot_note", lambda *_args, **_kwargs: "")
+    result = run_confirm_client_pack(
+        site="https://example.atlassian.net",
+        email="a@b.c",
+        token="token",
+        pairs=[],
+        book=tmp_path / "CT-2026-Tanzim.xlsm",
+        job="2026-Tanzim",
+        lines=[],
+        issued=date(2026, 9, 9),
+        expected_return="N/A",
+        cover=_cover(tmp_path / "pep.xlsx"),
+        rows=[
+            MatchedRow(
+                drawing=_drawing(),
+                pdf=PdfHit(
+                    path=dropped,
+                    drawing_id="2026-Tanzim-1-1",
+                    rev="0",
+                    email_dropped=True,
+                ),
+                confidence="High",
+            ),
+            MatchedRow(
+                drawing=_drawing(key="P2024-2", drawing_id="2026-Tanzim-1-2", title="Drawing-2"),
+                pdf=PdfHit(path=real, drawing_id="2026-Tanzim-1-2", rev="0"),
+                confidence="High",
+            ),
+        ],
+        job_folder=job,
+    )
+    assert result.cover_id == "CT-2026-Tanzim-1"
+    assert not dropped.exists()
+    assert real.is_file()
+
+
+def test_confirm_abort_does_not_delete_dropped_copies(monkeypatch, tmp_path: Path) -> None:
+    from doccon import confirm
+    from doccon.drop_pdfs import write_pdf_bytes_into_dropped
+    from doccon.match import PdfHit
+
+    job = tmp_path / "2026-Tanzim"
+    dropped = write_pdf_bytes_into_dropped(job, "2026-Tanzim-1-1 REV 0.pdf", b"%PDF-drop")
+    monkeypatch.setattr(confirm, "preflight_jira_updates", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        confirm,
+        "preflight_client_file",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(LogError("blocked")),
+    )
+    monkeypatch.setattr(
+        confirm, "apply_jira_updates", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("jira"))
+    )
+    with pytest.raises(LogError, match="blocked"):
+        run_confirm_client_pack(
+            site="https://example.atlassian.net",
+            email="a@b.c",
+            token="token",
+            pairs=[(_drawing(), _drawing(outgoing_rev="B"))],
+            book=tmp_path / "CT-2026-Tanzim.xlsm",
+            job="2026-Tanzim",
+            lines=[],
+            issued=date(2026, 9, 9),
+            expected_return="N/A",
+            cover=_cover(tmp_path / "pep.xlsx"),
+            rows=[
+                MatchedRow(
+                    drawing=_drawing(),
+                    pdf=PdfHit(
+                        path=dropped,
+                        drawing_id="2026-Tanzim-1-1",
+                        rev="0",
+                        email_dropped=True,
+                    ),
+                    confidence="High",
+                )
+            ],
+        )
+    assert dropped.is_file()
 

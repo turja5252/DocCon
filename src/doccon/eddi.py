@@ -17,7 +17,6 @@ import contextlib
 import os
 import re
 import shutil
-import tempfile
 from copy import copy
 from dataclasses import dataclass, field
 from datetime import date
@@ -58,10 +57,14 @@ class EddiSnapshot:
     book: Path
     pdf: Path
     updated_rows: int
+    warning: str = ""
 
     @property
     def note(self) -> str:
-        return f"EDDI: {self.pdf.name} ({self.updated_rows} item(s))"
+        base = f"EDDI: {self.pdf.name} ({self.updated_rows} item(s))"
+        if self.warning:
+            return f"{base}\n{self.warning}"
+        return base
 
 
 @dataclass
@@ -394,12 +397,14 @@ def _snapshot_with_excel(
 ) -> EddiSnapshot:
     if os.name != "nt":
         raise LogError("EDDI snapshot needs Excel on Windows.")
-    from doccon.excel_pdf import fill_eddi_form_and_export_pdf
+    from doccon.diag import describe_path, log
+    from doccon.excel_pdf import ExcelPrintError, doccon_temp_dir, fill_eddi_form_and_export_pdf
 
-    tmp_dir = Path(tempfile.mkdtemp(prefix="elite-doccon-eddi-form-"))
+    tmp_dir = doccon_temp_dir("eddi-form-")
     local_book = tmp_dir / dest_book.name
     local_pdf = tmp_dir / dest_pdf.name
     try:
+        log("INFO", "eddi", f"copy {describe_path(live)} -> {describe_path(local_book)}")
         shutil.copy2(live, local_book)
         _unblock(local_book)
         wb = load_workbook(live, data_only=False, keep_vba=False)
@@ -407,22 +412,37 @@ def _snapshot_with_excel(
             plan = build_fill_plan(_project_sheet(wb), job, drawings)
         finally:
             wb.close()
+        printed: Path | None = None
+        print_error = ""
         try:
-            fill_eddi_form_and_export_pdf(local_book, local_pdf, plan_payload(plan))
+            printed = fill_eddi_form_and_export_pdf(local_book, local_pdf, plan_payload(plan))
+        except ExcelPrintError as exc:
+            print_error = str(exc)
         except LogError as exc:
-            if "could not print" in str(exc).casefold() and local_book.is_file():
-                _copy_out(local_book, dest_book)
-                raise LogError(
-                    f"Wrote {dest_book.name}, but could not print the EDDI PDF.\n{exc}"
-                ) from exc
+            if local_book.is_file() and _looks_like_print_error(exc):
+                book = _copy_out(local_book, dest_book)
+                pdf, warn = _copy_pdf_out(local_pdf, dest_pdf)
+                warning = warn or str(exc)
+                return EddiSnapshot(
+                    book=book, pdf=pdf, updated_rows=plan.item_count, warning=warning
+                )
             raise
-        _copy_out(local_book, dest_book)
-        _copy_out(local_pdf, dest_pdf)
-        return EddiSnapshot(book=dest_book, pdf=dest_pdf, updated_rows=plan.item_count)
+        book = _copy_out(local_book, dest_book)
+        source_pdf = printed if printed and printed.is_file() else local_pdf
+        pdf, warn = _copy_pdf_out(source_pdf, dest_pdf)
+        warning = print_error or warn
+        if warning and not pdf.is_file():
+            warning = warning or (
+                f"Wrote {book.name}, but could not print the EDDI PDF. "
+                "Close that PDF if it is open in a reader, then try EDDI… again."
+            )
+        return EddiSnapshot(
+            book=book, pdf=pdf, updated_rows=plan.item_count, warning=warning
+        )
     except LogError:
         raise
     except OSError as exc:
-        raise LogError(f"Could not write the EDDI snapshot.\n{exc}") from exc
+        raise LogError("Could not write the EDDI snapshot.") from exc
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
@@ -432,7 +452,10 @@ def _open_book(path: Path) -> Workbook:
     try:
         return load_workbook(path, data_only=False, keep_vba=keep_vba)
     except Exception as exc:
-        raise LogError(f"Could not open {path.name} as an Excel workbook.\n{exc}") from exc
+        raise LogError(
+            f"Could not open {path.name} as an Excel workbook. "
+            "Close it if it is open, or pick a desktop Excel file (not a PDF)."
+        ) from exc
 
 
 def _project_sheet(wb: Workbook) -> Worksheet:
@@ -642,11 +665,47 @@ def _apply_row_breaks(ws: Worksheet, keep: list[int]) -> None:
             ws.row_breaks.append(Break(id=int(row), man=True, max=ITEM_COLS))
 
 
-def _copy_out(source: Path, dest: Path) -> None:
+def _looks_like_print_error(exc: BaseException) -> bool:
+    low = str(exc).casefold()
+    return "could not print" in low or "print the pdf" in low or "print the eddi pdf" in low
+
+
+def _copy_out(source: Path, dest: Path) -> Path:
     dest.parent.mkdir(parents=True, exist_ok=True)
-    if dest.exists():
-        dest.unlink()
-    shutil.copy2(source, dest)
+    try:
+        if dest.exists():
+            dest.unlink()
+        shutil.copy2(source, dest)
+        return dest.resolve()
+    except OSError as exc:
+        from doccon.excel_pdf import _is_sharing_violation, _unique_sibling
+
+        if not _is_sharing_violation(exc):
+            raise
+        alt = _unique_sibling(dest)
+        shutil.copy2(source, alt)
+        return alt.resolve()
+
+
+def _copy_pdf_out(source: Path, dest: Path) -> tuple[Path, str]:
+    if not source.is_file() or source.stat().st_size <= 0:
+        return dest, (
+            "Wrote the EDDI workbook, but could not print the PDF. "
+            "Close that PDF if it is open in a reader, then try EDDI… again."
+        )
+    try:
+        written = _copy_out(source, dest)
+    except OSError:
+        return dest, (
+            f"Wrote the EDDI workbook, but could not save {dest.name}. "
+            "Close that PDF if it is open in a reader, then try EDDI… again."
+        )
+    if written.resolve() != dest.resolve():
+        return written, (
+            f"{dest.name} was already open, so DocCon saved {written.name} instead. "
+            "Close the old PDF in your reader."
+        )
+    return written, ""
 
 
 def _unblock(path: Path) -> None:

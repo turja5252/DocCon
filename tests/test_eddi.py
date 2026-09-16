@@ -393,3 +393,71 @@ def test_snapshot_includes_matched_pdf_only(tmp_path: Path) -> None:
     wb.close()
     assert "2026-Tanzim-1-1" in values
     assert "2026-Tanzim-1-2" not in values
+
+
+def test_snapshot_excel_uses_local_temp_not_dropbox(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("TEMP", str(tmp_path / "Temp"))
+    monkeypatch.setattr("doccon.eddi.os.name", "nt")
+    job_folder = tmp_path / "Dropbox" / "2026-Tanzim"
+    _project_fixture(job_folder / "3.0 Doc Con" / "EDDI-2026-Tanzim.xlsx")
+    seen: dict[str, Path] = {}
+
+    def fake_fill(workbook, dest_pdf, payload):
+        path = Path(workbook)
+        seen["workbook"] = path
+        seen["pdf"] = Path(dest_pdf)
+        assert path.is_file()
+        Path(dest_pdf).write_bytes(b"%PDF-1.4")
+        return Path(dest_pdf)
+
+    monkeypatch.setattr("doccon.excel_pdf.fill_eddi_form_and_export_pdf", fake_fill)
+    snap = snapshot_eddi(job_folder, "2026-Tanzim", [_drawing()], date(2026, 9, 15))
+    assert seen["workbook"].parent.parent.name == "DocCon"
+    assert "Dropbox" not in seen["workbook"].parts
+    assert snap.book.is_file()
+    assert snap.book.parent.name == "3.0 Doc Con"
+    assert snap.pdf.is_file()
+    assert not snap.warning
+
+
+def test_snapshot_keeps_book_when_pdf_print_fails(tmp_path: Path, monkeypatch) -> None:
+    from doccon.excel_pdf import EXCEL_PRINT_FAILED, ExcelPrintError
+
+    monkeypatch.setenv("TEMP", str(tmp_path / "Temp"))
+    monkeypatch.setattr("doccon.eddi.os.name", "nt")
+    job_folder = tmp_path / "2026-Tanzim"
+    _project_fixture(job_folder / "3.0 Doc Con" / "EDDI-2026-Tanzim.xlsx")
+
+    def fake_fill(workbook, dest_pdf, payload):
+        Path(workbook).write_bytes(b"filled-xlsm")
+        raise ExcelPrintError(EXCEL_PRINT_FAILED)
+
+    monkeypatch.setattr("doccon.excel_pdf.fill_eddi_form_and_export_pdf", fake_fill)
+    snap = snapshot_eddi(job_folder, "2026-Tanzim", [_drawing()], date(2026, 9, 15))
+    assert snap.book.is_file()
+    assert snap.book.read_bytes() == b"filled-xlsm"
+    assert "print" in snap.warning.casefold() or "PDF" in snap.warning
+    assert "Traceback" not in snap.warning
+
+
+def test_copy_out_uses_unique_name_when_pdf_locked(tmp_path: Path, monkeypatch) -> None:
+    from doccon.eddi import _copy_out
+
+    source = tmp_path / "src.pdf"
+    source.write_bytes(b"%PDF-new")
+    dest = tmp_path / "EDDI-2026-Tanzim-2026-09-15.pdf"
+    dest.write_bytes(b"old")
+    original = Path.unlink
+
+    def locked_unlink(self, *args, **kwargs):
+        if self.resolve() == dest.resolve():
+            err = OSError(32, "sharing violation")
+            err.winerror = 32
+            raise err
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", locked_unlink)
+    written = _copy_out(source, dest)
+    assert written.name == "EDDI-2026-Tanzim-2026-09-15-2.pdf"
+    assert written.read_bytes() == b"%PDF-new"
+    assert dest.read_bytes() == b"old"

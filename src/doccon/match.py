@@ -16,6 +16,9 @@ REV_IN_NAME = re.compile(r"^(.*?)\s+REV\s+(.+)$", re.IGNORECASE)
 REV_IN_PARENS = re.compile(r"^(.*?)\s*\(\s*Rev\.?\s*([^)]+?)\s*\)\s*$", re.IGNORECASE)
 EIS_TOKEN = re.compile(r"\beis-\d+(?:-[a-z0-9]+|[a-z]+)?\b", re.IGNORECASE)
 SKIP_DIR_NAMES = frozenset({"old procedures", "original wps"})
+EMAIL_DROPPED_LABEL = "email dropped"
+# Filename first, marker second: a constrained PDF column must never spend its room on the marker.
+EMAIL_DROPPED_SUFFIX = f" — {EMAIL_DROPPED_LABEL}"
 
 
 @dataclass(frozen=True)
@@ -24,6 +27,15 @@ class PdfHit:
     drawing_id: str
     rev: str
     library: bool = False
+    email_dropped: bool = False
+
+
+@dataclass(frozen=True)
+class LocatedPdf:
+    """Pack JSON pair: path plus bypass flag for a drag-drop copy in DocCon/dropped."""
+
+    path: str
+    email_dropped: bool = False
 
 
 @dataclass(frozen=True)
@@ -42,6 +54,19 @@ def parse_pdf_stem(stem: str) -> tuple[str, str]:
     if match:
         return match.group(1).strip(), match.group(2).strip()
     return text, ""
+
+
+def outgoing_rev_from_filename(name: str) -> str:
+    """Outgoing Rev token in a PDF filename (`… REV 0.pdf`, `EIS-1 (Rev 4).pdf`). Empty if none.
+
+    Prefer the first token (`ITP-… REV 0 Signed.pdf` → `0`, not `0 Signed`).
+    """
+    stem = Path(name or "").stem
+    _drawing_id, rev = parse_pdf_stem(stem)
+    token = (rev or "").strip()
+    if not token:
+        return ""
+    return token.split(None, 1)[0]
 
 
 def compact_drawing_id(drawing_id: str, job_number: str) -> str:
@@ -310,24 +335,121 @@ def attach_pdfs(rows: list[DrawingRow], job_folder: Path | None, job_number: str
     return match_pdf_hits(rows, scan_current_pdfs(job_folder), job_number)
 
 
-def pair_pdf(row: MatchedRow, path: Path) -> MatchedRow:
+def pdf_hit_for_path(path: Path) -> PdfHit:
+    """Filename match token for a PDF (same stem rules as the folder hunt)."""
     pdf_path = Path(path)
     drawing_id, rev = parse_pdf_stem(pdf_path.stem)
+    return PdfHit(
+        path=pdf_path,
+        drawing_id=drawing_id,
+        rev=rev,
+        library=_is_procedure_id(drawing_id),
+    )
+
+
+def is_dropped_pdf_path(path: Path | str) -> bool:
+    """True when the file lives in `{job}/3.0 Doc Con/DocCon/dropped/`."""
+    parts = [str(part).casefold() for part in Path(path).parts]
+    return any(part == "doccon" and parts[index + 1] == "dropped" for index, part in enumerate(parts[:-1]))
+
+
+def pdf_is_email_dropped(row: MatchedRow) -> bool:
+    return bool(row.pdf is not None and row.pdf.email_dropped)
+
+
+def pdf_address_text(row: MatchedRow) -> str:
+    """PDF column address: the filename, plus the 'email dropped' marker for a drag-drop copy."""
+    if row.pdf is None:
+        return ""
+    name = row.pdf.path.name
+    if not row.pdf.email_dropped:
+        return name
+    return f"{name}{EMAIL_DROPPED_SUFFIX}" if name else EMAIL_DROPPED_LABEL
+
+
+def pdf_address_tip(row: MatchedRow) -> str:
+    """Hover text for the PDF address; a bypass copy also shows where it is staged."""
+    if row.pdf is None:
+        return ""
+    address = pdf_address_text(row)
+    if not row.pdf.email_dropped:
+        return address
+    return f"{address}\n{row.pdf.path}"
+
+
+def coerce_located_pdfs(located: dict[str, LocatedPdf] | dict[str, object] | None) -> dict[str, LocatedPdf]:
+    out: dict[str, LocatedPdf] = {}
+    for item_key, value in (located or {}).items():
+        key = str(item_key).strip()
+        rec = _located_pdf_record(value)
+        if key and rec is not None:
+            out[key] = rec
+    return out
+
+
+def _located_pdf_record(value: object) -> LocatedPdf | None:
+    if isinstance(value, LocatedPdf):
+        path = (value.path or "").strip()
+        if not path:
+            return None
+        return LocatedPdf(path=path, email_dropped=bool(value.email_dropped) or is_dropped_pdf_path(path))
+    if isinstance(value, dict):
+        path = str(value.get("path") or "").strip()
+        if not path:
+            return None
+        return LocatedPdf(path=path, email_dropped=bool(value.get("email_dropped")) or is_dropped_pdf_path(path))
+    path = str(value or "").strip()
+    if not path:
+        return None
+    return LocatedPdf(path=path, email_dropped=is_dropped_pdf_path(path))
+
+
+def pair_pdf(row: MatchedRow, path: Path, *, email_dropped: bool | None = None) -> MatchedRow:
+    pdf_path = Path(path)
+    drawing_id, rev = parse_pdf_stem(pdf_path.stem)
+    dropped = is_dropped_pdf_path(pdf_path) or email_dropped is True
     hit = PdfHit(
         path=pdf_path,
         drawing_id=drawing_id or row.drawing.drawing_id,
         rev=rev,
+        email_dropped=dropped,
     )
     return replace(row, pdf=hit, confidence="High")
 
 
-def apply_located_pdfs(rows: list[MatchedRow], located: dict[str, str]) -> list[MatchedRow]:
+def apply_located_pdfs(
+    rows: list[MatchedRow], located: dict[str, LocatedPdf] | dict[str, object] | None
+) -> list[MatchedRow]:
+    records = coerce_located_pdfs(located)
     out: list[MatchedRow] = []
     for row in rows:
-        path = (located or {}).get(row.drawing.key)
-        if row.pdf is None and path:
-            pdf_path = Path(path)
+        rec = records.get(row.drawing.key)
+        if row.pdf is None and rec is not None:
+            pdf_path = Path(rec.path)
             if pdf_path.is_file():
-                row = pair_pdf(row, pdf_path)
+                row = pair_pdf(row, pdf_path, email_dropped=rec.email_dropped)
         out.append(row)
+    return out
+
+
+def keep_located_pdfs(
+    rows: list[MatchedRow], located: dict[str, LocatedPdf] | dict[str, object] | None
+) -> dict[str, LocatedPdf]:
+    """Keep Locate… / drop paths. Hunt of a real job PDF drops the email-drop bypass."""
+    records = coerce_located_pdfs(located)
+    live = {row.drawing.key: row for row in rows}
+    out: dict[str, LocatedPdf] = {}
+    for key, rec in records.items():
+        row = live.get(key)
+        if row is None:
+            continue
+        if row.pdf is None:
+            out[key] = rec
+            continue
+        if row.pdf.email_dropped:
+            out[key] = LocatedPdf(path=str(row.pdf.path), email_dropped=True)
+            continue
+        if rec.email_dropped:
+            continue
+        out[key] = LocatedPdf(path=str(row.pdf.path), email_dropped=False)
     return out

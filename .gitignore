@@ -9,5 +9,7 @@ build/
 .ruff_cache/
 .env
 *.token
+doccon.log
+doccon.log.old
 .DS_Store
 Thumbs.db

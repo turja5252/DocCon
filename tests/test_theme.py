@@ -9,11 +9,16 @@ import pytest
 from doccon.theme import (
     ACCENT,
     BG,
+    BORDER,
+    FOCUS_BG,
+    FOCUS_RULE,
     FOLDER,
     JIRA,
     NAVY,
+    PENDING_BG,
     SCROLL_THUMB,
     SCROLL_TROUGH,
+    SURFACE,
     ThemeProgress,
     apply_theme,
     match_style,
@@ -61,6 +66,36 @@ def test_apply_theme_and_match_styles() -> None:
         bar.stop()
         assert bar.mode() == "idle"
         assert not bar.winfo_ismapped()
+    finally:
+        root.destroy()
+
+
+def test_focused_row_band_is_palette_and_never_the_pending_amber() -> None:
+    # Pale teal wash + ACCENT rules. Never the gray BORDER fill, never the dirty-Next amber.
+    assert FOCUS_BG != BORDER
+    assert FOCUS_RULE == ACCENT
+    assert FOCUS_BG not in {BG, SURFACE, PENDING_BG, BORDER}
+    assert FOCUS_RULE != PENDING_BG
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("Tk is not available")
+    root.withdraw()
+    try:
+        style = apply_theme(root)
+        for name in ("Focus.TLabel", "FocusOk.TLabel", "FocusBad.TLabel"):
+            assert style.lookup(name, "background") == FOCUS_BG
+        assert style.lookup("Focus.TLabel", "background") != style.lookup("Board.TLabel", "background")
+        assert style.lookup("FocusOk.TLabel", "foreground") == style.lookup("Ok.TLabel", "foreground")
+        assert style.lookup("FocusBad.TLabel", "foreground") == style.lookup("Bad.TLabel", "foreground")
+        assert style.lookup("TEntry", "fieldbackground", ["focus"]) == FOCUS_BG
+        assert style.lookup("TCombobox", "fieldbackground", ["focus"]) == FOCUS_BG
+        assert style.lookup("Pending.TEntry", "fieldbackground", ["focus"]) == PENDING_BG
+        assert style.lookup("Pending.TCombobox", "fieldbackground", ["focus"]) == PENDING_BG
+        assert match_style("High", focused=True) == "FocusOk.TLabel"
+        assert match_style("Missing", focused=True) == "FocusBad.TLabel"
+        assert match_style("Review", focused=True) == "Focus.TLabel"
+        assert match_style("High") == "Ok.TLabel"
     finally:
         root.destroy()
 
