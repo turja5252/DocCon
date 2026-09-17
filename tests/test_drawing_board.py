@@ -42,7 +42,7 @@ from doccon.drawing_board import (
     row_matches_filter,
     with_now_option,
 )
-from doccon.match import EMAIL_DROPPED_LABEL, MatchedRow, PdfHit
+from doccon.match import EMAIL_DROPPED_LABEL, MatchedRow, PdfHit, pair_pdf
 from doccon.register import DrawingRow
 from doccon.settings import BOARD_LAYOUT_REV
 from doccon.theme import BORDER, FOCUS_BG, FOCUS_RULE, PENDING_BG
@@ -334,6 +334,27 @@ def test_batch_applies_to_pack_only() -> None:
         board._apply_batch()
         assert board._blocks["P2024-1"].status_next.get() == "Done"
         assert board._blocks["P2024-1"].title_next.get() == title_before
+    finally:
+        root.destroy()
+
+
+def test_batch_strip_starts_hidden() -> None:
+    root = _board_root()
+    try:
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        root.update_idletasks()
+        assert board._batch_open is False
+        assert board._batch_frame.winfo_manager() == ""
+        assert str(board._batch_toggle.cget("text")) == "Batch Next…"
+        board._set_batch_open(True)
+        root.update_idletasks()
+        assert board._batch_frame.winfo_manager() == "pack"
+        assert str(board._batch_toggle.cget("text")) == "Hide batch"
+        board.set_rows([_row()])
+        root.update_idletasks()
+        assert board._batch_open is False
+        assert board._batch_frame.winfo_manager() == ""
+        assert str(board._batch_toggle.cget("text")) == "Batch Next…"
     finally:
         root.destroy()
 
@@ -887,7 +908,8 @@ def test_bump_packed_revs_from_now_leaves_unpacked() -> None:
         board._blocks["P2024-1"].nexts["outgoing_rev"].set("Z")
         assert str(board._packed_only_btn.cget("text")) == "Packed only"
         assert str(board._bump_packed_btn.cget("text")) == "Bump packed"
-        assert str(board._set_packed_btn.cget("text")) == "Set packed to…"
+        assert "OFA" in board._pack_status.cget("values")
+        assert "readonly" in str(board._pack_status.cget("state"))
         count = board.bump_packed_revs()
         assert count == 3
         assert board._blocks["P2024-1"].nexts["outgoing_rev"].get() == "B"
@@ -936,6 +958,48 @@ def test_set_packed_rev_stamps_zero_from_letters() -> None:
         root.destroy()
 
 
+def test_set_packed_status_stamps_like_cover_dates() -> None:
+    root = _board_root()
+    try:
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.set_rows(
+            [
+                _row(key="P2024-1", drawing_id="2026-Tanzim-1-1"),
+                _row(key="P2024-2", drawing_id="2026-Tanzim-1-2"),
+            ]
+        )
+        board.set_pack(False)
+        board.set_pack_status("OFA", stamp=False)
+        assert board.pack_status() == "OFA"
+        assert board._blocks["P2024-1"].status_next.get() == "To Do"
+        board._blocks["P2024-1"].include.set(True)
+        root.update_idletasks()
+        assert board._blocks["P2024-1"].status_next.get() == "OFA"
+        assert board._blocks["P2024-2"].status_next.get() == "To Do"
+        assert board._blocks["P2024-1"].status_next.cget("style") == "Pending.TCombobox"
+        pending = {row.drawing.key: row.drawing.status for row in board.pending_rows()}
+        assert pending == {"P2024-1": "OFA"}
+        board.set_pack_status("IFI")
+        assert board._blocks["P2024-1"].status_next.get() == "IFI"
+        assert board._blocks["P2024-2"].status_next.get() == "To Do"
+        board._blocks["P2024-2"].include.set(True)
+        root.update_idletasks()
+        assert board._blocks["P2024-2"].status_next.get() == "IFI"
+        board.set_pack_status("")
+        assert board._blocks["P2024-1"].status_next.get() == "To Do"
+        assert board._blocks["P2024-2"].status_next.get() == "To Do"
+        board.set_pack(False)
+        board._blocks["P2024-1"].status_next.set("Done")
+        board.set_pack_status("", stamp=False)
+        board._blocks["P2024-1"].include.set(True)
+        root.update_idletasks()
+        assert board._blocks["P2024-1"].status_next.get() == "Done"
+        assert not hasattr(board, "_set_packed_btn")
+        assert not hasattr(board, "_packed_rev")
+    finally:
+        root.destroy()
+
+
 def test_bump_and_set_packed_zero_packed_does_not_crash() -> None:
     root = _board_root()
     try:
@@ -950,11 +1014,12 @@ def test_bump_and_set_packed_zero_packed_does_not_crash() -> None:
         assert board.selected_keys() == ()
         assert board.bump_packed_revs() == 0
         assert board.set_packed_rev("0") == 0
+        assert board.set_packed_status("OFA") == 0
         board._bump_packed()
-        board._packed_rev.set("0")
-        board._apply_packed_rev()
+        board.set_pack_status("OFA")
         assert board._blocks["P2024-1"].nexts["outgoing_rev"].get() == "A"
         assert board._blocks["P2024-2"].nexts["outgoing_rev"].get() == "0"
+        assert board._blocks["P2024-1"].status_next.get() == "To Do"
         assert board.pending_rows() == []
         note = str(board._batch_note.cget("text"))
         assert "Pack" in note
@@ -1098,9 +1163,12 @@ def test_bump_and_set_packed_do_not_write_jira(monkeypatch) -> None:
         board._blocks["P2024-2"].include.set(False)
         board.bump_packed_revs()
         board.set_packed_rev("0")
+        board.set_packed_status("OFA")
         assert writes == []
         assert board._blocks["P2024-1"].nexts["outgoing_rev"].get() == "0"
+        assert board._blocks["P2024-1"].status_next.get() == "OFA"
         assert board._blocks["P2024-2"].nexts["outgoing_rev"].get() == "C"
+        assert board._blocks["P2024-2"].status_next.get() == "To Do"
         pending = board.pending_rows()
         assert len(pending) == 1
         assert pending[0].drawing.outgoing_rev == "0"
@@ -2391,6 +2459,38 @@ def test_email_dropped_pdf_keeps_its_yellow_on_a_banded_row(tmp_path) -> None:
         assert EMAIL_DROPPED_LABEL in str(block.pdf_label.cget("text"))
         assert str(block.pdf_label.cget("style")) == "Pending.TLabel"
         assert str(block.pdf_cell.cget("bg")).casefold() == PENDING_BG.casefold()
+    finally:
+        root.destroy()
+
+
+def test_rename_button_only_for_email_dropped_in_dropped(tmp_path) -> None:
+    root = _board_root()
+    try:
+        from doccon.drop_pdfs import write_pdf_bytes_into_dropped
+
+        job = tmp_path / "2026-Tanzim"
+        staged = write_pdf_bytes_into_dropped(job, "scan0042.pdf", b"%PDF-drop")
+        current = tmp_path / "Current PDF" / "2026-Tanzim-1-2 REV 0.pdf"
+        current.parent.mkdir(parents=True, exist_ok=True)
+        current.write_bytes(b"%PDF")
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        dropped = replace(
+            _row(key="P2024-1", drawing_id="2026-Tanzim-1-1"),
+            pdf=PdfHit(path=staged, drawing_id="", rev="", email_dropped=True),
+            confidence="High",
+        )
+        located = pair_pdf(_row(key="P2024-2", drawing_id="2026-Tanzim-1-2"), current)
+        board.set_rows([dropped, located])
+        root.update_idletasks()
+        email_block = board._blocks["P2024-1"]
+        locate_block = board._blocks["P2024-2"]
+        assert str(email_block.rename_btn.winfo_manager()) == "pack"
+        cluster = list(email_block.locate_btn.master.pack_slaves())
+        assert cluster == [email_block.locate_btn, email_block.rename_btn, email_block.open_btn]
+        assert str(locate_block.rename_btn.winfo_manager()) != "pack"
+        locate_cluster = list(locate_block.locate_btn.master.pack_slaves())
+        assert locate_cluster == [locate_block.locate_btn, locate_block.open_btn]
+        assert board.suggested_dropped_name("P2024-1") == "2026-Tanzim-1-1 REV A.pdf"
     finally:
         root.destroy()
 

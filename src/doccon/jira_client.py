@@ -8,6 +8,8 @@ import base64
 import json
 import re
 import threading
+import time
+from collections.abc import Callable
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -21,27 +23,39 @@ from doccon.register import (
     INCOMING_REV_FIELD,
     JOB_NUMBER_FIELD,
     OUTGOING_REV_FIELD,
+    PROJECT_LEAD_FIELD,
     PURPOSE_FIELD,
     RETURN_DATE_FIELD,
     RETURN_REQUEST_DATE_FIELD,
     SHOP_IFC_DATE_FIELD,
     SHOP_IFC_FIELD,
     SUBMISSION_DATE_FIELD,
+    SUBTASK_ISSUE_TYPE_ID,
     DrawingRow,
+    EpicCopy,
     FieldOption,
     JobProject,
+    PackageTask,
     children_of_jql,
+    create_eddi_choices,
+    create_subtask_payload,
     drawing_fields_payload,
     drawing_from_issue,
     drawing_id_error,
     drawings_jql,
     eddi_field,
     eddi_status_choices,
+    epic_copy_from_issue,
     iso_date,
     job_project_from_issues,
     job_project_jql,
+    new_issue_preflight_error,
     normalize_option_key,
     option_value,
+    package_tasks_from_issues,
+    parent_tasks_by_job_jql,
+    parent_tasks_of_jql,
+    resolve_field_option,
     sort_pack_rows,
     summary_from_parts,
     unknown_eddi_options,
@@ -49,6 +63,9 @@ from doccon.register import (
 )
 
 JOB_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+# After POST /issue the key exists, but JQL search can lag. GET-by-key is the wait.
+CREATE_READ_ATTEMPTS = 8
+CREATE_READ_DELAY_S = 0.4
 
 DRAWING_FIELDS = [
     "summary",
@@ -417,6 +434,200 @@ def fetch_job_pack(
         if child_keys:
             add_issues(_search_issues(site, email, token, children_of_jql(child_keys, key)))
     return sort_pack_rows(visible_pack_rows(list(seen.values()))), job_project
+
+
+def fetch_issue(site: str, email: str, token: str, issue_key: str) -> DrawingRow | None:
+    """GET one issue by key. Does not wait for JQL search to catch up."""
+    key = (issue_key or "").strip()
+    if not key or "/" in key:
+        raise JiraError("Issue key is required.")
+    fields = ",".join(DRAWING_FIELDS)
+    payload = _request(site, email, token, "GET", f"/rest/api/3/issue/{key}?fields={fields}")
+    return _row_from_issue(payload)
+
+
+def wait_for_issue(
+    site: str,
+    email: str,
+    token: str,
+    issue_key: str,
+    *,
+    attempts: int = CREATE_READ_ATTEMPTS,
+    delay_s: float = CREATE_READ_DELAY_S,
+    sleep: Callable[[float], None] = time.sleep,
+) -> DrawingRow:
+    """GET until the created issue is readable, then return that row."""
+    key = (issue_key or "").strip()
+    if not key or "/" in key:
+        raise JiraError("Issue key is required.")
+    last_error: JiraError | None = None
+    tries = max(int(attempts), 1)
+    for attempt in range(tries):
+        try:
+            row = fetch_issue(site, email, token, key)
+        except JiraError as exc:
+            last_error = exc
+            row = None
+        if row is not None and row.key:
+            return row
+        if attempt + 1 < tries:
+            sleep(delay_s)
+    if last_error is not None:
+        raise last_error
+    raise JiraError(f"Jira created {key} but it is not readable yet. Click Load.")
+
+
+def merge_issue_into_pack(rows: list[DrawingRow], extra: DrawingRow | None) -> list[DrawingRow]:
+    if extra is None or not extra.key:
+        return rows
+    by_key = {row.key: row for row in rows}
+    by_key[extra.key] = extra
+    return sort_pack_rows(visible_pack_rows(list(by_key.values())))
+
+
+def fetch_job_pack_including(
+    site: str,
+    email: str,
+    token: str,
+    job_number: str,
+    project_key: str,
+    issue_key: str,
+    *,
+    attempts: int = CREATE_READ_ATTEMPTS,
+    delay_s: float = CREATE_READ_DELAY_S,
+    sleep: Callable[[float], None] = time.sleep,
+) -> tuple[list[DrawingRow], JobProject | None]:
+    """Load the job pack and keep the just-created issue even if JQL search is late."""
+    created: DrawingRow | None = None
+    wanted = (issue_key or "").strip()
+    if wanted:
+        created = wait_for_issue(
+            site,
+            email,
+            token,
+            wanted,
+            attempts=attempts,
+            delay_s=delay_s,
+            sleep=sleep,
+        )
+    rows, project = fetch_job_pack(site, email, token, job_number, project_key)
+    return merge_issue_into_pack(rows, created), project
+
+
+def parse_create_eddi_options(payload: object) -> tuple[FieldOption, ...]:
+    """EDDI Status allowedValues from Sub-task createmeta (fields list or map)."""
+    if not isinstance(payload, dict):
+        return ()
+    fields = payload.get("fields")
+    meta = None
+    if isinstance(fields, list):
+        for item in fields:
+            if isinstance(item, dict) and str(item.get("fieldId") or item.get("key") or "") == EDDI_FIELD:
+                meta = item
+                break
+    elif isinstance(fields, dict):
+        meta = fields.get(EDDI_FIELD)
+    return create_eddi_choices(parse_field_options(meta))
+
+
+def fetch_subtask_eddi_options(site: str, email: str, token: str, project_key: str) -> tuple[FieldOption, ...]:
+    key = (project_key or "").strip() or "P2024"
+    payload = _request(
+        site,
+        email,
+        token,
+        "GET",
+        f"/rest/api/3/issue/createmeta/{key}/issuetypes/{SUBTASK_ISSUE_TYPE_ID}?maxResults=200",
+    )
+    return parse_create_eddi_options(payload)
+
+
+def fetch_epic_copy(site: str, email: str, token: str, issue_key: str) -> EpicCopy:
+    key = (issue_key or "").strip()
+    if not key or "/" in key:
+        raise JiraError("Jira Project key is required.")
+    payload = _request(
+        site,
+        email,
+        token,
+        "GET",
+        f"/rest/api/3/issue/{key}?fields=summary,{JOB_NUMBER_FIELD},{PROJECT_LEAD_FIELD}",
+    )
+    copied = epic_copy_from_issue(payload)
+    if not copied.key:
+        copied = EpicCopy(
+            key=key,
+            summary=copied.summary,
+            job_number=copied.job_number,
+            lead_account_ids=copied.lead_account_ids,
+        )
+    return copied
+
+
+def fetch_parent_tasks(
+    site: str,
+    email: str,
+    token: str,
+    job_number: str,
+    project_key: str,
+    epic_key: str = "",
+) -> list[PackageTask]:
+    job = (job_number or "").strip()
+    if not JOB_PATTERN.fullmatch(job):
+        raise JiraError("Job Number can only contain letters, numbers, dot, underscore, and hyphen.")
+    key = (project_key or "").strip() or "P2024"
+    epic = (epic_key or "").strip()
+    issues: list[dict] = []
+    if epic and "/" not in epic:
+        issues = _search_issues(site, email, token, parent_tasks_of_jql(epic, key))
+    if not issues:
+        issues = _search_issues(site, email, token, parent_tasks_by_job_jql(job, key))
+    return package_tasks_from_issues(issues)
+
+
+def create_subtask(
+    site: str,
+    email: str,
+    token: str,
+    *,
+    jira_project: str,
+    parent_key: str,
+    drawing_id: str,
+    description: str,
+    job_number: str,
+    eddi_label: str,
+    eddi_options: tuple[FieldOption, ...],
+    lead_account_ids: tuple[str, ...] = (),
+) -> str:
+    """POST a Sub-task. Returns the new issue key. Does not send mail."""
+    error = new_issue_preflight_error(
+        drawing_id=drawing_id,
+        parent_key=parent_key,
+        eddi_label=eddi_label,
+        job_number=job_number,
+        eddi_options=eddi_options,
+    )
+    if error:
+        raise JiraError(error)
+    option = resolve_field_option(eddi_label, eddi_options)
+    if option is None:
+        raise JiraError("Pick an EDDI Status (groups 1–9).")
+    summary = summary_from_parts(drawing_id, description)
+    if not summary:
+        raise JiraError("JIRA ID cannot be blank. Type the leading code.")
+    payload = create_subtask_payload(
+        jira_project=jira_project,
+        parent_key=parent_key,
+        summary=summary,
+        job_number=job_number,
+        eddi=option,
+        lead_account_ids=lead_account_ids,
+    )
+    created = _request(site, email, token, "POST", "/rest/api/3/issue", payload)
+    key = str(created.get("key") or "").strip()
+    if not key:
+        raise JiraError("Jira created the issue but did not return a key.")
+    return key
 
 
 def fetch_drawings(site: str, email: str, token: str, job_number: str, project_key: str) -> list[DrawingRow]:

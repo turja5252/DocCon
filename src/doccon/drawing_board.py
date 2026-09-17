@@ -14,7 +14,14 @@ from dataclasses import dataclass, replace
 from tkinter import messagebox, ttk
 
 from doccon.date_picker import CalendarPopup, attach_calendar
-from doccon.match import MatchedRow, pdf_address_text, pdf_address_tip, pdf_is_email_dropped
+from doccon.drop_pdfs import dropped_pdf_filename
+from doccon.match import (
+    MatchedRow,
+    is_dropped_pdf_path,
+    pdf_address_text,
+    pdf_address_tip,
+    pdf_is_email_dropped,
+)
 from doccon.register import (
     APPROVAL_VALUES,
     DRAWING_STATUSES,
@@ -428,6 +435,7 @@ class _Block:
     pdf_cell: tk.Frame
     pack_mark: PackMark
     locate_btn: ttk.Button
+    rename_btn: ttk.Button
     open_btn: ttk.Button
     widgets: list[tk.Misc]
     # The four 1px separators (top/bottom × scrolling/frozen pane) that bracket this row.
@@ -443,6 +451,7 @@ class DrawingBoard(ttk.Frame):
         *,
         on_open_pdf,
         on_locate_pdf=None,
+        on_rename_pdf=None,
         cover_return_stamp=None,
         cover_issued_stamp=None,
         on_cancel_next=None,
@@ -452,6 +461,7 @@ class DrawingBoard(ttk.Frame):
         apply_theme(self)
         self._on_open_pdf = on_open_pdf
         self._on_locate_pdf = on_locate_pdf or on_open_pdf
+        self._on_rename_pdf = on_rename_pdf
         self._cover_stamps: dict[str, Callable[[], object]] = {}
         if cover_return_stamp is not None:
             self._cover_stamps["return_request_date"] = cover_return_stamp
@@ -470,10 +480,10 @@ class DrawingBoard(ttk.Frame):
         self._rev_options: dict[str, tuple[str, ...]] = {}
         self._eddi_options: dict[str, tuple[str, ...]] = {}
         self._batch_note: ttk.Label
-        self._packed_rev: ttk.Combobox
+        self._pack_status: ttk.Combobox
+        self._pack_status_loading = False
         self._packed_only_btn: ttk.Button
         self._bump_packed_btn: ttk.Button
-        self._set_packed_btn: ttk.Button
         self._tip: tk.Toplevel | None = None
         self._tip_after = ""
         self._paint_after = ""
@@ -506,25 +516,55 @@ class DrawingBoard(ttk.Frame):
         self._pack_filter_after = ""
         self._drop_hover_key = ""
 
-        batch = ttk.LabelFrame(self, text="Batch Next — applies to Pack ticks only", padding=4)
-        batch.pack(fill="x", padx=8, pady=(0, 4))
-        top = ttk.Frame(batch)
+        self._find_bar = ttk.Frame(self)
+        self._find_bar.pack(fill="x", padx=8, pady=(0, 4))
+        ttk.Label(self._find_bar, text="Filter").pack(side="left")
+        self._filter = ttk.Entry(self._find_bar, textvariable=self._filter_var, width=22)
+        self._filter.pack(side="left", padx=(8, 4))
+        ttk.Button(self._find_bar, text="Find", command=self._run_filter).pack(side="left")
+        ttk.Button(self._find_bar, text="Clear", command=self._clear_filter).pack(side="left", padx=(4, 8))
+        self._packed_only_btn = ttk.Button(self._find_bar, text="Packed only", command=self._toggle_packed_only)
+        self._packed_only_btn.pack(side="left", padx=(0, 8))
+        ttk.Button(self._find_bar, text="Pack all", command=lambda: self.set_pack(True)).pack(side="left")
+        ttk.Button(self._find_bar, text="Pack none", command=lambda: self.set_pack(False)).pack(
+            side="left", padx=(4, 4)
+        )
+        ttk.Button(self._find_bar, text="Cancel Next", command=self._cancel_next).pack(side="left", padx=(0, 8))
+        self._bump_packed_btn = ttk.Button(
+            self._find_bar, text="Bump packed", style="Brand.TButton", command=self._bump_packed
+        )
+        self._bump_packed_btn.pack(side="left", padx=(0, 4))
+        ttk.Label(self._find_bar, text="Set packed to").pack(side="left")
+        self._pack_status = ttk.Combobox(
+            self._find_bar, width=22, values=("",) + DRAWING_STATUSES, state="readonly"
+        )
+        self._pack_status.pack(side="left", padx=(4, 8))
+        self._pack_status.bind("<<ComboboxSelected>>", self._on_pack_status_change)
+        self._batch_toggle = ttk.Button(self._find_bar, text="Batch Next…", command=self._toggle_batch)
+        self._batch_toggle.pack(side="left")
+        self._filter_note = ttk.Label(self._find_bar, text="Type, then Find", style="Muted.TLabel")
+        self._filter_note.pack(side="left", padx=(8, 0))
+        self._batch_note = ttk.Label(self._find_bar, text="", style="Muted.TLabel")
+        self._batch_note.pack(side="left", padx=(8, 0))
+        self._filter.bind("<Return>", self._run_filter)
+        self._filter.bind("<Escape>", self._clear_filter)
+
+        self._batch_frame = ttk.LabelFrame(self, text="Batch Next — applies to Pack ticks only", padding=4)
+        self._batch_open = False
+        top = ttk.Frame(self._batch_frame)
         top.pack(fill="x")
         actions = ttk.Frame(top)
         actions.pack(side="left", fill="y")
-        ttk.Button(actions, text="Pack all", command=lambda: self.set_pack(True)).pack(side="left")
-        ttk.Button(actions, text="Pack none", command=lambda: self.set_pack(False)).pack(side="left", padx=(4, 8))
         ttk.Button(actions, text="Apply to Pack", style="Accent.TButton", command=self._apply_batch).pack(
-            side="left", padx=(0, 4)
+            side="left", padx=(0, 8)
         )
-        ttk.Button(actions, text="Cancel Next", command=self._cancel_next).pack(side="left", padx=(0, 8))
         ttk.Label(actions, text="Status").pack(side="left")
         self._batch_status = ttk.Combobox(actions, width=18, values=("",) + DRAWING_STATUSES, state="readonly")
         self._batch_status.pack(side="left", padx=(2, 8))
 
         fields_host = ttk.Frame(top)
         fields_host.pack(side="left", fill="x", expand=True)
-        batch_canvas = tk.Canvas(fields_host, height=44, highlightthickness=0, background=BG, borderwidth=0)
+        batch_canvas = tk.Canvas(fields_host, height=36, highlightthickness=0, background=BG, borderwidth=0)
         batch_h = ttk.Scrollbar(fields_host, orient="horizontal", command=batch_canvas.xview)
         batch_inner = ttk.Frame(batch_canvas)
         batch_win = batch_canvas.create_window((0, 0), window=batch_inner, anchor="nw")
@@ -547,53 +587,12 @@ class DrawingBoard(ttk.Frame):
                 )
                 box.pack(side="left", padx=(2, 8))
             self._batch_fields[field] = box
-        self._batch_note = ttk.Label(
-            batch_inner,
-            text=(
-                "Leave a box blank to skip. Date: type it, or click ▾ for a calendar. "
-                "Submitted to Client For, Client Approval, Shop/Field IFC Rev, and EDDI Status are pick-only. "
-                "Double-click a text Next box to edit (single-click selects the row). "
-                "JIRA ID and Description are typed on the row; Confirm writes them as one Jira summary. "
-                "Edited Next boxes turn yellow. Right-click a Next box to restore Now. "
-                "Bump packed steps each packed Outgoing Rev from Now; Set packed to… stamps one rev. "
-                "Cancel Next restores every Next field on every listed drawing to Now (Jira is untouched)."
-            ),
-            style="Muted.TLabel",
-        )
-        self._batch_note.pack(side="left", padx=8)
-
-        rev_bar = ttk.Frame(batch)
-        rev_bar.pack(fill="x", pady=(6, 0))
-        ttk.Label(rev_bar, text="Outgoing Rev", style="CoverHead.TLabel").pack(side="left")
-        self._bump_packed_btn = ttk.Button(
-            rev_bar, text="Bump packed", style="Brand.TButton", command=self._bump_packed
-        )
-        self._bump_packed_btn.pack(side="left", padx=(8, 4))
-        ttk.Label(rev_bar, text="Set packed to").pack(side="left", padx=(12, 4))
-        self._packed_rev = ttk.Combobox(rev_bar, width=6, values=REV_VALUES, state="normal")
-        self._packed_rev.pack(side="left")
-        self._set_packed_btn = ttk.Button(rev_bar, text="Set packed to…", command=self._apply_packed_rev)
-        self._set_packed_btn.pack(side="left", padx=(4, 8))
 
         def _batch_sync(_event=None) -> None:
             batch_canvas.configure(scrollregion=batch_canvas.bbox("all"))
-            batch_canvas.itemconfigure(batch_win, height=max(batch_inner.winfo_reqheight(), 36))
+            batch_canvas.itemconfigure(batch_win, height=max(batch_inner.winfo_reqheight(), 28))
 
         batch_inner.bind("<Configure>", _batch_sync)
-
-        find = ttk.Frame(self)
-        find.pack(fill="x", padx=8, pady=(0, 4))
-        ttk.Label(find, text="Filter").pack(side="left")
-        self._filter = ttk.Entry(find, textvariable=self._filter_var, width=28)
-        self._filter.pack(side="left", padx=(8, 4))
-        ttk.Button(find, text="Find", command=self._run_filter).pack(side="left")
-        ttk.Button(find, text="Clear", command=self._clear_filter).pack(side="left", padx=(4, 8))
-        self._packed_only_btn = ttk.Button(find, text="Packed only", command=self._toggle_packed_only)
-        self._packed_only_btn.pack(side="left", padx=(0, 8))
-        self._filter_note = ttk.Label(find, text="Type, then Find", style="Muted.TLabel")
-        self._filter_note.pack(side="left")
-        self._filter.bind("<Return>", self._run_filter)
-        self._filter.bind("<Escape>", self._clear_filter)
 
         table = ttk.Frame(self)
         table.pack(fill="both", expand=True)
@@ -991,8 +990,6 @@ class DrawingBoard(ttk.Frame):
             box = self._batch_fields.get(field)
             if isinstance(box, ttk.Combobox):
                 box.configure(values=values)
-            if field == "outgoing_rev":
-                self._packed_rev.configure(values=values)
             for block in self._blocks.values():
                 nxt = block.nexts.get(field)
                 if isinstance(nxt, ttk.Combobox):
@@ -1194,6 +1191,7 @@ class DrawingBoard(ttk.Frame):
         if block is None or not block.include.get():
             return
         self.stamp_cover_dates_on_keys((key,))
+        self.stamp_status_on_keys(self.pack_status(), (key,))
 
     def _run_pack_filter(self) -> None:
         self._pack_filter_after = ""
@@ -1391,6 +1389,9 @@ class DrawingBoard(ttk.Frame):
         self._schedule_paint()
 
     def _begin_rows(self, rows: list[MatchedRow], *, checked: set[str] | None = None) -> None:
+        self._set_batch_open(False)
+        self._pack_status_loading = True
+        self._pack_status.set("")
         self.clear()
         self._suspend_layout = True
         self._frozen_passes = 0
@@ -1456,6 +1457,10 @@ class DrawingBoard(ttk.Frame):
         self._paint_on_done = None
         if done is not None:
             done()
+        try:
+            self.after_idle(self._clear_pack_status_loading)
+        except tk.TclError:
+            self._pack_status_loading = False
 
     def _bind_overflow(self, widget: tk.Misc, get_text, min_chars: int) -> None:
         """Hover tip on clipped Now labels. Text Next boxes stay in-place (no copy window)."""
@@ -1618,6 +1623,13 @@ class DrawingBoard(ttk.Frame):
             width=8,
             command=lambda key=drawing.key: self._on_locate_pdf(key),
         )
+        rename_btn = ttk.Button(
+            pdf_actions,
+            text="Rename…",
+            style="Locate.TButton",
+            width=8,
+            command=lambda key=drawing.key: self._rename_pdf(key),
+        )
         open_btn = ttk.Button(
             pdf_actions,
             text="Open",
@@ -1696,12 +1708,14 @@ class DrawingBoard(ttk.Frame):
             pdf_cell=pdf_cell,
             pack_mark=pack_mark,
             locate_btn=locate_btn,
+            rename_btn=rename_btn,
             open_btn=open_btn,
             widgets=widgets,
             rules=(h_top, h_top_f, h_bot, h_bot_f),
         )
         pack.trace_add("write", lambda *_args, drawing_key=drawing.key: self._on_pack_tick(drawing_key))
         self._watch_next(self._blocks[drawing.key])
+        self._style_pdf_rename(self._blocks[drawing.key], row)
         if drawing.key == self._focus_key:
             self._focus_painted = drawing.key
             self._style_row_focus(self._blocks[drawing.key])
@@ -1859,23 +1873,86 @@ class DrawingBoard(ttk.Frame):
             return 0
         return self.apply_next_to_pack(fields={"outgoing_rev": value})
 
+    def pack_status(self) -> str:
+        try:
+            return (self._pack_status.get() or "").strip()
+        except tk.TclError:
+            return ""
+
+    def set_pack_status(self, status: str, *, stamp: bool = True) -> int:
+        """Set filter-row Status. stamp writes packed Next, or restores Now when blank."""
+        value = (status or "").strip()
+        self._pack_status_loading = True
+        try:
+            self._pack_status.set(value)
+        finally:
+            if stamp:
+                self._pack_status_loading = False
+            else:
+                try:
+                    self.after_idle(self._clear_pack_status_loading)
+                except tk.TclError:
+                    self._pack_status_loading = False
+        if not stamp:
+            return 0
+        return self.apply_pack_status_change(value)
+
+    def _clear_pack_status_loading(self) -> None:
+        self._pack_status_loading = False
+
+    def set_packed_status(self, status: str) -> int:
+        """Stamp Next Status on every packed row. Blank does not clear. Does not write Jira."""
+        value = (status or "").strip()
+        if not value:
+            return 0
+        return self.apply_next_to_pack(status=value)
+
+    def stamp_status_on_keys(self, status: str, keys: tuple[str, ...]) -> int:
+        """Set Next Status on those packed rows. Blank does not clear. Does not write Jira."""
+        value = (status or "").strip()
+        if not value:
+            return 0
+        count = 0
+        for key in keys:
+            block = self._blocks.get(key)
+            if block is None or not block.include.get():
+                continue
+            self._apply_next_to_block(block, status=value)
+            count += 1
+        return count
+
+    def apply_pack_status_change(self, status: str) -> int:
+        """Stamp packed Next Status, or restore Now when Set packed to is blank.
+
+        Pack-tick stamping still skips blank (does not wipe). This path is the filter
+        box changing: blank is a right-click-undo of Status on packed rows only.
+        Does not write Jira.
+        """
+        value = (status or "").strip()
+        if not value:
+            return self.restore_packed_next_field("status")
+        return self.set_packed_status(value)
+
+    def _on_pack_status_change(self, _event: object | None = None) -> None:
+        if self._pack_status_loading:
+            return
+        value = self.pack_status()
+        count = self.apply_pack_status_change(value)
+        if value and count:
+            self._batch_note.configure(
+                text=f"Set Status to {value} on {count} packed drawing(s). Jira was not written."
+            )
+            return
+        if value:
+            self._batch_note.configure(text="Tick Pack — Status will stamp onto packed drawings.")
+            return
+        if count:
+            self._batch_note.configure(text="Packed Status restored to Now.")
+
     def _bump_packed(self) -> None:
         count = self.bump_packed_revs()
         if count:
             self._batch_note.configure(text=f"Bumped Outgoing Rev on {count} packed drawing(s). Jira was not written.")
-            return
-        self._batch_note.configure(text="Tick Pack on at least one drawing first.")
-
-    def _apply_packed_rev(self) -> None:
-        stamp = (self._packed_rev.get() or "").strip()
-        if not stamp:
-            self._batch_note.configure(text="Pick a rev, then Set packed to…")
-            return
-        count = self.set_packed_rev(stamp)
-        if count:
-            self._batch_note.configure(
-                text=f"Set Outgoing Rev to {stamp} on {count} packed drawing(s). Jira was not written."
-            )
             return
         self._batch_note.configure(text="Tick Pack on at least one drawing first.")
 
@@ -1940,6 +2017,7 @@ class DrawingBoard(ttk.Frame):
             self.apply_row(row)
             count += 1
         self._batch_status.set("")
+        self.set_pack_status("", stamp=False)
         for box in self._batch_fields.values():
             box.set("")
         return count
@@ -1967,6 +2045,19 @@ class DrawingBoard(ttk.Frame):
         self.revert_next()
         self._run_cancel_next_hook()
         self._batch_note.configure(text=f"Cancelled Next on {pending} drawing(s). Jira was not written.")
+
+    def _toggle_batch(self) -> None:
+        self._set_batch_open(not self._batch_open)
+
+    def _set_batch_open(self, shown: bool) -> None:
+        self._batch_open = bool(shown)
+        if self._batch_open:
+            if not self._batch_frame.winfo_manager():
+                self._batch_frame.pack(fill="x", padx=8, pady=(0, 4), after=self._find_bar)
+            self._batch_toggle.configure(text="Hide batch")
+        else:
+            self._batch_frame.pack_forget()
+            self._batch_toggle.configure(text="Batch Next…")
 
     def _apply_batch(self) -> None:
         fields = {field: box.get() for field, box in self._batch_fields.items()}
@@ -2158,6 +2249,7 @@ class DrawingBoard(ttk.Frame):
             items = [
                 *block.widgets,
                 block.locate_btn,
+                block.rename_btn,
                 block.open_btn,
                 block.pack_mark,
                 block.drawing_id_next,
@@ -2209,6 +2301,54 @@ class DrawingBoard(ttk.Frame):
             block.pdf_cell.configure(bg=fill)
         block.pdf_label.configure(text=pdf_address_text(row), style=want)
 
+    def _style_pdf_rename(self, block: _Block, row: MatchedRow) -> None:
+        """Rename… only for an email-dropped DocCon/dropped copy. Locate’d Dropbox files never get it."""
+        path = None if row.pdf is None else row.pdf.path
+        show = pdf_is_email_dropped(row) and path is not None and is_dropped_pdf_path(path)
+        if show:
+            if str(block.rename_btn.winfo_manager()) != "pack":
+                block.rename_btn.pack(side="left", padx=(0, 4), after=block.locate_btn)
+            block.rename_btn.configure(state="normal")
+            return
+        if str(block.rename_btn.winfo_manager()) == "pack":
+            block.rename_btn.pack_forget()
+
+    def apply_pdf(self, row: MatchedRow) -> None:
+        """Update the paired PDF without restoring Next from Now."""
+        drawing = row.drawing
+        self._matches[drawing.key] = row
+        block = self._blocks.get(drawing.key)
+        if block is None:
+            return
+        block.match_label.configure(
+            text=row.confidence, style=match_style(row.confidence, focused=block.focused)
+        )
+        self._style_pdf_address(block, row)
+        block.open_btn.configure(state="normal" if row.pdf else "disabled")
+        self._style_pdf_rename(block, row)
+
+    def suggested_dropped_name(self, key: str) -> str:
+        """`{JIRA ID} REV {Outgoing Rev}.pdf` from Next (else Now)."""
+        block = self._blocks.get((key or "").strip())
+        row = self._matches.get((key or "").strip())
+        drawing_id = ""
+        rev = ""
+        if block is not None:
+            drawing_id = str(block.drawing_id_next.get() or "").strip()
+            box = block.nexts.get("outgoing_rev")
+            if box is not None:
+                rev = str(box.get() or "").strip()
+        if not drawing_id and row is not None:
+            drawing_id = (row.drawing.drawing_id or "").strip()
+        if not rev and row is not None:
+            rev = (row.drawing.outgoing_rev or "").strip()
+        return dropped_pdf_filename(drawing_id, rev)
+
+    def _rename_pdf(self, key: str) -> None:
+        if self._on_rename_pdf is None:
+            return
+        self._on_rename_pdf(key)
+
     def apply_row(self, row: MatchedRow) -> None:
         drawing = row.drawing
         self._matches[drawing.key] = row
@@ -2224,6 +2364,7 @@ class DrawingBoard(ttk.Frame):
         block.match_label.configure(text=row.confidence, style=match_style(row.confidence, focused=block.focused))
         self._style_pdf_address(block, row)
         block.open_btn.configure(state="normal" if row.pdf else "disabled")
+        self._style_pdf_rename(block, row)
         for field, _title, _values, _width, _kind in FIELD_KEYS:
             value = getattr(drawing, field) or ""
             block.originals[field].configure(text=value or "—")

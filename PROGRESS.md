@@ -2,6 +2,106 @@
 
 Newest first. Append a dated entry when a decision is locked, a test runs, or the next step changes.
 
+## 2026-09-17 — Set packed to is Jira Status (1.74)
+
+Tanzim: outgoing revs are never the same across a pack, so Set packed to should not stamp rev. Pick **OFA** (or IFI, …) then whatever is packed gets yellow Next Status — same as Date issued / Expected return. Blank restores packed Status to Now. Pack-tick with blank does not wipe. Bump packed still steps each Outgoing Rev. Jira is not written until Create transmittal / Update Jira.
+
+**Exe rebuilt 2026-09-17** — `Elite DocCon.exe` is **1.74**. Close every old DocCon; double-click that file. Load `2026-Tanzim`. Do not Confirm 075.
+
+## 2026-09-17 — Create transmittal / Create EDDI (1.73)
+
+Tanzim: navy Confirm… / EDDI… / Update Jira… should name what they create. **Create transmittal** and **Create EDDI**; **Update Jira…** stays. Same commands. No exe.
+
+## 2026-09-17 — Date issued and Expected return visible (1.72)
+
+Tanzim: 1.71 hid the two cover dates by parking them on Cover with TO/CC. They are back on a slim row under the navy bar (Urgent presets, Locate PEP, Save with them). Cover stays FROM / TO / CC / project. Batch Next still starts hidden. No exe.
+
+## 2026-09-17 — Ergonomic chrome, Cover, and hidden Batch Next (1.71)
+
+Tanzim: happy with the engine; wants vertical space for the drawing list. Navy title + Job/Load/Confirm are one row. Cover holds Date issued / Expected return / PEP; TO/CC/PROJECT are two lines; the how-to paragraph is gone. **Batch Next** (Apply to Pack + field boxes) starts hidden behind **Batch Next…**. Pack all / none, Cancel Next, Bump packed, Set packed stay on the Filter row. No exe.
+
+Tests: **402 passed, 2 skipped (Tk).**
+
+Load `2026-Tanzim`. Do not Confirm 075.
+
+## 2026-09-17 — Leftover drag hint off the navy bar (1.70)
+
+Tanzim: console still said **Drop a PDF on a drawing row**. Drag never came back (1.60). That teal leftover next to **Paste PDF** is gone. Ingest stays Copy then Paste PDF / Ctrl+V, or the watched folder. No exe.
+
+## 2026-09-17 — Create waits for the new row (1.69)
+
+Tanzim: 1.68 Create worked but the new Sub-task was missing after reload (Jira JQL lag). The load meter now stays up through **Creating on Jira…**, **Created {id} ({key})**, **Fetching from Jira…**. Fetch GETs the new issue by key and merges it into the pack if search is late. Navy button is compact two-line **Create new Jira Issue**. No exe.
+
+Tests: **402 passed, 1 skipped (Tk).**
+
+Load `2026-Tanzim`. Do not Confirm 075.
+
+## 2026-09-17 — New issue… creates a Jira Sub-task (1.68)
+
+Operator agreed the dialog: Parent, EDDI, JIRA ID, Description. Job Number and Project Lead copy from the epic.
+
+**Built.** Navy identity row **New issue…** (after Locate job folder…, Brand, disabled until Load). Dialog Create writes `POST /rest/api/3/issue` as a Sub-task (`10013`) under the picked Task. EDDI 1–9 by option id (createmeta). Generic (0) is not offered. JIRA ID preflight same as Confirm (no blank, no inner space). Description may be blank. Then the pack reloads. Not transmittal Confirm. No exe.
+
+Load `2026-Tanzim`. Do not Confirm 075.
+
+Tests: **398 passed, 1 skipped (Tk).** Ruff clean on the touched files.
+
+## 2026-09-17 — Create Jira Sub-task from the console (locked, not built)
+
+Operator agreed: Parent, EDDI, JIRA ID, Description.
+
+**Lock.** With a job loaded, create is always a **Sub-task** (`issuetype` `10013`) under an existing **Task** that is a child of the loaded job **Project** (the epic). Do not create a Task or a Project. **POST `/rest/api/3/issue` immediately** (needs a key for pairing) — not a yellow Next, not transmittal Confirm. Then reload the pack.
+
+**Operator types/picks:** Parent Task (Tasks under that Project; Job Number search is fallback if there is no Project); EDDI Status 1–9 only (not Generic `0`); JIRA ID; Description (may be blank). Same summary compose as the board (ID + space + description; preflight rejects a blank or internal-whitespace ID).
+
+**Copied, not asked:** Jira project `P2024`; Job Number `customfield_10300` from the epic (abort if the epic has none); Project Lead / Sponsor `customfield_10071` from the epic (account ids; omit if empty — do not use the `P2024` software project lead). Reporter stays Jira’s default.
+
+Rev, dates, Client Doc No., and labels stay off the create dialog. Sandbox `2026-Tanzim` only. Do not Confirm 075. Console stays **1.67**. Not built.
+
+## 2026-09-17 — Investigate creating a Jira issue from the console (not built)
+
+Operator: there may be a need to create the Jira issue from DocCon. Always a **Sub-task**. Always a **parent Task** on the same Job Number. Jira will not create the issue without some essentials.
+
+**Live read** (GET only, Tanzim token, `P2024`, dummy job `2026-Tanzim`). No issue was created. Console stays **1.67**.
+
+**Today.** DocCon never `POST /rest/api/3/issue`. Load searches; Confirm `PUT`s fields and `POST`s transitions. `DrawingRow` keeps `parent_summary`, not the parent key. Tanzim’s token **does** have `CREATE_ISSUES`.
+
+**Types in P2024.** Only three: Task `10012`, Sub-task `10013`, Project `10014`. Create is always `issuetype.id = 10013`.
+
+**Sub-task createmeta required (no default):** `project` (always `P2024` on Load), `parent` (existing Task key), `summary` (JIRA ID + Description), **EDDI Status** `customfield_10289` (one option, write by id). **Reporter** is required but Jira defaults it. Issue Type is on the create screen; send `10013` anyway.
+
+**Job Number lock:** copy `customfield_10300` from the job **Project** (the epic), not typed, not from the parent Task. Jira does not require it on Sub-task create; DocCon still writes it so Load finds the new Sub-task. If the Project has no Job Number, abort create.
+
+**Project Lead / Sponsor** `customfield_10071` (People, multi). Required to **create the Project/epic**, not required on Sub-task (or Task) create. Live template already copies it down: Tanzim on `2026-Tanzim` Project → Drawing Package → dummy drawing; Anton Vo on `2026-075` / `2026-096` Project → package Task. **Lock:** copy the same people from the epic onto the new Sub-task (account ids), same as Job Number. Do not use the Jira software project lead for `P2024` (that is Tanzim for the whole site). If the epic has no Lead, omit it — Sub-task create still succeeds. Labels are optional. Outgoing Rev / purpose / dates / Client Doc No. are optional.
+
+**EDDI option ids** (Sub-task create and editmeta on `P2024-15578` match): Generic `10231`; 1–9 `10166`–`10174`. Generic (0) would create then vanish from the board (`visible_pack_rows`). Do not offer 0.
+
+**Parent Tasks on `2026-Tanzim` (all Job Number `2026-Tanzim`, all EDDI Generic, so none appear on the board):** Drawing Package `P2024-15577` (Drafting), QC Package, Engineering Package, Databook Package, Document Transmittals (`DocCon`), Burn Programs, Project Completion Activities. Dummy drawings sit under Drawing Package. A parent picker cannot use the pack list — it must search Tasks. 2026-08-21: drawings do not go under Document Transmittals.
+
+**Parent list — two hunts, same list on live jobs.** There is no Epic type in `P2024` (only Project / Task / Sub-task). The job card is issuetype **Project** (hierarchy 1), one per Job Number on Tanzim / 075 / 096 / 049. Method A: `issuetype = Task AND Job Number ~ job`. Method B (Load already walks this): that one Project, then `issuetype = Task AND parent = {Project key}`. On those four jobs the Task keys matched 7/7, 7/7, 1/1, 7/7. Direct children of the Project were Tasks only (no stray Sub-tasks). `2026-096` has a single Task (Manway Package), not the seven-pack template. `2026-049-1` / `-2` have no Project of their own. Method B still finds a Task if Job Number was never copied onto it; Method A would miss that. If Load has no Project (`MISSING_JIRA_PROJECT`), Method B cannot run. If two Project issues share a Job Number, do not silent-pick (same as Locate job folder). Preferred picker: Tasks that are children of the loaded job Project. Fallback: Tasks with this Job Number. Do not Confirm 075 (read only).
+
+**Create writes Jira immediately** (needs an issue key for pairing). Not a Next edit. Sandbox only: `2026-Tanzim`. Do not Confirm 075. Do not create parent Tasks in this flow.
+
+Dialog lock (2026-09-17): operator picks Parent + EDDI + JIRA ID / Description. See the lock entry above. Labels still not copied unless asked.
+
+## 2026-09-17 — Rename… for email-dropped PDFs only (1.67)
+
+Sarah: email attachments sometimes need a different client filename. Tanzim: no rename if the source PDF is on Dropbox (**Locate…**).
+
+**Lock built.** **Rename…** next to Locate / Open only when the pair is an **email dropped** copy in `{job}/3.0 Doc Con/DocCon/dropped/`. Dialog pre-fills `{JIRA ID} REV {Outgoing Rev}.pdf` from Next (else Now); **Use drawing name** restores that. Renames the staged copy only. Yellow **email dropped** stays. Confirm zip uses the new name. `REV n` in the new name stamps Next Outgoing Rev (does not reset other Next). Locate / hunt / Current PDF: the button is not shown; the Dropbox file is not renamed. Cancel Next does not undo a rename. Do not auto-file into Current PDF. Do not rewrite Jira.
+
+**Exe rebuilt 2026-09-17** — `Elite DocCon.exe` is **1.67**. Sarah: close every old DocCon, double-click that file. Load `2026-Tanzim`. Paste a PDF — **Rename…** appears; Locate a Current PDF — it does not. Do not Confirm 075.
+
+Tests: **391 passed, 2 skipped (Tk).** Ruff clean on the touched files.
+
+## 2026-09-17 — Rename PDF is only for email-dropped copies (locked, not built)
+
+Sarah: sometimes an email attachment must go out under a different name. Tanzim: no renaming feature if the source PDF is on Dropbox (**Locate…**).
+
+**Lock.** **Rename…** (not built yet) exists only when the paired file is an **email dropped** copy in `{job}/3.0 Doc Con/DocCon/dropped/`. Locate… / hunt / a Current PDF pair: no Rename…, no rename of the Dropbox file. Pairing stays on the Jira issue key. After a rename, the PDF cell keeps **email dropped** yellow under the new filename; Confirm zip uses that name; `REV n` in the new name stamps Next Outgoing Rev the same as Paste. Do not auto-file into `2.0 Drafting/Current PDF`. Do not rewrite Jira. Cancel Next does not undo a rename.
+
+Not built. Console stays **1.66**. Do not Confirm 075.
+
 ## 2026-09-16 — Frozen Paste PDF opened a second DocCon (1.66)
 
 Operator on Sarah’s laptop (1.65 exe): Paste PDF opened another suite window; closing it said nothing copied. Same Copy works on Tanzim’s PC from source.

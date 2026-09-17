@@ -887,6 +887,19 @@ def _button_texts(widget) -> list[str]:
     return texts
 
 
+def _label_texts(widget) -> list[str]:
+    texts: list[str] = []
+    stack = [widget]
+    while stack:
+        current = stack.pop()
+        with contextlib.suppress(tk.TclError):
+            if isinstance(current, ttk.Label | tk.Label):
+                texts.append(str(current.cget("text")))
+        with contextlib.suppress(tk.TclError):
+            stack.extend(current.winfo_children())
+    return texts
+
+
 def test_console_has_paste_pdf_and_no_pdf_from_outlook_button() -> None:
     try:
         from doccon.gui import DocConApp
@@ -899,7 +912,26 @@ def test_console_has_paste_pdf_and_no_pdf_from_outlook_button() -> None:
     app.withdraw()
     try:
         labels = _button_texts(app)
+        assert "Create transmittal" in labels
+        assert "Create EDDI" in labels
+        assert "Confirm…" not in labels
+        assert "EDDI…" not in labels
         assert "Paste PDF" in labels
+        assert "Create new Jira Issue" in labels
+        assert "Create new\nJira Issue" not in labels
+        assert "Batch Next…" in labels
+        assert "Pack all" in labels
+        assert "Set packed to…" not in labels
+        assert "Set packed to" in _label_texts(app)
+        assert "OFA" in app.board._pack_status.cget("values")
+        assert "Hide batch" not in labels
+        assert app.board._batch_open is False
+        assert "Date issued" in _label_texts(app)
+        assert "Expected return" in _label_texts(app)
+        assert str(app.issued.winfo_manager()) == "pack"
+        assert str(app.expected.winfo_manager()) == "pack"
+        assert "Load starts Date issued" not in " ".join(_label_texts(app))
+        assert "New issue…" not in labels
         assert "PDF from Outlook" not in labels
         assert "Urgent same day" in labels
         assert "Urgent +1" in labels
@@ -907,5 +939,45 @@ def test_console_has_paste_pdf_and_no_pdf_from_outlook_button() -> None:
         assert "14 days" in labels
         assert not hasattr(app, "_pdf_from_outlook")
         assert not hasattr(app, "_outlook_hunt")
+        assert not hasattr(app, "_drop_hint")
+        assert "Drop a PDF on a drawing row" not in _label_texts(app)
+    finally:
+        app.destroy()
+
+
+def test_new_issue_written_holds_meter_then_fetches() -> None:
+    try:
+        from doccon.gui import CREATE_CREATED_MS, DocConApp
+    except tk.TclError:
+        pytest.skip("Tk is not available")
+    try:
+        app = DocConApp()
+    except tk.TclError:
+        pytest.skip("Tk is not available")
+    app.withdraw()
+    scheduled: list[tuple[int, object]] = []
+    loads: list[str] = []
+
+    def fake_after(ms, func=None, *args):
+        if func is not None:
+            scheduled.append((int(ms), func))
+        return "after"
+
+    try:
+        app.after = fake_after
+        app._work = "create"
+        app._busy = True
+        app._new_issue_written(None, "P2024-NEW", "2026-Tanzim-1-9")
+        assert app._create_wait_key == "P2024-NEW"
+        assert app._create_focus_key == "P2024-NEW"
+        assert app._work == "create"
+        assert app._busy is True
+        assert scheduled
+        assert scheduled[0][0] == CREATE_CREATED_MS
+        assert scheduled[0][1] == app._reload_after_create
+        app._load = lambda: loads.append("load") or setattr(app, "_work", "load")
+        app._reload_after_create()
+        assert loads == ["load"]
+        assert app._work == "load"
     finally:
         app.destroy()

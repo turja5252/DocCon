@@ -6,14 +6,17 @@ from pathlib import Path
 
 from doccon.drop_pdfs import (
     MSG_SKIP,
+    NOT_EMAIL_DROPPED,
     NOT_PDF,
     DropSource,
     apply_board_drop,
     apply_row_drop,
     copy_into_dropped,
     dropped_dir,
+    dropped_pdf_filename,
     ingest_sources,
     pick_pdf_for_row,
+    rename_email_dropped_pdf,
     resolve_drop_row_key,
     write_pdf_bytes_into_dropped,
 )
@@ -366,3 +369,50 @@ def test_parse_file_group_descriptor_w() -> None:
     desc[72 : 72 + len(encoded)] = encoded
     blob = (1).to_bytes(4, "little") + bytes(desc)
     assert parse_file_group_descriptor_w(blob) == [name]
+
+
+def test_dropped_pdf_filename_uses_id_and_rev() -> None:
+    assert dropped_pdf_filename("2026-Tanzim-1-1", "0") == "2026-Tanzim-1-1 REV 0.pdf"
+    assert dropped_pdf_filename("2026-Tanzim-1-1", "") == "2026-Tanzim-1-1.pdf"
+    assert dropped_pdf_filename("", "") == "drawing.pdf"
+    cleaned = dropped_pdf_filename("foo:bar", "1")
+    assert ":" not in cleaned
+    assert cleaned.endswith(".pdf")
+
+
+def test_rename_email_dropped_pdf_in_dropped_only(tmp_path: Path) -> None:
+    job = tmp_path / "2026-Tanzim"
+    copied = write_pdf_bytes_into_dropped(job, "scan0042.pdf", b"%PDF-drop")
+    dest, error = rename_email_dropped_pdf(copied, "2026-Tanzim-1-1 REV 0.pdf")
+    assert error == ""
+    assert dest is not None
+    assert dest.name == "2026-Tanzim-1-1 REV 0.pdf"
+    assert dest.parent == dropped_dir(job)
+    assert dest.read_bytes() == b"%PDF-drop"
+    assert not copied.exists()
+    same, empty = rename_email_dropped_pdf(dest, "2026-Tanzim-1-1 REV 0.pdf")
+    assert empty == ""
+    assert same == dest
+
+
+def test_rename_refuses_a_locate_current_pdf(tmp_path: Path) -> None:
+    real = tmp_path / "2.0 Drafting" / "Current PDF" / "2026-Tanzim-1-1 REV 0.pdf"
+    real.parent.mkdir(parents=True, exist_ok=True)
+    real.write_bytes(b"%PDF-real")
+    dest, error = rename_email_dropped_pdf(real, "other.pdf")
+    assert dest is None
+    assert error == NOT_EMAIL_DROPPED
+    assert real.is_file()
+    assert real.read_bytes() == b"%PDF-real"
+
+
+def test_rename_collision_uses_a_numbered_name(tmp_path: Path) -> None:
+    job = tmp_path / "2026-Tanzim"
+    first = write_pdf_bytes_into_dropped(job, "keep.pdf", b"%PDF-keep")
+    second = write_pdf_bytes_into_dropped(job, "scan.pdf", b"%PDF-scan")
+    dest, error = rename_email_dropped_pdf(second, "keep.pdf")
+    assert error == ""
+    assert dest is not None
+    assert dest.name == "keep-2.pdf"
+    assert first.read_bytes() == b"%PDF-keep"
+    assert dest.read_bytes() == b"%PDF-scan"

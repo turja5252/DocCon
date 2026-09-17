@@ -348,3 +348,41 @@ def test_assign_with_several_packed_rows_needs_a_click(tmp_path: Path, monkeypat
         assert any("click" in msg.casefold() for msg in infos)
     finally:
         app.destroy()
+
+
+def test_rename_email_dropped_pdf_not_a_locate_file(tmp_path: Path, monkeypatch) -> None:
+    rows = [_row(key="P2024-1", drawing_id="2026-Tanzim-1-1")]
+    app = _app_with_rows(tmp_path, monkeypatch, rows)
+    try:
+        app.board.focus_key("P2024-1")
+        infos: list[str] = []
+        _paste(app, monkeypatch, _clipboard_pdf(tmp_path, "scan0042.pdf"), infos)
+        paired = app._matches["P2024-1"]
+        assert paired.pdf is not None
+        old = paired.pdf.path
+        monkeypatch.setattr(app, "_ask_rename_pdf", lambda **_k: "2026-Tanzim-1-1 REV 0.pdf")
+        app._rename_pdf("P2024-1")
+        updated = app._matches["P2024-1"]
+        assert updated.pdf is not None
+        assert updated.pdf.path.name == "2026-Tanzim-1-1 REV 0.pdf"
+        assert updated.pdf.email_dropped is True
+        assert EMAIL_DROPPED_LABEL in pdf_address_text(updated)
+        assert not old.exists()
+        assert updated.pdf.path.is_file()
+        assert app.board._blocks["P2024-1"].nexts["outgoing_rev"].get() == "0"
+        assert app.board._blocks["P2024-1"].nexts["outgoing_rev"].cget("style") == "Pending.TCombobox"
+        cluster = list(app.board._blocks["P2024-1"].locate_btn.master.pack_slaves())
+        assert app.board._blocks["P2024-1"].rename_btn in cluster
+
+        real = tmp_path / "Current PDF" / "job.pdf"
+        real.parent.mkdir(parents=True, exist_ok=True)
+        real.write_bytes(b"%PDF-job")
+        from doccon.drop_pdfs import replace_paired_pdf
+
+        located = replace_paired_pdf(updated, real)
+        app._pair_located(located, remember_folder=False, save=False)
+        app.update_idletasks()
+        assert not pdf_address_text(app._matches["P2024-1"]).endswith("email dropped")
+        assert str(app.board._blocks["P2024-1"].rename_btn.winfo_manager()) != "pack"
+    finally:
+        app.destroy()

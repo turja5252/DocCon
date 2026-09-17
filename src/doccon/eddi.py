@@ -434,7 +434,7 @@ def _snapshot_with_excel(
         if warning and not pdf.is_file():
             warning = warning or (
                 f"Wrote {book.name}, but could not print the EDDI PDF. "
-                "Close that PDF if it is open in a reader, then try EDDI… again."
+                "Close that PDF if it is open in a reader, then try Create EDDI again."
             )
         return EddiSnapshot(
             book=book, pdf=pdf, updated_rows=plan.item_count, warning=warning
@@ -691,14 +691,14 @@ def _copy_pdf_out(source: Path, dest: Path) -> tuple[Path, str]:
     if not source.is_file() or source.stat().st_size <= 0:
         return dest, (
             "Wrote the EDDI workbook, but could not print the PDF. "
-            "Close that PDF if it is open in a reader, then try EDDI… again."
+            "Close that PDF if it is open in a reader, then try Create EDDI again."
         )
     try:
         written = _copy_out(source, dest)
     except OSError:
         return dest, (
             f"Wrote the EDDI workbook, but could not save {dest.name}. "
-            "Close that PDF if it is open in a reader, then try EDDI… again."
+            "Close that PDF if it is open in a reader, then try Create EDDI again."
         )
     if written.resolve() != dest.resolve():
         return written, (

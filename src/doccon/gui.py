@@ -37,10 +37,12 @@ from doccon.drawing_board import DrawingBoard
 from doccon.drop_pdfs import (
     LOAD_FIRST,
     NEED_FOLDER,
+    NOT_EMAIL_DROPPED,
     NOT_PDF,
     apply_board_drop,
     apply_row_drop,
     ingest_sources,
+    rename_email_dropped_pdf,
     replace_paired_pdf,
     resolve_drop_row_key,
     sources_from_paths,
@@ -49,9 +51,14 @@ from doccon.drop_pdfs import (
 from doccon.eddi import eddi_print_drawings, snapshot_eddi
 from doccon.jira_client import (
     JiraError,
+    create_subtask,
     fetch_eddi_contexts,
+    fetch_epic_copy,
     fetch_job_pack,
+    fetch_job_pack_including,
+    fetch_parent_tasks,
     fetch_rev_option_lists,
+    fetch_subtask_eddi_options,
     ping,
     run_jira_register_update,
     update_eddi_status,
@@ -65,6 +72,8 @@ from doccon.match import (
     keep_located_pdfs,
     match_pdf_hits,
     outgoing_rev_from_filename,
+    pair_pdf,
+    pdf_is_email_dropped,
     scan_current_pdfs,
 )
 from doccon.outlook_contacts import OutlookContactsError, import_saved_emails_from_outlook
@@ -78,14 +87,20 @@ from doccon.pack_state import (
 )
 from doccon.pep import DOC_CONTROL_FROM, SALES_DIR, PepCover, PepError, email_line, find_pep, load_pep
 from doccon.register import (
+    MISSING_JIRA_PROJECT,
     DrawingRow,
     EddiConflict,
+    EpicCopy,
     FieldOption,
     JobProject,
+    PackageTask,
     eddi_conflicts,
     eddi_fix_options,
     eddi_option_labels,
+    is_generic_eddi,
     jira_project_label,
+    new_issue_id_error,
+    new_issue_preflight_error,
 )
 from doccon.secrets import load_token, save_token
 from doccon.settings import (
@@ -106,6 +121,7 @@ from doccon.theme import (
     IDENTITY_MISSING,
     JIRA,
     NAVY,
+    NAVY_MID,
     ThemeProgress,
     apply_theme,
     style_text,
@@ -116,6 +132,10 @@ from doccon.watch_inbox import InboxWatcher, plan_watch_hits
 
 NO_ROW_PDF = "No PDF for this row — use Locate…"
 PACK_SAVE_MS = 1000
+CREATE_CREATED_MS = 700
+CREATE_ISSUE_BTN = "Create new Jira Issue"
+CREATE_TRANSMITTAL_BTN = "Create transmittal"
+CREATE_EDDI_BTN = "Create EDDI"
 SELECT_ROW_FIRST = (
     "That PDF does not match any drawing on this job by filename.\n\n"
     "Click the drawing row you want, then Paste PDF — the selected row always wins. "
@@ -162,6 +182,53 @@ def _session() -> tuple[AppSettings, str]:
     settings = load_settings()
     token = load_token(settings.email)
     return settings, token
+
+
+class RenameDroppedDialog(tk.Toplevel):
+    """Rename the email-dropped copy. Does not touch a Locate’d Dropbox PDF."""
+
+    def __init__(self, master: tk.Misc, *, current: str, suggested: str) -> None:
+        super().__init__(master)
+        self.title("Rename PDF")
+        self.resizable(False, False)
+        self.transient(master)
+        self.grab_set()
+        apply_theme(self)
+        self.result: str | None = None
+        self._suggested = (suggested or "").strip()
+        ttk.Label(
+            self,
+            text="This name is what the client zip will use. Only the email-dropped copy is renamed.",
+            wraplength=420,
+            justify="left",
+        ).pack(fill="x", padx=12, pady=(12, 6))
+        self._var = tk.StringVar(value=self._suggested or current)
+        entry = ttk.Entry(self, textvariable=self._var, width=56)
+        entry.pack(fill="x", padx=12, pady=(0, 8))
+        entry.focus_set()
+        entry.selection_range(0, "end")
+        buttons = ttk.Frame(self, padding=(12, 0, 12, 12))
+        buttons.pack(fill="x")
+        ttk.Button(buttons, text="Cancel", command=self._cancel).pack(side="right")
+        ttk.Button(buttons, text="Rename", style="Accent.TButton", command=self._accept).pack(
+            side="right", padx=(0, 8)
+        )
+        ttk.Button(buttons, text="Use drawing name", command=self._use_drawing).pack(side="left")
+        self.bind("<Return>", lambda _event: self._accept())
+        self.bind("<Escape>", lambda _event: self._cancel())
+        self.protocol("WM_DELETE_WINDOW", self._cancel)
+
+    def _use_drawing(self) -> None:
+        if self._suggested:
+            self._var.set(self._suggested)
+
+    def _accept(self) -> None:
+        self.result = self._var.get().strip()
+        self.destroy()
+
+    def _cancel(self) -> None:
+        self.result = None
+        self.destroy()
 
 
 class EddiConflictDialog(tk.Toplevel):
@@ -225,6 +292,103 @@ class EddiConflictDialog(tk.Toplevel):
 
     def _skip(self) -> None:
         self.result = {}
+        self.destroy()
+
+
+class CreateIssueDialog(tk.Toplevel):
+    """Create a Sub-task now. Job Number and Project Lead copy from the epic."""
+
+    def __init__(
+        self,
+        master: tk.Misc,
+        *,
+        epic_label: str,
+        parents: list[PackageTask],
+        eddi_options: tuple[FieldOption, ...],
+        job_prefix: str,
+    ) -> None:
+        super().__init__(master)
+        self.title("Create new Jira Issue")
+        self.resizable(False, False)
+        self.transient(master)
+        self.grab_set()
+        apply_theme(self)
+        self.result: tuple[str, str, str, str] | None = None
+        self._parent_by_label: dict[str, str] = {}
+        parent_labels: list[str] = []
+        for task in parents:
+            label = (task.summary or task.key).strip() or task.key
+            if label in self._parent_by_label:
+                label = f"{task.summary}  {task.key}".strip()
+            self._parent_by_label[label] = task.key
+            parent_labels.append(label)
+        ttk.Label(
+            self,
+            text=(
+                "Creates a Sub-task in Jira now. Job Number and Project Lead copy from "
+                f"{epic_label}. Reporter stays the signed-in user."
+            ),
+            wraplength=480,
+            justify="left",
+        ).pack(fill="x", padx=12, pady=(12, 8))
+        body = ttk.Frame(self, padding=(12, 0, 12, 8))
+        body.pack(fill="x")
+        ttk.Label(body, text="Parent").pack(anchor="w")
+        self._parent = ttk.Combobox(body, width=56, values=parent_labels, state="readonly")
+        self._parent.pack(anchor="w", pady=(2, 8))
+        if len(parent_labels) == 1:
+            self._parent.set(parent_labels[0])
+        ttk.Label(body, text="EDDI Status").pack(anchor="w")
+        eddi_labels = tuple(option.label for option in eddi_options if option.label)
+        self._eddi = ttk.Combobox(body, width=56, values=eddi_labels, state="readonly")
+        self._eddi.pack(anchor="w", pady=(2, 8))
+        ttk.Label(body, text="JIRA ID").pack(anchor="w")
+        prefix = (job_prefix or "").strip()
+        self._id = ttk.Entry(body, width=58)
+        if prefix:
+            self._id.insert(0, prefix if prefix.endswith("-") else f"{prefix}-")
+        self._id.pack(anchor="w", pady=(2, 8))
+        ttk.Label(body, text="Description").pack(anchor="w")
+        self._desc = ttk.Entry(body, width=58)
+        self._desc.pack(anchor="w", pady=(2, 8))
+        ttk.Label(
+            self,
+            text="Generic (0) is not in the list. A blank JIRA ID, or one with a space, blocks Create.",
+            style="Muted.TLabel",
+            wraplength=480,
+            justify="left",
+        ).pack(fill="x", padx=12, pady=(0, 8))
+        buttons = ttk.Frame(self, padding=(12, 0, 12, 12))
+        buttons.pack(fill="x")
+        ttk.Button(buttons, text="Cancel", command=self._cancel).pack(side="right")
+        ttk.Button(buttons, text="Create", style="Accent.TButton", command=self._accept).pack(
+            side="right", padx=(0, 8)
+        )
+        self._id.focus_set()
+        self.bind("<Return>", lambda _event: self._accept())
+        self.bind("<Escape>", lambda _event: self._cancel())
+        self.protocol("WM_DELETE_WINDOW", self._cancel)
+
+    def _accept(self) -> None:
+        parent_key = self._parent_by_label.get(self._parent.get().strip(), "")
+        eddi = self._eddi.get().strip()
+        drawing_id = self._id.get().strip()
+        description = self._desc.get().strip()
+        error = new_issue_id_error(drawing_id)
+        if not error and not parent_key:
+            error = "Pick a Parent Task."
+        if not error and not eddi:
+            error = "Pick an EDDI Status (groups 1–9)."
+        if not error and is_generic_eddi(eddi):
+            error = "Pick an EDDI Status in groups 1–9. Generic is not listed."
+        if error:
+            messagebox.showerror("New issue", error, parent=self)
+            return
+        self.result = (parent_key, eddi, drawing_id, description)
+        self.destroy()
+
+    def _cancel(self) -> None:
+        self.result = None
         self.destroy()
 
 
@@ -433,6 +597,8 @@ class DocConApp(tk.Tk):
         self._open_path = _os_open_path
         self._pack_save_after = ""
         self._reloading_after_eddi_fix = False
+        self._create_wait_key = ""
+        self._create_focus_key = ""
         self._drop_hover_after = ""
         self._drop_hover_pt = (0, 0)
         self._watcher: InboxWatcher | None = None
@@ -444,36 +610,32 @@ class DocConApp(tk.Tk):
         self.bind_all("<Control-V>", self._on_paste_key, add="+")
         log("INFO", "session", f"gui init pid={os.getpid()} paste + watched folder")
 
-        chrome = tk.Frame(self, bg=NAVY, padx=16, pady=12)
+        chrome = tk.Frame(self, bg=NAVY, padx=12, pady=6)
         chrome.pack(fill="x")
-        title_row = tk.Frame(chrome, bg=NAVY)
-        title_row.pack(fill="x")
+        bar = tk.Frame(chrome, bg=NAVY)
+        bar.pack(fill="x")
         tk.Label(
-            title_row,
+            bar,
             text=APP_DISPLAY_NAME,
             bg=NAVY,
             fg="#FFFFFF",
-            font=FONT_TITLE,
+            font=FONT_SMALL,
         ).pack(side="left")
         tk.Label(
-            title_row,
+            bar,
             text=f"v{__version__}",
             bg=NAVY,
             fg="#9FB3C8",
             font=FONT_SMALL,
-        ).pack(side="left", padx=(10, 0), pady=(4, 0))
-        ttk.Button(title_row, text="Settings", style="Brand.TButton", command=self._settings).pack(side="right")
-
-        bar = tk.Frame(chrome, bg=NAVY)
-        bar.pack(fill="x", pady=(12, 0))
+        ).pack(side="left", padx=(6, 12))
         ttk.Label(bar, text="Job Number", style="Brand.TLabel").pack(side="left")
-        self.job = ttk.Entry(bar, width=18)
-        self.job.pack(side="left", padx=8)
+        self.job = ttk.Entry(bar, width=16)
+        self.job.pack(side="left", padx=(6, 4))
         self.job.bind("<Return>", lambda _event: self._load())
         ttk.Button(bar, text="Load", style="Brand.TButton", command=self._load).pack(side="left")
 
         kinds = tk.Frame(bar, bg=NAVY)
-        kinds.pack(side="left", padx=16)
+        kinds.pack(side="left", padx=(10, 0))
         for value in (CLIENT, SHOP, FIELD):
             ttk.Radiobutton(
                 kinds,
@@ -482,36 +644,29 @@ class DocConApp(tk.Tk):
                 variable=self.kind,
                 command=self._kind_changed,
                 style="Brand.TRadiobutton",
-            ).pack(side="left", padx=(0, 8))
-        self.send_btn = ttk.Button(bar, text="Confirm…", style="Accent.TButton", command=self._issue_pack)
+            ).pack(side="left", padx=(0, 6))
+        self.send_btn = ttk.Button(bar, text=CREATE_TRANSMITTAL_BTN, style="Accent.TButton", command=self._issue_pack)
         self.send_btn.pack(side="left", padx=(8, 0))
         ttk.Button(bar, text="Update Jira…", style="Brand.TButton", command=self._update_jira).pack(
-            side="left", padx=(8, 0)
+            side="left", padx=(6, 0)
         )
-        ttk.Button(bar, text="EDDI…", command=self._print_eddi).pack(side="left", padx=(8, 0))
+        ttk.Button(bar, text=CREATE_EDDI_BTN, command=self._print_eddi).pack(side="left", padx=(6, 0))
+        ttk.Button(bar, text="Settings", style="Brand.TButton", command=self._settings).pack(side="right")
         self.status = ttk.Label(
             bar,
             text="Settings → paste Jira token, then Load a job.",
             style="BrandMuted.TLabel",
         )
-        self.status.pack(side="left", padx=16)
+        self.status.pack(side="left", padx=10)
 
         identity = tk.Frame(chrome, bg=NAVY)
-        identity.pack(fill="x", pady=(10, 0))
+        identity.pack(fill="x", pady=(6, 0))
         ttk.Button(
             identity,
             text="Paste PDF",
             style="Brand.TButton",
             command=self._paste_pdf,
         ).pack(side="right", padx=(8, 0))
-        self._drop_hint = tk.Label(
-            identity,
-            text="Drop a PDF on a drawing row",
-            bg=NAVY,
-            fg=FOLDER,
-            font=FONT_SMALL,
-        )
-        self._drop_hint.pack(side="right", padx=(12, 0))
         self._jira_bar, self._jira_title, self._jira_value = self._identity_chip(
             identity, "Jira", JIRA
         )
@@ -524,6 +679,26 @@ class DocConApp(tk.Tk):
             style="Brand.TButton",
             command=self._locate_job_folder,
         ).pack(side="left", padx=(16, 0))
+        self.new_issue_btn = tk.Button(
+            identity,
+            text=CREATE_ISSUE_BTN,
+            command=self._new_issue,
+            bg=NAVY_MID,
+            fg="#FFFFFF",
+            activebackground="#334E68",
+            activeforeground="#FFFFFF",
+            disabledforeground="#9FB3C8",
+            font=FONT_SMALL,
+            relief="flat",
+            borderwidth=0,
+            highlightthickness=0,
+            padx=8,
+            pady=0,
+            cursor="hand2",
+            justify="center",
+        )
+        self.new_issue_btn.pack(side="left", padx=(8, 0))
+        self.new_issue_btn.configure(state=tk.DISABLED)
         self._set_job_identity(None, None)
         self._load_meter = tk.Frame(chrome, bg=NAVY)
         self._progress = ThemeProgress(self._load_meter, manage_pack=False)
@@ -537,17 +712,17 @@ class DocConApp(tk.Tk):
             anchor="w",
             justify="left",
         )
-        self._load_status.pack(fill="x", pady=(6, 0))
+        self._load_status.pack(fill="x", pady=(2, 0))
 
-        self._meta = ttk.Frame(self, padding=(16, 10, 16, 6))
-        self._meta.pack(fill="x")
-        ttk.Label(self._meta, text="Date issued").pack(side="left")
-        self.issued = ttk.Entry(self._meta, width=12)
+        dates = ttk.Frame(self, padding=(12, 4, 12, 4))
+        dates.pack(fill="x")
+        ttk.Label(dates, text="Date issued").pack(side="left")
+        self.issued = ttk.Entry(dates, width=12)
         set_entry_date(self.issued, date.today())
-        self.issued.pack(side="left", padx=(4, 0))
+        self.issued.pack(side="left", padx=(4, 8))
         attach_calendar(self.issued, parent=self, on_change=self._on_issued_change, allow_na=True)
-        ttk.Label(self._meta, text="Expected return").pack(side="left")
-        self.expected = ttk.Entry(self._meta, width=12)
+        ttk.Label(dates, text="Expected return").pack(side="left")
+        self.expected = ttk.Entry(dates, width=12)
         set_na_text(self.expected)
         self.expected.pack(side="left", padx=(4, 0))
         attach_calendar(
@@ -560,50 +735,17 @@ class DocConApp(tk.Tk):
             ("14 days", 14),
         ):
             ttk.Button(
-                self._meta,
+                dates,
                 text=label,
                 command=lambda offset=days: self._apply_expected_preset(offset),
             ).pack(side="left", padx=(2, 0))
-        ttk.Button(self._meta, text="Locate PEP…", command=self._locate_pep).pack(side="left", padx=(16, 0))
-        ttk.Button(self._meta, text="Save", command=self._save_pack).pack(side="left", padx=(8, 0))
-        self.pep_label = ttk.Label(self._meta, text="PEP: load a job", style="Muted.TLabel")
-        self.pep_label.pack(side="left", padx=12)
+        ttk.Button(dates, text="Locate PEP…", command=self._locate_pep).pack(side="left", padx=(12, 0))
+        ttk.Button(dates, text="Save", command=self._save_pack).pack(side="left", padx=(6, 0))
+        self.pep_label = ttk.Label(dates, text="PEP: load a job", style="Muted.TLabel")
+        self.pep_label.pack(side="left", padx=(8, 0))
 
-        hint = ttk.Label(
-            self,
-            style="Hint.TLabel",
-            text=(
-                "Load starts Date issued at today and Expected return at N/A, with Pack off. "
-                "Tick Pack — packed rows take Date issued as Next Submission Date. "
-                "Set Expected return (calendar, or Urgent same day / Urgent +1 / 7 days / 14 days), "
-                "then tick Pack — packed rows take that date as Next Return Request Date "
-                "(same day on the letter and Jira Next; not written until Confirm). "
-                "N/A on a cover date puts that packed Next date back to Now. "
-                "Cancel Next restores every Next field to Now, Date issued to today, "
-                "and Expected return to N/A. "
-                "Double-click a Next text or date box to edit; single-click only selects the row. "
-                "Open the job, tick Pack, use Packed only to hide the rest, then Bump packed or Set packed to… "
-                "for Outgoing Rev, or Batch Next / edit a row. "
-                "Missing or wrong PDF: in Outlook select one or more attachments, Copy, "
-                "then Paste PDF (Ctrl+V). One file pairs the clicked row; several wait in "
-                "New PDFs so you can Assign them one by one. "
-                "Or drag the attachment onto your Desktop or Downloads — DocCon watches both "
-                "and pairs new PDFs by filename; the rest wait in New PDFs for a row. "
-                "Pasted files are copied into DocCon/dropped, then that copy is deleted "
-                "after a real job PDF is paired or Confirm succeeds. Locate… still browses. "
-                "Open beside it opens the matched PDF. "
-                "Type a date, or click the date dropdown for a calendar. "
-                "Update Jira… writes Next edits to Jira only (Pack ticks do not matter). "
-                "Confirm writes Jira, files the pack, "
-                "and opens Outlook. EDDI… prints items that have a matched PDF "
-                "(Missing rows stay on the console). "
-                "Nothing is sent until you click Send in Outlook."
-            ),
-        )
-        hint.pack(side="bottom", fill="x", padx=16, pady=(0, 10))
-
-        cover = ttk.LabelFrame(self, text="Cover (this pack)", padding=10)
-        cover.pack(side="bottom", fill="x", padx=16, pady=(0, 6))
+        cover = ttk.LabelFrame(self, text="Cover (this pack)", padding=4)
+        cover.pack(side="bottom", fill="x", padx=12, pady=(0, 4))
         ttk.Label(cover, text="FROM", style="CoverHead.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 8))
         to_head = ttk.Frame(cover)
         to_head.grid(row=0, column=1, sticky="w", padx=(0, 8))
@@ -615,32 +757,31 @@ class DocConApp(tk.Tk):
         ttk.Button(cc_head, text="Pick…", command=lambda: self._pick_cover_email("cc")).pack(side="left", padx=(8, 0))
         ttk.Label(cover, text="PROJECT", style="CoverHead.TLabel").grid(row=0, column=3, sticky="w")
         self.from_addr = ttk.Entry(cover, width=36)
-        self.from_addr.grid(row=1, column=0, sticky="ew", padx=(0, 8), pady=(0, 4))
+        self.from_addr.grid(row=1, column=0, sticky="ew", padx=(0, 8), pady=(0, 2))
         self._set_from_address(DOC_CONTROL_FROM)
-        self.to_box = tk.Text(cover, height=3, width=28, wrap="word")
-        self.to_box.grid(row=1, column=1, sticky="nsew", padx=(0, 8), pady=(0, 4))
-        self.cc_box = tk.Text(cover, height=3, width=28, wrap="word")
-        self.cc_box.grid(row=1, column=2, sticky="nsew", padx=(0, 8), pady=(0, 4))
-        self.project_box = tk.Text(cover, height=3, width=28, wrap="word")
-        self.project_box.grid(row=1, column=3, sticky="nsew", pady=(0, 4))
+        self.to_box = tk.Text(cover, height=2, width=28, wrap="word")
+        self.to_box.grid(row=1, column=1, sticky="nsew", padx=(0, 8), pady=(0, 2))
+        self.cc_box = tk.Text(cover, height=2, width=28, wrap="word")
+        self.cc_box.grid(row=1, column=2, sticky="nsew", padx=(0, 8), pady=(0, 2))
+        self.project_box = tk.Text(cover, height=2, width=28, wrap="word")
+        self.project_box.grid(row=1, column=3, sticky="nsew", pady=(0, 2))
         for box in (self.to_box, self.cc_box, self.project_box):
             style_text(box)
         self.cover_hint = ttk.Label(
             cover,
-            text="TO and CC are email addresses only. Pick… adds a saved address. Add more with a semicolon.",
+            text="TO and CC are email addresses only. Pick… adds a saved address.",
             style="Muted.TLabel",
         )
         self.cover_hint.grid(row=2, column=0, columnspan=4, sticky="w")
-        cover.columnconfigure(0, weight=1, minsize=260)
+        cover.columnconfigure(0, weight=1, minsize=200)
         for col in range(1, 4):
-            cover.columnconfigure(col, weight=2, minsize=200)
-        cover.rowconfigure(1, weight=1)
+            cover.columnconfigure(col, weight=2, minsize=160)
         for box in (self.to_box, self.cc_box, self.project_box):
             box.bind("<FocusOut>", lambda _event: self._save_pack(quiet=True))
         self.issued.bind("<FocusOut>", lambda _event: self._on_issued_change())
         self.expected.bind("<FocusOut>", lambda _event: self._on_expected_return_change())
 
-        body = ttk.Frame(self, padding=(8, 0, 8, 0))
+        body = ttk.Frame(self, padding=(6, 0, 6, 0))
         body.pack(fill="both", expand=True)
         self._new_pdf_bar = tk.Frame(body, bg=NAVY, highlightthickness=0, bd=0)
         tk.Label(
@@ -649,7 +790,7 @@ class DocConApp(tk.Tk):
             bg=NAVY,
             fg=FOLDER,
             font=FONT_SMALL,
-        ).pack(side="left", padx=(10, 8), pady=6)
+        ).pack(side="left", padx=(8, 8), pady=2)
         self._new_pdf_list = tk.Listbox(
             self._new_pdf_bar,
             height=2,
@@ -657,7 +798,7 @@ class DocConApp(tk.Tk):
             activestyle="none",
             exportselection=False,
         )
-        self._new_pdf_list.pack(side="left", fill="x", expand=True, pady=6)
+        self._new_pdf_list.pack(side="left", fill="x", expand=True, pady=2)
         self._new_pdf_list.bind("<Double-Button-1>", lambda _event: self._assign_new_pdf())
         ttk.Button(
             self._new_pdf_bar,
@@ -675,6 +816,7 @@ class DocConApp(tk.Tk):
             body,
             on_open_pdf=self._open_pdf_key,
             on_locate_pdf=self._locate_pdf,
+            on_rename_pdf=self._rename_pdf,
             cover_return_stamp=lambda: cover_date_stamp(self.expected.get()),
             cover_issued_stamp=lambda: cover_date_stamp(self.issued.get()),
             on_cancel_next=self._on_cancel_next,
@@ -705,7 +847,7 @@ class DocConApp(tk.Tk):
         self._save_pack(quiet=True)
 
     def _kind_changed(self) -> None:
-        self.send_btn.configure(text="Confirm…", state="normal")
+        self.send_btn.configure(text=CREATE_TRANSMITTAL_BTN, state="normal")
         if self.kind.get() == CLIENT:
             self.cover_hint.configure(
                 text="TO and CC are email addresses only. Add more with a semicolon."
@@ -1040,9 +1182,9 @@ class DocConApp(tk.Tk):
         body = tk.Frame(chip, bg=NAVY)
         body.pack(side="left", fill="x", expand=True)
         head = tk.Label(body, text=title, bg=NAVY, fg=hue, font=FONT_SMALL, anchor="w")
-        head.pack(anchor="w")
-        value = tk.Label(body, text="", bg=NAVY, fg="#FFFFFF", font=FONT, anchor="w")
-        value.pack(anchor="w")
+        head.pack(side="left")
+        value = tk.Label(body, text="", bg=NAVY, fg="#FFFFFF", font=FONT_SMALL, anchor="w")
+        value.pack(side="left", fill="x", expand=True, padx=(6, 0))
         return bar, head, value
 
     def _set_job_identity(
@@ -1117,6 +1259,12 @@ class DocConApp(tk.Tk):
         )
         self._save_pack(quiet=True, force=True)
 
+    def _set_new_issue_enabled(self, enabled: bool) -> None:
+        if not hasattr(self, "new_issue_btn"):
+            return
+        with contextlib.suppress(tk.TclError):
+            self.new_issue_btn.configure(state=tk.NORMAL if enabled else tk.DISABLED)
+
     def _locate_pep(self) -> None:
         job = self._current_job()
         if not job:
@@ -1170,7 +1318,7 @@ class DocConApp(tk.Tk):
             self._load_status.configure(text=text)
 
     def _load(self) -> None:
-        if self._work in {"confirm", "eddi", "jira"}:
+        if self._work in {"confirm", "eddi", "jira", "create"}:
             return
         job = self.job.get().strip()
         if not job:
@@ -1183,10 +1331,14 @@ class DocConApp(tk.Tk):
             return
         skip_prior_save = self._reloading_after_eddi_fix
         self._reloading_after_eddi_fix = False
+        wait_key = (self._create_wait_key or "").strip()
         self._flush_pack_save()
         if not skip_prior_save:
             self._save_loaded_pack()
         self._cancel_load()
+        self._create_wait_key = ""
+        if not wait_key:
+            self._create_focus_key = ""
         self._load_gen += 1
         gen = self._load_gen
         self._busy = True
@@ -1195,9 +1347,10 @@ class DocConApp(tk.Tk):
         self._job_folder = None
         self._job_project = None
         self._eddi_contexts = {}
+        self._set_new_issue_enabled(False)
         self._new_pdfs.clear()
         self._show_new_pdfs()
-        self._start_progress(f"Loading {job}…")
+        self._start_progress("Fetching from Jira…" if wait_key else f"Loading {job}…")
         self._set_job_identity(None, None, loading=True)
         with contextlib.suppress(tk.TclError):
             self.update_idletasks()
@@ -1218,10 +1371,21 @@ class DocConApp(tk.Tk):
             def jira_work() -> None:
                 nonlocal error, rows, project, rev_options, eddi_contexts
                 try:
-                    self._post_status(gen, f"Fetching Jira for {job}…")
-                    rows, project = fetch_job_pack(
-                        settings.site, settings.email, token, job, settings.project_key
-                    )
+                    if wait_key:
+                        self._post_status(gen, "Fetching from Jira…")
+                        rows, project = fetch_job_pack_including(
+                            settings.site,
+                            settings.email,
+                            token,
+                            job,
+                            settings.project_key,
+                            wait_key,
+                        )
+                    else:
+                        self._post_status(gen, f"Fetching Jira for {job}…")
+                        rows, project = fetch_job_pack(
+                            settings.site, settings.email, token, job, settings.project_key
+                        )
                     if rows:
                         try:
                             rev_options = fetch_rev_option_lists(
@@ -1295,7 +1459,9 @@ class DocConApp(tk.Tk):
         self.board.cancel_paint()
         self._pending_rows = None
         self._load_note = None
-        self._stop_progress()
+        keep_meter = bool(self._create_wait_key) and self._progress.mode() != "idle"
+        if not keep_meter:
+            self._stop_progress()
         if self._work == "load":
             self._busy = False
             self._work = ""
@@ -1367,9 +1533,11 @@ class DocConApp(tk.Tk):
         if error:
             self._busy = False
             self._work = ""
+            self._create_focus_key = ""
             self._located_pdfs = {}
             self._set_pep(None)
             self._clear_cover_fields()
+            self._set_new_issue_enabled(False)
             self._stop_progress()
             self._set_status("Load failed.")
             messagebox.showerror("Jira", error)
@@ -1442,6 +1610,11 @@ class DocConApp(tk.Tk):
         cover = self._cover_suffix()
         pep = self._pep_suffix()
         self._stop_progress()
+        self._set_new_issue_enabled(True)
+        focus = (self._create_focus_key or "").strip()
+        self._create_focus_key = ""
+        if focus:
+            self.board.focus_key(focus)
         self._set_status(
             f"{job}: {len(matched)} drawing(s), {missing} missing PDF  |  {folder_label}{extra}{cover}{pep}"
         )
@@ -1498,6 +1671,183 @@ class DocConApp(tk.Tk):
         self._reloading_after_eddi_fix = True
         self.after_idle(self._load)
         return True
+
+    def _new_issue(self) -> None:
+        if self._busy:
+            return
+        job = self._current_job()
+        if not job or not self._job_number:
+            messagebox.showinfo("New issue", "Load a job first.")
+            return
+        settings, token = _session()
+        if not settings.email or not token:
+            messagebox.showinfo("Settings", "Open Settings and save your Jira email and API token first.")
+            self._settings()
+            return
+        project = self._job_project
+        if project is None or not (project.key or "").strip():
+            messagebox.showinfo("New issue", f"{MISSING_JIRA_PROJECT}. Cannot create a Sub-task.")
+            return
+        self._busy = True
+        self._work = "create"
+        self._set_new_issue_enabled(False)
+        self._start_progress("Loading new issue fields…")
+
+        def work() -> None:
+            error: str | None = None
+            epic: EpicCopy | None = None
+            parents: list[PackageTask] = []
+            options: tuple[FieldOption, ...] = ()
+            try:
+                epic = fetch_epic_copy(settings.site, settings.email, token, project.key)
+                if not (epic.job_number or "").strip():
+                    error = "The Jira Project has no Job Number. Nothing was created."
+                else:
+                    parents = fetch_parent_tasks(
+                        settings.site,
+                        settings.email,
+                        token,
+                        job,
+                        settings.project_key,
+                        epic.key or project.key,
+                    )
+                    options = fetch_subtask_eddi_options(
+                        settings.site, settings.email, token, settings.project_key
+                    )
+            except (JiraError, OSError, ValueError, TypeError) as exc:
+                error = str(exc)
+            self.after(
+                0,
+                lambda: self._new_issue_fields_ready(error, epic, parents, options, job),
+            )
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _new_issue_fields_ready(
+        self,
+        error: str | None,
+        epic: EpicCopy | None,
+        parents: list[PackageTask],
+        options: tuple[FieldOption, ...],
+        job: str,
+    ) -> None:
+        self._stop_progress()
+        self._busy = False
+        self._work = ""
+        self._set_new_issue_enabled(True)
+        if error:
+            messagebox.showerror("New issue", error)
+            return
+        if epic is None:
+            messagebox.showerror("New issue", f"{MISSING_JIRA_PROJECT}. Cannot create a Sub-task.")
+            return
+        if not parents:
+            messagebox.showinfo(
+                "New issue",
+                "No package Task under this Project. Create the parent Task in Jira first.",
+            )
+            return
+        if not options:
+            messagebox.showerror("New issue", "Jira sent no EDDI Status options for Sub-task.")
+            return
+        epic_label = jira_project_label(JobProject(key=epic.key, summary=epic.summary))
+        dialog = CreateIssueDialog(
+            self,
+            epic_label=epic_label,
+            parents=parents,
+            eddi_options=options,
+            job_prefix=epic.job_number or job,
+        )
+        self.wait_window(dialog)
+        choice = dialog.result
+        if choice is None:
+            return
+        parent_key, eddi_label, drawing_id, description = choice
+        self._post_new_issue(parent_key, eddi_label, drawing_id, description, epic, options)
+
+    def _post_new_issue(
+        self,
+        parent_key: str,
+        eddi_label: str,
+        drawing_id: str,
+        description: str,
+        epic: EpicCopy,
+        options: tuple[FieldOption, ...],
+    ) -> None:
+        settings, token = _session()
+        if not settings.email or not token:
+            messagebox.showinfo("Settings", "Open Settings and save your Jira email and API token first.")
+            return
+        error = new_issue_preflight_error(
+            drawing_id=drawing_id,
+            parent_key=parent_key,
+            eddi_label=eddi_label,
+            job_number=epic.job_number,
+            eddi_options=options,
+        )
+        if error:
+            messagebox.showerror("New issue", error)
+            return
+        self._busy = True
+        self._work = "create"
+        self._set_new_issue_enabled(False)
+        self._start_progress("Creating on Jira…")
+
+        def work() -> None:
+            key = ""
+            err: str | None = None
+            try:
+                key = create_subtask(
+                    settings.site,
+                    settings.email,
+                    token,
+                    jira_project=settings.project_key,
+                    parent_key=parent_key,
+                    drawing_id=drawing_id,
+                    description=description,
+                    job_number=epic.job_number,
+                    eddi_label=eddi_label,
+                    eddi_options=options,
+                    lead_account_ids=epic.lead_account_ids,
+                )
+            except (JiraError, OSError, ValueError, TypeError) as exc:
+                err = str(exc)
+            self.after(0, lambda: self._new_issue_written(err, key, drawing_id))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _new_issue_written(self, error: str | None, key: str, drawing_id: str) -> None:
+        if error:
+            self._stop_progress()
+            self._busy = False
+            self._work = ""
+            self._create_wait_key = ""
+            self._create_focus_key = ""
+            self._set_new_issue_enabled(True)
+            messagebox.showerror("New issue", error)
+            return
+        self._load_note = None
+        self._create_wait_key = key
+        self._create_focus_key = key
+        self._set_status(f"Created {drawing_id} ({key}).")
+        log("INFO", "jira", f"created sub-task {key} id={drawing_id}")
+        self.after(CREATE_CREATED_MS, self._reload_after_create)
+
+    def _reload_after_create(self) -> None:
+        if not (self._create_wait_key or "").strip():
+            self._busy = False
+            self._work = ""
+            self._stop_progress()
+            self._set_new_issue_enabled(bool(self._job_number))
+            return
+        self._work = ""
+        self._load()
+        if self._work != "load":
+            self._busy = False
+            self._stop_progress()
+            self._create_wait_key = ""
+            self._create_focus_key = ""
+            self._set_new_issue_enabled(bool(self._job_number))
 
     def _print_eddi(self) -> None:
         if self._busy:
@@ -2239,6 +2589,46 @@ class DocConApp(tk.Tk):
         if save:
             self._save_pack(quiet=True)
             self._refresh_cover_hint()
+
+    def _ask_rename_pdf(self, *, current: str, suggested: str) -> str | None:
+        dialog = RenameDroppedDialog(self, current=current, suggested=suggested)
+        self.wait_window(dialog)
+        return dialog.result
+
+    def _rename_pdf(self, key: str = "") -> None:
+        if key:
+            self.board.focus_key(key)
+        row = self._matches.get(key) if key else None
+        row = row or self._selected_row()
+        if row is None or row.pdf is None:
+            messagebox.showinfo("Rename PDF", "Paste a PDF onto this row first.")
+            return
+        if not pdf_is_email_dropped(row):
+            messagebox.showinfo("Rename PDF", NOT_EMAIL_DROPPED)
+            return
+        current = row.pdf.path.name
+        suggested = self.board.suggested_dropped_name(row.drawing.key) or current
+        typed = self._ask_rename_pdf(current=current, suggested=suggested)
+        if typed is None:
+            return
+        dest, error = rename_email_dropped_pdf(row.pdf.path, typed)
+        if dest is None:
+            messagebox.showerror("Rename PDF", error)
+            return
+        updated = pair_pdf(row, dest, email_dropped=True)
+        self._matches[updated.drawing.key] = updated
+        self._located_pdfs[updated.drawing.key] = LocatedPdf(
+            path=str(dest),
+            email_dropped=True,
+        )
+        self.board.apply_pdf(updated)
+        rev = outgoing_rev_from_filename(dest.name)
+        if rev:
+            self.board.stamp_outgoing_rev(updated.drawing.key, rev)
+        self._save_pack(quiet=True)
+        self._refresh_cover_hint()
+        self._set_status(f"Renamed to {dest.name} for {updated.drawing.drawing_id or updated.drawing.key}.")
+        log("INFO", "drop", f"renamed dropped={dest.name} row={updated.drawing.key}")
 
     def _locate_pdf(self, key: str = "") -> None:
         if key:

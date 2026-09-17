@@ -30,6 +30,9 @@ NEED_FOLDER = "Locate the job folder first so DocCon can copy the PDF."
 NOT_PDF = "That is not a PDF."
 MSG_SKIP = "That is an email, not a drawing PDF."
 UNREADABLE = "Could not read that attachment."
+NOT_EMAIL_DROPPED = "Only an email-dropped PDF can be renamed."
+MISSING_PDF = "That PDF is missing."
+BAD_PDF_NAME = "Enter a PDF filename."
 
 
 @dataclass(frozen=True)
@@ -320,3 +323,60 @@ def apply_board_drop(
             out.append(old)
     leftover = [path for path in pdfs if _path_key(path) not in used]
     return out, leftover
+
+
+def dropped_pdf_filename(drawing_id: str, outgoing_rev: str) -> str:
+    """Suggested zip name for an email-dropped copy: `{id} REV {rev}.pdf`."""
+    ident = (drawing_id or "").strip()
+    rev = (outgoing_rev or "").strip()
+    if ident and rev:
+        stem = f"{ident} REV {rev}"
+    elif ident:
+        stem = ident
+    elif rev:
+        stem = f"REV {rev}"
+    else:
+        stem = "drawing"
+    return safe_filename(f"{stem}.pdf")
+
+
+def normalize_dropped_pdf_name(new_name: str) -> str:
+    """Basename only, always `.pdf`. Empty when there is nothing usable."""
+    name = safe_filename(new_name)
+    if not name or name in {".", ".."}:
+        return ""
+    if not is_pdf_filename(name):
+        stem = Path(name).stem.strip() or ""
+        if not stem:
+            return ""
+        name = safe_filename(f"{stem}.pdf")
+    return name
+
+
+def rename_email_dropped_pdf(path: Path, new_name: str) -> tuple[Path | None, str]:
+    """Rename a DocCon/dropped copy in place. Never touches Current PDF or Downloads.
+
+    Returns (dest, "") or (None, operator message).
+    """
+    src = Path(path)
+    if not is_dropped_pdf_path(src):
+        return None, NOT_EMAIL_DROPPED
+    if not src.is_file():
+        return None, MISSING_PDF
+    name = normalize_dropped_pdf_name(new_name)
+    if not name:
+        return None, BAD_PDF_NAME
+    try:
+        folder = src.parent
+        used = {
+            item.name.casefold()
+            for item in folder.iterdir()
+            if item.is_file() and _path_key(item) != _path_key(src)
+        }
+        dest = unique_dest(folder, name, used=used)
+        if _path_key(dest) == _path_key(src):
+            return src, ""
+        src.replace(dest)
+        return dest, ""
+    except OSError:
+        return None, "Could not rename that PDF."

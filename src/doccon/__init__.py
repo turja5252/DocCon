@@ -7,4 +7,4 @@ from __future__ import annotations
 __all__ = ["APP_DISPLAY_NAME", "__version__"]
 
 APP_DISPLAY_NAME = "Elite DocCon"
-__version__ = "1.66"
+__version__ = "1.74"

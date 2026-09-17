@@ -588,3 +588,191 @@ def test_update_eddi_status_writes_by_id_and_refuses_a_foreign_option(monkeypatc
         )
     assert len(sent) == 1
 
+
+def test_parse_create_eddi_options_drops_generic() -> None:
+    from doccon.jira_client import parse_create_eddi_options
+
+    options = parse_create_eddi_options(
+        {
+            "fields": [
+                {
+                    "fieldId": "customfield_10289",
+                    "allowedValues": [
+                        {"id": "10231", "value": "0 - Generic Task"},
+                        {"id": "10166", "value": "1 - Fabrication Drawings - EDDI"},
+                    ],
+                }
+            ]
+        }
+    )
+    assert [item.option_id for item in options] == ["10166"]
+
+
+def test_fetch_parent_tasks_prefers_epic_children(monkeypatch) -> None:
+    from doccon import jira_client
+
+    seen: list[str] = []
+
+    def fake_request(_site, _email, _token, _method, _path, body=None):
+        jql = (body or {}).get("jql", "")
+        seen.append(jql)
+        if "issuetype = Task AND parent = P2024-15553" in jql:
+            return {
+                "issues": [
+                    {
+                        "key": "P2024-15577",
+                        "fields": {
+                            "summary": "2026-Tanzim Drawing Package",
+                            "issuetype": {"name": "Task"},
+                            "customfield_10289": [{"value": "0 - Generic Task"}],
+                        },
+                    },
+                    {
+                        "key": "P2024-sub",
+                        "fields": {"summary": "not a parent", "issuetype": {"name": "Sub-task"}},
+                    },
+                ],
+                "isLast": True,
+            }
+        raise AssertionError(jql)
+
+    monkeypatch.setattr(jira_client, "_request", fake_request)
+    parents = jira_client.fetch_parent_tasks(
+        "https://example.atlassian.net",
+        "a@b.c",
+        "token",
+        "2026-Tanzim",
+        "P2024",
+        "P2024-15553",
+    )
+    assert [item.key for item in parents] == ["P2024-15577"]
+    assert "parent = P2024-15553" in seen[0]
+
+
+def test_create_subtask_posts_fields(monkeypatch) -> None:
+    from doccon import jira_client
+    from doccon.register import FieldOption
+
+    sent: list[dict] = []
+
+    def fake_request(_site, _email, _token, method, path, body=None):
+        sent.append({"method": method, "path": path, "body": body})
+        return {"key": "P2024-99999", "id": "99999"}
+
+    monkeypatch.setattr(jira_client, "_request", fake_request)
+    fab = FieldOption(label="1 - Fabrication Drawings - EDDI", option_id="10166")
+    key = jira_client.create_subtask(
+        "https://example.atlassian.net",
+        "a@b.c",
+        "token",
+        jira_project="P2024",
+        parent_key="P2024-15577",
+        drawing_id="2026-Tanzim-1-3",
+        description="ROOF PLAN",
+        job_number="2026-Tanzim",
+        eddi_label=fab.label,
+        eddi_options=(fab,),
+        lead_account_ids=("lead-1",),
+    )
+    assert key == "P2024-99999"
+    assert sent[0]["method"] == "POST"
+    assert sent[0]["path"] == "/rest/api/3/issue"
+    fields = sent[0]["body"]["fields"]
+    assert fields["parent"] == {"key": "P2024-15577"}
+    assert fields["summary"] == "2026-Tanzim-1-3 ROOF PLAN"
+    assert fields["customfield_10300"] == "2026-Tanzim"
+    assert fields["customfield_10289"] == [{"id": "10166"}]
+    assert fields["customfield_10071"] == [{"accountId": "lead-1"}]
+
+
+def test_create_subtask_refuses_without_job_number() -> None:
+    from doccon.register import FieldOption
+
+    fab = FieldOption(label="1 - Fabrication Drawings - EDDI", option_id="10166")
+    with pytest.raises(JiraError, match="Job Number"):
+        from doccon.jira_client import create_subtask
+
+        create_subtask(
+            "https://example.atlassian.net",
+            "a@b.c",
+            "token",
+            jira_project="P2024",
+            parent_key="P2024-15577",
+            drawing_id="2026-Tanzim-1-3",
+            description="",
+            job_number="",
+            eddi_label=fab.label,
+            eddi_options=(fab,),
+        )
+
+
+def test_fetch_issue_gets_by_key(monkeypatch) -> None:
+    from doccon import jira_client
+
+    seen: list[tuple[str, str]] = []
+
+    def fake_request(_site, _email, _token, method, path, body=None):
+        seen.append((method, path))
+        return {
+            "key": "P2024-NEW",
+            "fields": {
+                "summary": "2026-Tanzim-1-9 Roof",
+                "issuetype": {"name": "Sub-task"},
+                "customfield_10289": [{"value": "1 - Fabrication Drawings - EDDI"}],
+            },
+        }
+
+    monkeypatch.setattr(jira_client, "_request", fake_request)
+    row = jira_client.fetch_issue("https://example.atlassian.net", "a@b.c", "token", "P2024-NEW")
+    assert row is not None
+    assert row.key == "P2024-NEW"
+    assert row.drawing_id == "2026-Tanzim-1-9"
+    assert seen[0][0] == "GET"
+    assert seen[0][1].startswith("/rest/api/3/issue/P2024-NEW?fields=")
+
+
+def test_wait_for_issue_retries_until_readable(monkeypatch) -> None:
+    from doccon import jira_client
+
+    hits = {"n": 0}
+    sleeps: list[float] = []
+
+    def fake_fetch(_site, _email, _token, key):
+        hits["n"] += 1
+        if hits["n"] < 3:
+            raise jira_client.JiraError("Jira HTTP 404: not found")
+        return _drawing(key=key, drawing_id="2026-Tanzim-1-9")
+
+    monkeypatch.setattr(jira_client, "fetch_issue", fake_fetch)
+    row = jira_client.wait_for_issue(
+        "https://example.atlassian.net",
+        "a@b.c",
+        "token",
+        "P2024-NEW",
+        attempts=5,
+        delay_s=0.01,
+        sleep=sleeps.append,
+    )
+    assert row.key == "P2024-NEW"
+    assert hits["n"] == 3
+    assert sleeps == [0.01, 0.01]
+
+
+def test_fetch_job_pack_including_merges_when_search_lags(monkeypatch) -> None:
+    from doccon import jira_client
+
+    created = _drawing(key="P2024-NEW", drawing_id="2026-Tanzim-1-9")
+    existing = _drawing(key="P2024-1")
+    monkeypatch.setattr(jira_client, "wait_for_issue", lambda *_a, **_k: created)
+    monkeypatch.setattr(jira_client, "fetch_job_pack", lambda *_a, **_k: ([existing], None))
+    rows, project = jira_client.fetch_job_pack_including(
+        "https://example.atlassian.net",
+        "a@b.c",
+        "token",
+        "2026-Tanzim",
+        "P2024",
+        "P2024-NEW",
+    )
+    assert project is None
+    assert {row.key for row in rows} == {"P2024-1", "P2024-NEW"}
+

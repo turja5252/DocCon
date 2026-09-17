@@ -19,6 +19,7 @@ FIELD_IFC_FIELD = "customfield_10287"
 FIELD_IFC_DATE_FIELD = "customfield_10288"
 CLIENT_DOC_FIELD = "customfield_10279"
 EDDI_FIELD = "customfield_10289"
+PROJECT_LEAD_FIELD = "customfield_10071"
 SUBMISSION_DATE_FIELD = "customfield_10301"
 RETURN_REQUEST_DATE_FIELD = "customfield_10046"
 RETURN_DATE_FIELD = "customfield_10066"
@@ -26,6 +27,7 @@ DUE_DATE_FIELD = "duedate"
 
 DEFAULT_SITE = "https://eliteintegrityservices.atlassian.net"
 DEFAULT_PROJECT = "P2024"
+SUBTASK_ISSUE_TYPE_ID = "10013"
 
 DRAWING_STATUSES = (
     "To Do",
@@ -71,6 +73,24 @@ MISSING_JIRA_PROJECT = "No Jira Project for this Job Number"
 class JobProject:
     key: str
     summary: str
+
+
+@dataclass(frozen=True)
+class PackageTask:
+    """A Task under the job Project — valid parent for a new Sub-task."""
+
+    key: str
+    summary: str
+
+
+@dataclass(frozen=True)
+class EpicCopy:
+    """Job Number and Project Lead / Sponsor copied from the job Project (epic)."""
+
+    key: str
+    summary: str
+    job_number: str
+    lead_account_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -239,6 +259,120 @@ def drawing_id_error(issue_key: str, drawing_id: str) -> str:
     if any(char.isspace() for char in token):
         return f"{who}: JIRA ID cannot contain a space (got {token}). Put wording in Description."
     return ""
+
+
+def new_issue_id_error(drawing_id: str) -> str:
+    """Rejected JIRA ID on create. Empty string when it is usable."""
+    token = (drawing_id or "").strip()
+    if not token:
+        return "JIRA ID cannot be blank. Type the leading code."
+    if any(char.isspace() for char in token):
+        return f"JIRA ID cannot contain a space (got {token}). Put wording in Description."
+    return ""
+
+
+def people_account_ids(field: object) -> tuple[str, ...]:
+    """Account ids from a Jira People field (single user or list)."""
+    if field is None:
+        return ()
+    rows = field if isinstance(field, list) else [field]
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in rows:
+        if not isinstance(item, dict):
+            continue
+        aid = str(item.get("accountId") or "").strip()
+        if aid and aid not in seen:
+            seen.add(aid)
+            out.append(aid)
+    return tuple(out)
+
+
+def create_eddi_choices(options: tuple[FieldOption, ...]) -> tuple[FieldOption, ...]:
+    """Sub-task create list: groups 1–9 only, option ids kept."""
+    return tuple(option for option in options if option.label and 1 <= eddi_group_rank(option.label) <= 9)
+
+
+def new_issue_preflight_error(
+    *,
+    drawing_id: str,
+    parent_key: str,
+    eddi_label: str,
+    job_number: str,
+    eddi_options: tuple[FieldOption, ...] = (),
+) -> str:
+    """Operator message when create cannot POST. Empty string when the payload is ready."""
+    bad_id = new_issue_id_error(drawing_id)
+    if bad_id:
+        return bad_id
+    if not (parent_key or "").strip():
+        return "Pick a Parent Task."
+    if not (job_number or "").strip():
+        return "The Jira Project has no Job Number. Nothing was created."
+    if not eddi_options:
+        return "Jira sent no EDDI Status options for Sub-task."
+    chosen = (eddi_label or "").strip()
+    if not chosen:
+        return "Pick an EDDI Status (groups 1–9)."
+    if is_generic_eddi(chosen) or not (1 <= eddi_group_rank(chosen) <= 9):
+        return "Pick an EDDI Status in groups 1–9. Generic is not listed."
+    if resolve_field_option(chosen, eddi_options) is None:
+        allowed = ", ".join(option.label for option in eddi_options) or "(none)"
+        return f'EDDI Status "{chosen}" is not an option on Sub-task create. Jira allows: {allowed}.'
+    return ""
+
+
+def create_subtask_payload(
+    *,
+    jira_project: str,
+    parent_key: str,
+    summary: str,
+    job_number: str,
+    eddi: FieldOption,
+    lead_account_ids: tuple[str, ...] = (),
+) -> dict:
+    """POST /rest/api/3/issue body. Reporter stays Jira’s default."""
+    fields: dict = {
+        "project": {"key": (jira_project or "").strip() or DEFAULT_PROJECT},
+        "issuetype": {"id": SUBTASK_ISSUE_TYPE_ID},
+        "parent": {"key": (parent_key or "").strip()},
+        "summary": (summary or "").strip(),
+        JOB_NUMBER_FIELD: (job_number or "").strip(),
+        EDDI_FIELD: [option_payload(eddi)],
+    }
+    leads = [aid for aid in lead_account_ids if (aid or "").strip()]
+    if leads:
+        fields[PROJECT_LEAD_FIELD] = [{"accountId": aid} for aid in leads]
+    return {"fields": fields}
+
+
+def package_tasks_from_issues(issues: list[dict]) -> list[PackageTask]:
+    """Tasks only. Generic EDDI stays — those package Tasks are valid parents."""
+    out: list[PackageTask] = []
+    seen: set[str] = set()
+    for issue in issues:
+        if not isinstance(issue, dict):
+            continue
+        fields = issue.get("fields") or {}
+        if option_value(fields.get("issuetype")).casefold() != "task":
+            continue
+        key = str(issue.get("key") or "").strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        summary = str(fields.get("summary") or "").strip()
+        out.append(PackageTask(key=key, summary=summary or key))
+    return out
+
+
+def epic_copy_from_issue(issue: dict) -> EpicCopy:
+    fields = issue.get("fields") or {}
+    return EpicCopy(
+        key=str(issue.get("key") or "").strip(),
+        summary=str(fields.get("summary") or "").strip(),
+        job_number=option_value(fields.get(JOB_NUMBER_FIELD)),
+        lead_account_ids=people_account_ids(fields.get(PROJECT_LEAD_FIELD)),
+    )
 
 
 def option_value(field: object) -> str:
@@ -471,6 +605,18 @@ def jira_project_label(project: JobProject | None) -> str:
 def children_of_jql(keys: list[str], project_key: str = DEFAULT_PROJECT) -> str:
     joined = ", ".join(key.strip() for key in keys if key.strip())
     return f"project = {project_key} AND issuetype != Project AND parent in ({joined})"
+
+
+def parent_tasks_of_jql(epic_key: str, project_key: str = DEFAULT_PROJECT) -> str:
+    key = epic_key.strip()
+    return f"project = {project_key} AND issuetype = Task AND parent = {key} ORDER BY summary ASC"
+
+
+def parent_tasks_by_job_jql(job_number: str, project_key: str = DEFAULT_PROJECT) -> str:
+    job = job_number.strip()
+    return (
+        f"project = {project_key} AND issuetype = Task AND {job_number_clause(job)} ORDER BY summary ASC"
+    )
 
 
 def eddi_group_rank(status: str) -> int:

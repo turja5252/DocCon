@@ -11,6 +11,7 @@ from doccon.register import (
     drawings_jql,
     jira_project_label,
     job_project_from_issues,
+    new_issue_id_error,
     parse_summary,
     summary_from_parts,
 )
@@ -36,6 +37,93 @@ def test_drawing_id_error_only_rejects_blank_and_inner_space() -> None:
     spaced = drawing_id_error("P2024-9", "2026-075-1-1 Drawing")
     assert "P2024-9" in spaced and "space" in spaced
     assert drawing_id_error("P2024-9", "2026-075\t1")
+
+
+def test_new_issue_id_error_blank_and_space() -> None:
+    assert new_issue_id_error("2026-Tanzim-1-3") == ""
+    assert "blank" in new_issue_id_error("  ")
+    assert "space" in new_issue_id_error("2026-Tanzim 1")
+
+
+def test_new_issue_preflight_and_payload() -> None:
+    from doccon.register import (
+        EDDI_FIELD,
+        JOB_NUMBER_FIELD,
+        PROJECT_LEAD_FIELD,
+        SUBTASK_ISSUE_TYPE_ID,
+        FieldOption,
+        create_eddi_choices,
+        create_subtask_payload,
+        new_issue_preflight_error,
+        people_account_ids,
+        summary_from_parts,
+    )
+
+    fab = FieldOption(label="1 - Fabrication Drawings - EDDI", option_id="10166")
+    generic = FieldOption(label="0 - Generic Task", option_id="10231")
+    choices = create_eddi_choices((generic, fab))
+    assert [item.option_id for item in choices] == ["10166"]
+    assert "blank" in new_issue_preflight_error(
+        drawing_id="",
+        parent_key="P2024-15577",
+        eddi_label=fab.label,
+        job_number="2026-Tanzim",
+        eddi_options=choices,
+    )
+    assert "Parent" in new_issue_preflight_error(
+        drawing_id="2026-Tanzim-1-3",
+        parent_key="",
+        eddi_label=fab.label,
+        job_number="2026-Tanzim",
+        eddi_options=choices,
+    )
+    assert "Job Number" in new_issue_preflight_error(
+        drawing_id="2026-Tanzim-1-3",
+        parent_key="P2024-15577",
+        eddi_label=fab.label,
+        job_number="",
+        eddi_options=choices,
+    )
+    assert "1–9" in new_issue_preflight_error(
+        drawing_id="2026-Tanzim-1-3",
+        parent_key="P2024-15577",
+        eddi_label=generic.label,
+        job_number="2026-Tanzim",
+        eddi_options=choices,
+    )
+    assert new_issue_preflight_error(
+        drawing_id="2026-Tanzim-1-3",
+        parent_key="P2024-15577",
+        eddi_label=fab.label,
+        job_number="2026-Tanzim",
+        eddi_options=choices,
+    ) == ""
+    assert people_account_ids({"accountId": "abc"}) == ("abc",)
+    assert people_account_ids([{"accountId": "a"}, {"accountId": "a"}, {"accountId": "b"}]) == ("a", "b")
+    payload = create_subtask_payload(
+        jira_project="P2024",
+        parent_key="P2024-15577",
+        summary=summary_from_parts("2026-Tanzim-1-3", "ROOF PLAN"),
+        job_number="2026-Tanzim",
+        eddi=fab,
+        lead_account_ids=("lead-1",),
+    )
+    fields = payload["fields"]
+    assert fields["issuetype"] == {"id": SUBTASK_ISSUE_TYPE_ID}
+    assert fields["parent"] == {"key": "P2024-15577"}
+    assert fields["summary"] == "2026-Tanzim-1-3 ROOF PLAN"
+    assert fields[JOB_NUMBER_FIELD] == "2026-Tanzim"
+    assert fields[EDDI_FIELD] == [{"id": "10166"}]
+    assert fields[PROJECT_LEAD_FIELD] == [{"accountId": "lead-1"}]
+    assert "reporter" not in fields
+    bare = create_subtask_payload(
+        jira_project="P2024",
+        parent_key="P2024-15577",
+        summary="2026-Tanzim-1-3",
+        job_number="2026-Tanzim",
+        eddi=fab,
+    )
+    assert PROJECT_LEAD_FIELD not in bare["fields"]
 
 
 def test_parse_summary_live_shape() -> None:
@@ -109,6 +197,12 @@ def test_drawings_jql_is_all_job_issues() -> None:
     assert "issuetype != Project" in jql
     assert 'issuetype = Project' in job_project_jql("2026-Tanzim")
     assert "parent in (P2024-15553, P2024-1)" in children_of_jql(["P2024-15553", "P2024-1"])
+    from doccon.register import parent_tasks_by_job_jql, parent_tasks_of_jql
+
+    assert "issuetype = Task" in parent_tasks_of_jql("P2024-15553")
+    assert "parent = P2024-15553" in parent_tasks_of_jql("P2024-15553")
+    assert "Sub-task" not in parent_tasks_of_jql("P2024-15553")
+    assert '"Job Number" ~ "2026-Tanzim"' in parent_tasks_by_job_jql("2026-Tanzim")
 
 
 def test_jira_project_label_from_project_issue() -> None:
