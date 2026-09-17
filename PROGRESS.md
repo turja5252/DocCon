@@ -2,6 +2,12 @@
 
 Newest first. Append a dated entry when a decision is locked, a test runs, or the next step changes.
 
+## 2026-09-17 — Locate… starts in the loaded job folder (1.75)
+
+Tanzim: first Locate PDF after Load should be the Dropbox job folder DocCon matched, then remember the folder he browses. Every new Load resets to that job’s folder — not the last PC-wide locate dir from the previous job.
+
+**Exe rebuilt 2026-09-17** — `Elite DocCon.exe` is **1.75**. Close every old DocCon; double-click that file. Load `2026-Tanzim`. Do not Confirm 075.
+
 ## 2026-09-17 — Set packed to is Jira Status (1.74)
 
 Tanzim: outgoing revs are never the same across a pack, so Set packed to should not stamp rev. Pick **OFA** (or IFI, …) then whatever is packed gets yellow Next Status — same as Date issued / Expected return. Blank restores packed Status to Now. Pack-tick with blank does not wipe. Bump packed still steps each Outgoing Rev. Jira is not written until Create transmittal / Update Jira.

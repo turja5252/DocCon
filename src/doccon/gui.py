@@ -587,6 +587,7 @@ class DocConApp(tk.Tk):
         self._load_pump = ""
         self._matches: dict[str, MatchedRow] = {}
         self._job_folder: Path | None = None
+        self._locate_dir = ""
         self._job_number = ""
         self._pep_path: Path | None = None
         self._cover_loading = False
@@ -1251,6 +1252,7 @@ class DocConApp(tk.Tk):
         remember_job_folder(job, folder)
         remember_locate_dir(folder)
         self._job_folder = folder
+        self._reset_locate_to_job(folder)
         if not self._job_number:
             self._job_number = job
         self._set_job_identity(self._job_project, folder)
@@ -1345,6 +1347,7 @@ class DocConApp(tk.Tk):
         self._work = "load"
         self._job_number = job
         self._job_folder = None
+        self._locate_dir = ""
         self._job_project = None
         self._eddi_contexts = {}
         self._set_new_issue_enabled(False)
@@ -1527,6 +1530,7 @@ class DocConApp(tk.Tk):
         self._eddi_contexts = dict(eddi_contexts or {})
         self._matches = {}
         self._job_folder = job_folder
+        self._reset_locate_to_job(job_folder)
         self._job_number = job
         self._set_job_identity(job_project, job_folder, jira_error=bool(error))
         self.board.cancel_paint()
@@ -1620,9 +1624,29 @@ class DocConApp(tk.Tk):
         )
         self._start_watcher()
 
+    def _reset_locate_to_job(self, folder: Path | None) -> None:
+        """First Locate… after Load starts in this job's Dropbox folder, not the last PC folder."""
+        if folder is not None and folder.is_dir():
+            self._locate_dir = str(folder)
+            return
+        self._locate_dir = ""
+
+    def _remember_pdf_folder(self, path: Path) -> None:
+        """Keep Locate… in the folder just picked, until the next Load."""
+        remember_locate_dir(path)
+        folder = Path(path)
+        if folder.is_file():
+            folder = folder.parent
+        if folder.is_dir():
+            self._locate_dir = str(folder)
+
     def _picker_dir(self) -> str:
-        fallback = str(self._job_folder) if self._job_folder is not None else os.getcwd()
-        return locate_start_dir(fallback)
+        token = (self._locate_dir or "").strip()
+        if token and Path(token).is_dir():
+            return token
+        if self._job_folder is not None and self._job_folder.is_dir():
+            return str(self._job_folder)
+        return locate_start_dir(os.getcwd())
 
     def _selected_row(self) -> MatchedRow | None:
         return self.board.focused_row()
@@ -2581,7 +2605,7 @@ class DocConApp(tk.Tk):
             email_dropped=bool(row.pdf.email_dropped),
         )
         if remember_folder:
-            remember_locate_dir(pdf_path)
+            self._remember_pdf_folder(pdf_path)
         self._apply_row(row)
         rev = outgoing_rev_from_filename(pdf_path.name)
         if rev:

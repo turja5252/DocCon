@@ -981,3 +981,39 @@ def test_new_issue_written_holds_meter_then_fetches() -> None:
         assert app._work == "load"
     finally:
         app.destroy()
+
+
+def test_pdf_picker_starts_at_loaded_job_then_remembers(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+    from doccon.settings import remember_locate_dir
+
+    leftover = tmp_path / "old-job"
+    leftover.mkdir()
+    remember_locate_dir(leftover)
+    job = tmp_path / "2.1 Current Jobs" / "2026-Tanzim"
+    job.mkdir(parents=True)
+    nested = job / "2.0 Drafting" / "Current PDF"
+    nested.mkdir(parents=True)
+    pdf = nested / "2026-Tanzim-1-1 REV 0.pdf"
+    pdf.write_bytes(b"%PDF")
+    other = tmp_path / "2.1 Current Jobs" / "2026-Other"
+    other.mkdir(parents=True)
+    try:
+        from doccon.gui import DocConApp
+    except tk.TclError:
+        pytest.skip("Tk is not available")
+    try:
+        app = DocConApp()
+    except tk.TclError:
+        pytest.skip("Tk is not available")
+    app.withdraw()
+    try:
+        app._job_folder = job
+        app._reset_locate_to_job(job)
+        assert Path(app._picker_dir()) == job
+        app._remember_pdf_folder(pdf)
+        assert Path(app._picker_dir()) == nested
+        app._reset_locate_to_job(other)
+        assert Path(app._picker_dir()) == other
+    finally:
+        app.destroy()
