@@ -403,13 +403,17 @@ def test_board_groups_by_eddi_with_headers(tmp_path) -> None:
         matched_block = board._blocks["P2024-2"]
         missing_block = board._blocks["P2024-3"]
         assert str(matched_block.open_btn.cget("text")) == "Open"
+        assert str(matched_block.preview_btn.cget("text")) == "Preview"
         assert matched_block.open_btn.master is matched_block.locate_btn.master
         cluster = list(matched_block.locate_btn.master.pack_slaves())
-        assert cluster[:2] == [matched_block.locate_btn, matched_block.open_btn]
+        assert cluster[:3] == [matched_block.locate_btn, matched_block.open_btn, matched_block.preview_btn]
         assert "disabled" not in str(matched_block.open_btn.cget("state"))
+        assert "disabled" not in str(matched_block.preview_btn.cget("state"))
         assert "disabled" in str(missing_block.open_btn.cget("state"))
+        assert "disabled" in str(missing_block.preview_btn.cget("state"))
         board.apply_row(pair_pdf(_row(key="P2024-3", drawing_id="2026-Tanzim-RFI"), pdf))
         assert "disabled" not in str(board._blocks["P2024-3"].open_btn.cget("state"))
+        assert "disabled" not in str(board._blocks["P2024-3"].preview_btn.cget("state"))
         header_text = board.header_titles()
         assert JIRA_ID_TITLE in header_text
         assert "Drawing" not in header_text
@@ -437,9 +441,15 @@ def test_locate_button_browses_instead_of_opening(tmp_path) -> None:
 
         opened: list[str] = []
         located: list[str] = []
+        previewed: list[str] = []
         pdf = tmp_path / "2026-Tanzim-1-1 REV 0.pdf"
         pdf.write_bytes(b"%PDF")
-        board = DrawingBoard(root, on_open_pdf=opened.append, on_locate_pdf=located.append)
+        board = DrawingBoard(
+            root,
+            on_open_pdf=opened.append,
+            on_locate_pdf=located.append,
+            on_preview_pdf=previewed.append,
+        )
         board.set_rows(
             [
                 pair_pdf(
@@ -452,6 +462,10 @@ def test_locate_button_browses_instead_of_opening(tmp_path) -> None:
         assert located == ["P2024-1"]
         assert opened == []
         board._blocks["P2024-1"].open_btn.invoke()
+        assert opened == ["P2024-1"]
+        assert located == ["P2024-1"]
+        board._blocks["P2024-1"].preview_btn.invoke()
+        assert previewed == ["P2024-1"]
         assert opened == ["P2024-1"]
         assert located == ["P2024-1"]
         assert str(board._blocks["P2024-1"].pdf_label.cget("text")) == pdf.name
@@ -527,7 +541,7 @@ def test_email_dropped_address_puts_the_filename_before_the_marker(tmp_path) -> 
     # The cell clips from the right, so a long name spends the column on itself, not on the marker.
     assert address.startswith(long_name)
     assert address.endswith(EMAIL_DROPPED_LABEL)
-    assert PDF_COL_PX == 176, "the marker rides in the 1.31 column width; it does not widen it"
+    assert PDF_COL_PX == 272, "Preview sits beside Open; the email-dropped marker still clips from the right"
     # Whatever the column eats, the hover still carries the full wording and where the copy is staged.
     tip = pdf_address_tip(row)
     assert tip == f"{address}\n{staged}"
@@ -1324,7 +1338,7 @@ def test_default_column_widths_save_horizontal_space() -> None:
     assert DESC_COL_PX == 240
     assert DESC_COL_PX != 564
     assert JIRA_ID_COL_PX == 180
-    assert PDF_COL_PX == 176
+    assert PDF_COL_PX == 272
     assert defaults[PACK_COL_INDEX] == PACK_COL_PX
     assert old_pack > PACK_COL_PX
     assert defaults[DESC_COL_INDEX] == DESC_COL_PX
@@ -1335,7 +1349,7 @@ def test_default_column_widths_save_horizontal_space() -> None:
         assert defaults[DRAWING_COL_INDEX] >= len(sample) * CHAR_PX
     assert defaults[PDF_COL_INDEX] == PDF_COL_PX
     assert len("PDF") * CHAR_PX + HEADING_PAD_PX < PDF_COL_PX
-    assert PDF_COL_PX >= (8 + 5) * CHAR_PX
+    assert PDF_COL_PX >= (8 + 5 + 7) * CHAR_PX
     assert HEADER_TITLES[0][0] == "Pack"
     assert HEADER_TITLES[1][0] == JIRA_ID_TITLE
     assert all(title for title, _chars in HEADER_TITLES)
@@ -1362,7 +1376,7 @@ def test_layout_revision_invalidates_stale_saved_widths() -> None:
     kept = merge_col_px(fat, BOARD_LAYOUT_REV)
     assert kept[DESC_COL_INDEX] == 564
     assert kept[PACK_COL_INDEX] == 94
-    assert BOARD_LAYOUT_REV == 136
+    assert BOARD_LAYOUT_REV == 137
 
 
 def test_no_now_next_label_column() -> None:
@@ -2486,10 +2500,19 @@ def test_rename_button_only_for_email_dropped_in_dropped(tmp_path) -> None:
         locate_block = board._blocks["P2024-2"]
         assert str(email_block.rename_btn.winfo_manager()) == "pack"
         cluster = list(email_block.locate_btn.master.pack_slaves())
-        assert cluster == [email_block.locate_btn, email_block.rename_btn, email_block.open_btn]
+        assert cluster == [
+            email_block.locate_btn,
+            email_block.rename_btn,
+            email_block.open_btn,
+            email_block.preview_btn,
+        ]
         assert str(locate_block.rename_btn.winfo_manager()) != "pack"
         locate_cluster = list(locate_block.locate_btn.master.pack_slaves())
-        assert locate_cluster == [locate_block.locate_btn, locate_block.open_btn]
+        assert locate_cluster == [
+            locate_block.locate_btn,
+            locate_block.open_btn,
+            locate_block.preview_btn,
+        ]
         assert board.suggested_dropped_name("P2024-1") == "2026-Tanzim-1-1 REV A.pdf"
     finally:
         root.destroy()
@@ -2548,5 +2571,24 @@ def test_banding_a_row_leaves_the_next_editor_gestures_alone() -> None:
         # Leaving the editor does not clear the band: the row is still the paste target.
         assert block.focused
         assert board.explicit_focus_key() == "P2024-1"
+    finally:
+        root.destroy()
+
+
+def test_preview_grab_writes_yellow_next_description() -> None:
+    root = _board_root()
+    try:
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.set_rows([_row(key="P2024-1", title="Drawing")])
+        root.update_idletasks()
+        assert board.set_next_description("P2024-1", "FLOOR REPAIR DETAIL") is True
+        root.update_idletasks()
+        block = board._blocks["P2024-1"]
+        assert block.title_next.get() == "FLOOR REPAIR DETAIL"
+        assert block.title_next.cget("style") == "Pending.TEntry"
+        assert board.next_edits() == {"P2024-1": {"title": "FLOOR REPAIR DETAIL"}}
+        assert board.set_next_description("P2024-1", "1") is False
+        assert block.title_next.get() == "FLOOR REPAIR DETAIL"
+        assert board.set_next_description("missing", "FLOOR REPAIR DETAIL") is False
     finally:
         root.destroy()

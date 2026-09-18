@@ -122,6 +122,27 @@ def test_job_identity_labels_and_colors(tmp_path: Path, monkeypatch) -> None:
         assert located == []
         assert errors
         assert "gone.pdf" in errors[-1]
+
+        infos.clear()
+        errors.clear()
+        app._matches["P2024-1"] = missing_row
+        app._preview_pdf_key("P2024-1")
+        assert infos == [NO_ROW_PDF]
+
+        app._matches["P2024-1"] = MatchedRow(
+            drawing=missing_row.drawing,
+            pdf=PdfHit(path=gone, drawing_id="2026-Tanzim-1-1", rev="0"),
+            confidence="High",
+        )
+        app._preview_pdf_key("P2024-1")
+        assert errors
+        assert "gone.pdf" in errors[-1]
+
+        previewed: list[Path] = []
+        monkeypatch.setattr("doccon.gui.open_pdf_preview", lambda _master, path, **_k: previewed.append(path))
+        app._matches[matched.drawing.key] = matched
+        app._preview_pdf_key("P2024-1")
+        assert previewed == [pdf]
     finally:
         app.destroy()
 

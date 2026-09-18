@@ -6,6 +6,10 @@
 from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 datas, binaries, hiddenimports = collect_all("keyring")
+pdf_datas, pdf_bins, pdf_hidden = collect_all("pymupdf")
+datas += pdf_datas
+binaries += pdf_bins
+hiddenimports += pdf_hidden
 hiddenimports += collect_submodules("doccon")
 hiddenimports += [
     "keyring.backends.Windows",

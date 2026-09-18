@@ -85,6 +85,7 @@ from doccon.pack_state import (
     save_client_pack,
     with_cover_recipients,
 )
+from doccon.pdf_preview import close_pdf_preview, open_pdf_preview
 from doccon.pep import DOC_CONTROL_FROM, SALES_DIR, PepCover, PepError, email_line, find_pep, load_pep
 from doccon.register import (
     MISSING_JIRA_PROJECT,
@@ -817,6 +818,7 @@ class DocConApp(tk.Tk):
             body,
             on_open_pdf=self._open_pdf_key,
             on_locate_pdf=self._locate_pdf,
+            on_preview_pdf=self._preview_pdf_key,
             on_rename_pdf=self._rename_pdf,
             cover_return_stamp=lambda: cover_date_stamp(self.expected.get()),
             cover_issued_stamp=lambda: cover_date_stamp(self.issued.get()),
@@ -1080,6 +1082,7 @@ class DocConApp(tk.Tk):
         self._save_loaded_pack()
         self._clear_drop_hover()
         self._stop_drop()
+        close_pdf_preview()
         self.destroy()
 
     def destroy(self) -> None:
@@ -1087,6 +1090,7 @@ class DocConApp(tk.Tk):
         with contextlib.suppress(Exception):
             self._clear_drop_hover()
         self._stop_drop()
+        close_pdf_preview()
         super().destroy()
 
     def _stop_watcher(self) -> None:
@@ -1527,6 +1531,7 @@ class DocConApp(tk.Tk):
     ) -> None:
         if gen != self._load_gen:
             return
+        close_pdf_preview()
         self._eddi_contexts = dict(eddi_contexts or {})
         self._matches = {}
         self._job_folder = job_folder
@@ -2690,6 +2695,31 @@ class DocConApp(tk.Tk):
             messagebox.showinfo("Open PDF", error)
         else:
             messagebox.showerror("Open PDF", error)
+
+    def _preview_pdf_key(self, key: str) -> None:
+        self.board.focus_key(key)
+        row = self._matches.get(key) or self.board.focused_row()
+        if row is None:
+            return
+        path = row.pdf.path if row.pdf else None
+        if path is None or not str(path).strip():
+            messagebox.showinfo("Preview PDF", NO_ROW_PDF)
+            return
+        pdf = Path(path)
+        if not pdf.is_file():
+            messagebox.showerror("Preview PDF", f"That PDF is not on disk: {pdf.name}")
+            return
+        drawing = row.drawing
+        heading = f"{drawing.drawing_id or drawing.key}  ·  {pdf.name}"
+
+        def on_grab(text: str, issue_key: str = key) -> bool:
+            wrote = self.board.set_next_description(issue_key, text)
+            if wrote:
+                ident = drawing.drawing_id or drawing.key
+                self._set_status(f"Grabbed description onto {ident}.")
+            return wrote
+
+        open_pdf_preview(self, pdf, heading=heading, on_grab=on_grab)
 
 
 def main() -> int:

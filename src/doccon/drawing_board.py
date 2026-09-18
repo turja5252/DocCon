@@ -202,7 +202,7 @@ WRAP_PAD_PX = 6 + SASH_PX + 4
 PACK_COL_PX = 48
 JIRA_ID_COL_PX = 180
 DESC_COL_PX = 240
-PDF_COL_PX = 176
+PDF_COL_PX = 272
 
 
 def _field_pending(now: str, nxt: str, *, status: bool = False) -> bool:
@@ -437,6 +437,7 @@ class _Block:
     locate_btn: ttk.Button
     rename_btn: ttk.Button
     open_btn: ttk.Button
+    preview_btn: ttk.Button
     widgets: list[tk.Misc]
     # The four 1px separators (top/bottom × scrolling/frozen pane) that bracket this row.
     rules: tuple[tk.Frame, ...]
@@ -451,6 +452,7 @@ class DrawingBoard(ttk.Frame):
         *,
         on_open_pdf,
         on_locate_pdf=None,
+        on_preview_pdf=None,
         on_rename_pdf=None,
         cover_return_stamp=None,
         cover_issued_stamp=None,
@@ -461,6 +463,7 @@ class DrawingBoard(ttk.Frame):
         apply_theme(self)
         self._on_open_pdf = on_open_pdf
         self._on_locate_pdf = on_locate_pdf or on_open_pdf
+        self._on_preview_pdf = on_preview_pdf
         self._on_rename_pdf = on_rename_pdf
         self._cover_stamps: dict[str, Callable[[], object]] = {}
         if cover_return_stamp is not None:
@@ -1637,9 +1640,19 @@ class DrawingBoard(ttk.Frame):
             width=5,
             command=lambda key=drawing.key: self._on_open_pdf(key),
         )
+        preview_btn = ttk.Button(
+            pdf_actions,
+            text="Preview",
+            style="Locate.TButton",
+            width=7,
+            command=lambda key=drawing.key: self._preview_pdf(key),
+        )
         locate_btn.pack(side="left", padx=(0, 4))
-        open_btn.pack(side="left")
-        open_btn.configure(state="normal" if row.pdf else "disabled")
+        open_btn.pack(side="left", padx=(0, 4))
+        preview_btn.pack(side="left")
+        pdf_state = "normal" if row.pdf else "disabled"
+        open_btn.configure(state=pdf_state)
+        preview_btn.configure(state=pdf_state)
         self._place(pdf_actions, next_row, PDF_COL_INDEX)
         for widget in (drawing_label, title_label, status_label, match_label, pdf_label, pdf_cell):
             widget.bind("<Button-1>", lambda _event, key=drawing.key: self._set_focus(key))
@@ -1710,6 +1723,7 @@ class DrawingBoard(ttk.Frame):
             locate_btn=locate_btn,
             rename_btn=rename_btn,
             open_btn=open_btn,
+            preview_btn=preview_btn,
             widgets=widgets,
             rules=(h_top, h_top_f, h_bot, h_bot_f),
         )
@@ -2251,6 +2265,7 @@ class DrawingBoard(ttk.Frame):
                 block.locate_btn,
                 block.rename_btn,
                 block.open_btn,
+                block.preview_btn,
                 block.pack_mark,
                 block.drawing_id_next,
                 block.title_next,
@@ -2301,6 +2316,30 @@ class DrawingBoard(ttk.Frame):
             block.pdf_cell.configure(bg=fill)
         block.pdf_label.configure(text=pdf_address_text(row), style=want)
 
+    def _style_pdf_open_preview(self, block: _Block, row: MatchedRow) -> None:
+        state = "normal" if row.pdf else "disabled"
+        block.open_btn.configure(state=state)
+        block.preview_btn.configure(state=state)
+
+    def _preview_pdf(self, key: str) -> None:
+        if self._on_preview_pdf is None:
+            return
+        self._on_preview_pdf(key)
+
+    def set_next_description(self, key: str, text: str) -> bool:
+        """Write Next Description (yellow until Confirm). Empty or unusable text is ignored."""
+        from doccon.pdf_grab import clean_grabbed_text, grabbed_text_is_usable
+
+        block = self._blocks.get((key or "").strip())
+        if block is None:
+            return False
+        cleaned = clean_grabbed_text(text)
+        if not grabbed_text_is_usable(cleaned):
+            return False
+        block.title_next.set(cleaned)
+        self._refresh_next_marks(block)
+        return True
+
     def _style_pdf_rename(self, block: _Block, row: MatchedRow) -> None:
         """Rename… only for an email-dropped DocCon/dropped copy. Locate’d Dropbox files never get it."""
         path = None if row.pdf is None else row.pdf.path
@@ -2324,7 +2363,7 @@ class DrawingBoard(ttk.Frame):
             text=row.confidence, style=match_style(row.confidence, focused=block.focused)
         )
         self._style_pdf_address(block, row)
-        block.open_btn.configure(state="normal" if row.pdf else "disabled")
+        self._style_pdf_open_preview(block, row)
         self._style_pdf_rename(block, row)
 
     def suggested_dropped_name(self, key: str) -> str:
@@ -2363,7 +2402,7 @@ class DrawingBoard(ttk.Frame):
         block.status_next.set(drawing.status)
         block.match_label.configure(text=row.confidence, style=match_style(row.confidence, focused=block.focused))
         self._style_pdf_address(block, row)
-        block.open_btn.configure(state="normal" if row.pdf else "disabled")
+        self._style_pdf_open_preview(block, row)
         self._style_pdf_rename(block, row)
         for field, _title, _values, _width, _kind in FIELD_KEYS:
             value = getattr(drawing, field) or ""

@@ -2,6 +2,16 @@
 
 Newest first. Append a dated entry when a decision is locked, a test runs, or the next step changes.
 
+## 2026-09-18 — Preview box grabs Description (1.76)
+
+Tanzim: Databook-style preview, but as a **window** next to **Open**, not a pane on the console. Draw a box to fill **Next Description** (yellow). Native PDF text first; OCR only if the box is empty. Do not auto-read title blocks on Load. Restore point: git branch `backup/1.75-before-preview` at `78e987c`.
+
+**Built.** PyMuPDF preview dialog (zoom, pan, box). Confirm / Update Jira still write Jira.
+
+Tests: **412 passed, 1 skipped (Tk).** Ruff clean on the touched files.
+
+**Exe rebuilt 2026-09-18** — `Elite DocCon.exe` is **1.76**. Close every old DocCon; double-click that file. Load `2026-Tanzim`. Do not Confirm 075.
+
 ## 2026-09-17 — Locate… starts in the loaded job folder (1.75)
 
 Tanzim: first Locate PDF after Load should be the Dropbox job folder DocCon matched, then remember the folder he browses. Every new Load resets to that job’s folder — not the last PC-wide locate dir from the previous job.

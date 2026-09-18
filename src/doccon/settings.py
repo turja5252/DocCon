@@ -13,7 +13,8 @@ from doccon.pep import email_line
 from doccon.register import DEFAULT_PROJECT, DEFAULT_SITE
 
 # 1.36: ignore pre-1.31 fat board_col_px (e.g. 564px Description) once, then save again.
-BOARD_LAYOUT_REV = 136
+# 1.76: PDF column grows for Preview beside Open.
+BOARD_LAYOUT_REV = 137
 
 ALLOWED_KEYS = (
     "site",
