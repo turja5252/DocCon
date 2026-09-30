@@ -1100,6 +1100,56 @@ def test_packed_only_hides_unpacked_and_empty_eddi_headers() -> None:
         root.destroy()
 
 
+def test_packed_only_stacks_packed_rows_together() -> None:
+    root = _board_root()
+    try:
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.set_rows(
+            [
+                _row(
+                    key="P2024-1",
+                    drawing_id="2026-Tanzim-1-1",
+                    title="First packed",
+                    eddi_status="1 - Fabrication Drawings - EDDI",
+                ),
+                _row(
+                    key="P2024-2",
+                    drawing_id="2026-Tanzim-1-2",
+                    title="Unpacked hole",
+                    eddi_status="1 - Fabrication Drawings - EDDI",
+                ),
+                _row(
+                    key="P2024-3",
+                    drawing_id="2026-Tanzim-1-3",
+                    title="Second packed",
+                    eddi_status="4 - Engineering - EDDI",
+                ),
+            ]
+        )
+        board._blocks["P2024-2"].include.set(False)
+        root.update_idletasks()
+        y1_full = int(board._blocks["P2024-1"].drawing_label.winfo_y())
+        y3_full = int(board._blocks["P2024-3"].drawing_label.winfo_y())
+        hole_row = int(board._blocks["P2024-2"].drawing_label.grid_info()["row"])
+        gap_full = y3_full - y1_full
+        board.set_packed_only(True)
+        root.update_idletasks()
+        hole_minsize = int(board._inner.grid_rowconfigure(hole_row).get("minsize") or 0)
+        assert hole_minsize == 0
+        y1 = int(board._blocks["P2024-1"].drawing_label.winfo_y())
+        y3 = int(board._blocks["P2024-3"].drawing_label.winfo_y())
+        assert y3 - y1 < gap_full
+        if gap_full > 20:
+            assert y3 - y1 <= gap_full * 3 // 4
+        board.set_packed_only(False)
+        root.update_idletasks()
+        restored = int(board._inner.grid_rowconfigure(hole_row).get("minsize") or 0)
+        assert restored > 0
+        assert int(board._blocks["P2024-3"].drawing_label.winfo_y()) == y3_full
+    finally:
+        root.destroy()
+
+
 def test_packed_only_intersects_text_filter() -> None:
     root = _board_root()
     try:

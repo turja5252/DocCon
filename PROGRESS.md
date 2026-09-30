@@ -2,6 +2,14 @@
 
 Newest first. Append a dated entry when a decision is locked, a test runs, or the next step changes.
 
+## 2026-09-30 — Packed only stacks rows (1.77)
+
+Tanzim: Packed only left drawings in their original holes, so a handful of ticks looked sparse. Hidden unpacked rows (and empty EDDI groups) now collapse; the remaining packed rows stack like a normal filter. Same for the text Find filter.
+
+Tests: packed-only hide/stack/intersect plus frozen-row sync, board, and gui — **115 passed, 1 skipped (Tk).**
+
+**Exe rebuilt 2026-09-30** — `Elite DocCon.exe` is **1.77**. Close every old DocCon; double-click that file. Load `2026-Tanzim`. Do not Confirm 075.
+
 ## 2026-09-18 — Preview box grabs Description (1.76)
 
 Tanzim: Databook-style preview, but as a **window** next to **Open**, not a pane on the console. Draw a box to fill **Next Description** (yellow). Native PDF text first; OCR only if the box is empty. Do not auto-read title blocks on Load. Restore point: git branch `backup/1.75-before-preview` at `78e987c`.

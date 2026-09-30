@@ -748,7 +748,32 @@ class DrawingBoard(ttk.Frame):
         finally:
             self._frozen_syncing = False
 
-    def _row_needed_height(self, frame: tk.Misc, row: int) -> int:
+    def _filter_grid_ids(self) -> tuple[set[int], set[int]]:
+        """Tracked grid slaves, and which of them the filter is currently showing."""
+        tracked: set[int] = set()
+        shown: set[int] = set()
+        visible_groups = {block.group for block in self._blocks.values() if block.shown}
+        for block in self._blocks.values():
+            for widget in block.widgets:
+                tracked.add(id(widget))
+                if block.shown:
+                    shown.add(id(widget))
+        for (group, label), freeze in zip(self._group_headers, self._group_frozen, strict=True):
+            tracked.add(id(label))
+            tracked.add(id(freeze))
+            if group in visible_groups:
+                shown.add(id(label))
+                shown.add(id(freeze))
+        return tracked, shown
+
+    def _row_needed_height(
+        self,
+        frame: tk.Misc,
+        row: int,
+        *,
+        tracked_ids: set[int],
+        shown_ids: set[int],
+    ) -> int:
         try:
             slaves = frame.grid_slaves(row=row)
         except tk.TclError:
@@ -756,6 +781,8 @@ class DrawingBoard(ttk.Frame):
         height = 0
         for child in slaves:
             try:
+                if id(child) in tracked_ids and id(child) not in shown_ids:
+                    continue
                 info = child.grid_info()
                 if int(info.get("rowspan") or 1) > 1:
                     continue
@@ -767,21 +794,20 @@ class DrawingBoard(ttk.Frame):
     def _sync_frozen_rows(self) -> bool:
         if self._suspend_layout:
             return False
+        tracked_ids, shown_ids = self._filter_grid_ids()
         rows: set[int] = set()
         for frame in (self._freeze_inner, self._inner):
-            for child in frame.grid_slaves():
-                try:
-                    rows.add(int(child.grid_info()["row"]))
-                except (tk.TclError, KeyError, TypeError, ValueError):
-                    continue
+            try:
+                _cols, nrows = frame.grid_size()
+            except tk.TclError:
+                continue
+            rows.update(range(int(nrows)))
         changed = False
         for row in rows:
             height = max(
-                self._row_needed_height(self._freeze_inner, row),
-                self._row_needed_height(self._inner, row),
+                self._row_needed_height(self._freeze_inner, row, tracked_ids=tracked_ids, shown_ids=shown_ids),
+                self._row_needed_height(self._inner, row, tracked_ids=tracked_ids, shown_ids=shown_ids),
             )
-            if not height:
-                continue
             for frame in (self._freeze_inner, self._inner):
                 try:
                     current = int(frame.grid_rowconfigure(row).get("minsize") or 0)
@@ -1271,6 +1297,8 @@ class DrawingBoard(ttk.Frame):
             self._filter_note.configure(text="No matches")
         else:
             self._filter_note.configure(text=f"{shown} of {total}")
+        self._frozen_passes = 0
+        self._sync_frozen_rows()
         self._sync_scroll()
         self._schedule_frozen_row_sync()
 
