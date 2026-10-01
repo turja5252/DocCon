@@ -972,6 +972,39 @@ def test_set_packed_rev_stamps_zero_from_letters() -> None:
         root.destroy()
 
 
+def test_no_return_and_ifc_clear_return_request() -> None:
+    root = _board_root()
+    try:
+        marked: list[str] = []
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None, on_no_return=lambda: marked.append("na"))
+        board.set_rows(
+            [
+                _row(key="P2024-1", drawing_id="2026-Tanzim-1-1", return_request_date="2026-09-20"),
+                _row(key="P2024-2", drawing_id="2026-Tanzim-1-2", return_request_date="2026-09-21"),
+            ]
+        )
+        board.set_pack(False)
+        board._blocks["P2024-1"].include.set(True)
+        root.update_idletasks()
+        assert board.stamp_packed_no_return() == 1
+        assert board._blocks["P2024-1"].nexts["return_request_date"].get() == "N/A"
+        assert board._blocks["P2024-2"].nexts["return_request_date"].get() == "2026-09-21"
+        assert board._blocks["P2024-1"].nexts["return_request_date"].cget("style") == "Pending.TEntry"
+        assert marked == ["na"]
+        pending = board.pending_rows()
+        assert pending[0].drawing.return_request_date == "N/A"
+        assert pending[0].drawing.due_date == "N/A"
+        board.set_pack_status("IFC")
+        assert board._blocks["P2024-1"].status_next.get() == "IFC"
+        assert board._blocks["P2024-1"].nexts["return_request_date"].get() == "N/A"
+        board._blocks["P2024-2"].include.set(True)
+        root.update_idletasks()
+        assert board._blocks["P2024-2"].status_next.get() == "IFC"
+        assert board._blocks["P2024-2"].nexts["return_request_date"].get() == "N/A"
+    finally:
+        root.destroy()
+
+
 def test_set_packed_status_stamps_like_cover_dates() -> None:
     root = _board_root()
     try:

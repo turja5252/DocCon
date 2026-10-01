@@ -460,8 +460,14 @@ def iso_date(value: str) -> str | None:
 
 
 def due_date_from_return_request(current_due: str, current_return: str, next_return: str) -> str:
-    """Jira due date follows a newly entered return request date. Controllers do not edit due date."""
-    nxt = iso_date(next_return)
+    """Jira due date follows a newly entered return request date. Controllers do not edit due date.
+
+    An explicit N/A (no return date) clears the due date that was following the return request.
+    """
+    token = (next_return or "").strip()
+    if token.casefold() in {"n/a", "na"}:
+        return "N/A"
+    nxt = iso_date(token)
     if nxt and nxt != iso_date(current_return):
         return nxt
     return (current_due or "").strip()
@@ -547,9 +553,13 @@ def drawing_fields_payload(drawing: DrawingRow, eddi_options: tuple[FieldOption,
         FIELD_IFC_DATE_FIELD: drawing.field_ifc_date,
     }
     for key, value in dates.items():
-        token = iso_date(value)
-        if token:
-            payload[key] = token
+        token = (value or "").strip()
+        if token.casefold() in {"n/a", "na"}:
+            payload[key] = None
+            continue
+        iso = iso_date(token)
+        if iso:
+            payload[key] = iso
     eddi = eddi_field(drawing.eddi_status, eddi_options)
     if eddi:
         payload[EDDI_FIELD] = eddi

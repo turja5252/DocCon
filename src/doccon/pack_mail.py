@@ -25,17 +25,29 @@ def normalize_recipients(text: str) -> str:
 
 
 def drawing_pdfs(rows: list[MatchedRow]) -> list[Path]:
+    return attach_pdfs(rows, ())
+
+
+def attach_pdfs(rows: list[MatchedRow], extra_paths: list[Path] | tuple[Path, ...]) -> list[Path]:
+    """Packed drawing PDFs, then PDFs that have no Jira issue. The transmittal form is not included."""
     files: list[Path] = []
     seen: set[str] = set()
-    for row in rows:
-        if row.pdf is None or not row.pdf.path.is_file():
-            continue
-        resolved = row.pdf.path.resolve()
+
+    def add(path: Path) -> None:
+        if not path.is_file():
+            return
+        resolved = path.resolve()
         key = str(resolved).casefold()
         if key in seen:
-            continue
+            return
         seen.add(key)
         files.append(resolved)
+
+    for row in rows:
+        if row.pdf is not None:
+            add(row.pdf.path)
+    for path in extra_paths:
+        add(Path(path))
     return files
 
 

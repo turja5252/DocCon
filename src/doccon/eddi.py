@@ -31,6 +31,7 @@ from openpyxl.worksheet.pagebreak import Break
 from openpyxl.worksheet.worksheet import Worksheet
 
 from doccon.client_log import LogError
+from doccon.jobs import job_folder_keys
 from doccon.match import MatchedRow
 from doccon.register import DrawingRow, eddi_group_rank, eddi_group_title, is_generic_eddi, pack_sort_key
 
@@ -147,17 +148,26 @@ def form_group_items(drawings: list[DrawingRow]) -> dict[int, list[DrawingRow]]:
 
 
 def find_live_eddi_book(job_folder: Path, job_number: str) -> Path:
-    """The job's EDDI form: ``EDDI-{job}.xlsm`` (not a dated leftover)."""
-    job = job_number.strip()
-    if not job:
+    """The job's EDDI form: ``EDDI-{job}.xlsm``, or the parent job's form.
+
+    ``2026-077-1`` uses ``EDDI-2026-077-1.xlsm`` when that file exists, otherwise
+    ``EDDI-2026-077.xlsm``. Dated snapshots are not the live form.
+    """
+    keys = job_folder_keys(job_number)
+    if not keys:
         raise LogError("Job Number is required for the EDDI snapshot.")
     folder = Path(job_folder) / DOC_CON_DIR
-    for suffix in (".xlsm", ".xlsx"):
-        candidate = folder / f"EDDI-{job}{suffix}"
-        if candidate.is_file() and not candidate.name.startswith("~$"):
+    for key in keys:
+        for suffix in (".xlsm", ".xlsx"):
+            candidate = folder / f"EDDI-{key}{suffix}"
+            if not candidate.is_file() or candidate.name.startswith("~$"):
+                continue
+            if is_dated_eddi_name(candidate.name, key):
+                continue
             return candidate
+    expected = " or ".join(f"EDDI-{key}.xlsm" for key in keys)
     raise LogError(
-        f"No EDDI-{job}.xlsm in 3.0 Doc Con. Put the EDDI form there (sheet Project), then try again."
+        f"No {expected} in 3.0 Doc Con. Put the EDDI form there (sheet Project), then try again."
     )
 
 
@@ -362,17 +372,18 @@ def snapshot_eddi(
     if not job:
         raise LogError("Job Number is required for the EDDI snapshot.")
     live = find_live_eddi_book(job_folder, job)
+    book_job = live.stem[5:] if live.stem.upper().startswith("EDDI-") else job
     folder = Path(job_folder) / DOC_CON_DIR
     folder.mkdir(parents=True, exist_ok=True)
-    stem = f"EDDI-{job}-{issued.isoformat()}"
+    stem = f"EDDI-{book_job}-{issued.isoformat()}"
     dest_book = folder / f"{stem}{live.suffix}"
     dest_pdf = folder / f"{stem}.pdf"
     if print_pdf:
-        return _snapshot_with_excel(live, dest_book, dest_pdf, job, drawings)
+        return _snapshot_with_excel(live, dest_book, dest_pdf, book_job, drawings)
     shutil.copy2(live, dest_book)
     wb = _open_book(dest_book)
     try:
-        count = fill_project_sheet(_project_sheet(wb), job, drawings)
+        count = fill_project_sheet(_project_sheet(wb), book_job, drawings)
         wb.save(dest_book)
     except OSError as exc:
         raise LogError(f"Could not write {dest_book.name}. Close it if it is open in Excel.\n{exc}") from exc

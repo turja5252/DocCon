@@ -352,6 +352,27 @@ def test_drawing_fields_payload_skips_blanks() -> None:
     assert "customfield_10283" not in payload
 
 
+def test_no_return_clears_return_request_and_due_date() -> None:
+    from dataclasses import replace
+
+    from doccon.register import DUE_DATE_FIELD, RETURN_REQUEST_DATE_FIELD
+
+    row = drawing_from_issue(
+        {
+            "key": "P2024-1",
+            "fields": {
+                "summary": "2026-Tanzim-1-1 Drawing-1",
+                "duedate": "2026-09-15",
+                "customfield_10046": "2026-09-15",
+            },
+        }
+    )
+    row = replace(row, return_request_date="N/A", due_date="N/A")
+    payload = drawing_fields_payload(row)
+    assert payload[RETURN_REQUEST_DATE_FIELD] is None
+    assert payload[DUE_DATE_FIELD] is None
+
+
 def test_eddi_conflicts_from_multi_checkbox() -> None:
     from doccon.register import eddi_conflicts, eddi_fix_options, eddi_options, has_multiple_eddi
 
@@ -454,4 +475,4 @@ def test_due_date_follows_new_return_request_only() -> None:
     assert due_date_from_return_request("2026-09-01", "2026-09-10", "2026-09-20") == "2026-09-20"
     assert due_date_from_return_request("2026-09-01", "2026-09-10", "2026-09-10") == "2026-09-01"
     assert due_date_from_return_request("2026-09-01", "2026-09-10", "") == "2026-09-01"
-    assert due_date_from_return_request("2026-09-01", "2026-09-10", "N/A") == "2026-09-01"
+    assert due_date_from_return_request("2026-09-01", "2026-09-10", "N/A") == "N/A"

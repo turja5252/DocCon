@@ -21,10 +21,13 @@ ALLOWED_KEYS = (
     "email",
     "project_key",
     "saved_emails",
+    "field_to",
+    "field_cc",
     "last_locate_dir",
     "board_col_px",
     "board_layout_rev",
     "job_folders",
+    "shop_ifc_folders",
 )
 
 
@@ -34,10 +37,13 @@ class AppSettings:
     email: str = ""
     project_key: str = DEFAULT_PROJECT
     saved_emails: tuple[str, ...] = ()
+    field_to: tuple[str, ...] = ()
+    field_cc: tuple[str, ...] = ()
     last_locate_dir: str = ""
     board_col_px: tuple[int, ...] = ()
     board_layout_rev: int = 0
     job_folders: dict[str, str] = field(default_factory=dict)
+    shop_ifc_folders: dict[str, str] = field(default_factory=dict)
 
 
 def load_settings() -> AppSettings:
@@ -61,10 +67,13 @@ def load_settings() -> AppSettings:
         email=email,
         project_key=project_key,
         saved_emails=normalize_saved_emails(raw.get("saved_emails")),
+        field_to=normalize_saved_emails(raw.get("field_to")),
+        field_cc=normalize_saved_emails(raw.get("field_cc")),
         last_locate_dir=str(raw.get("last_locate_dir") or "").strip(),
         board_col_px=_board_col_px(raw.get("board_col_px")),
         board_layout_rev=_board_layout_rev(raw.get("board_layout_rev")),
         job_folders=_job_folders(raw.get("job_folders")),
+        shop_ifc_folders=_job_folders(raw.get("shop_ifc_folders")),
     )
     if leaked:
         save_settings(settings)
@@ -78,10 +87,13 @@ def save_settings(settings: AppSettings) -> None:
         "email": settings.email.strip(),
         "project_key": settings.project_key.strip() or DEFAULT_PROJECT,
         "saved_emails": list(normalize_saved_emails(settings.saved_emails)),
+        "field_to": list(normalize_saved_emails(settings.field_to)),
+        "field_cc": list(normalize_saved_emails(settings.field_cc)),
         "last_locate_dir": settings.last_locate_dir.strip(),
         "board_col_px": list(settings.board_col_px),
         "board_layout_rev": int(settings.board_layout_rev),
         "job_folders": dict(_job_folders(settings.job_folders)),
+        "shop_ifc_folders": dict(_job_folders(settings.shop_ifc_folders)),
     }
     settings_path().write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
@@ -164,6 +176,34 @@ def remembered_job_folder(job_number: str) -> Path | None:
         return None
     path = Path(token)
     return path if path.is_dir() else None
+
+
+def remembered_shop_folder(job_number: str) -> Path | None:
+    job = job_number.strip()
+    if not job:
+        return None
+    token = load_settings().shop_ifc_folders.get(job, "").strip()
+    if not token:
+        return None
+    path = Path(token)
+    return path if path.is_dir() else None
+
+
+def remember_shop_folder(job_number: str, folder: Path) -> None:
+    job = job_number.strip()
+    path = Path(folder)
+    if not job or not path.is_dir():
+        return
+    try:
+        token = str(path.resolve())
+    except OSError:
+        token = str(path)
+    settings = load_settings()
+    mapped = dict(settings.shop_ifc_folders)
+    if mapped.get(job) == token:
+        return
+    mapped[job] = token
+    save_settings(replace(settings, shop_ifc_folders=mapped))
 
 
 def remember_job_folder(job_number: str, folder: Path) -> None:

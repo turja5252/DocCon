@@ -177,6 +177,23 @@ def test_find_live_book_missing_raises(tmp_path: Path) -> None:
         find_live_eddi_book(tmp_path / "2026-Tanzim", "2026-Tanzim")
 
 
+def test_find_live_book_uses_parent_job_form(tmp_path: Path) -> None:
+    folder = tmp_path / "2026-077" / "3.0 Doc Con"
+    live = _project_fixture(folder / "EDDI-2026-077.xlsx")
+    (folder / "EDDI-2026-077-2026-09-08.xlsx").write_bytes(b"dated")
+    found = find_live_eddi_book(tmp_path / "2026-077", "2026-077-1")
+    assert found == live
+    snap = snapshot_eddi(
+        tmp_path / "2026-077",
+        "2026-077-1",
+        [_drawing()],
+        date(2026, 9, 30),
+        print_pdf=False,
+    )
+    assert snap.book.name == "EDDI-2026-077-2026-09-30.xlsx"
+    assert live.is_file()
+
+
 def test_snapshot_fills_project_form_not_custom_list(tmp_path: Path) -> None:
     job_folder = tmp_path / "2026-Tanzim"
     live = _project_fixture(job_folder / "3.0 Doc Con" / "EDDI-2026-Tanzim.xlsx")

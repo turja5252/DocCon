@@ -108,17 +108,20 @@ def apply_theme(root: tk.Misc) -> ttk.Style:
         foreground=TEXT,
         font=FONT,
         padding=(12, 6),
-        bordercolor=BORDER,
-        lightcolor="#E4EBF2",
-        darkcolor=BORDER,
-        relief="raised",
-        borderwidth=1,
+        bordercolor="#9FB3C8",
+        lightcolor="#FFFFFF",
+        darkcolor="#9FB3C8",
+        relief="solid",
+        borderwidth=2,
         focusthickness=0,
     )
     style.map(
         "TButton",
-        background=[("disabled", "#EEF2F6"), ("pressed", "#D0D9E3"), ("active", "#D7E0EA")],
+        background=[("disabled", "#EEF2F6"), ("pressed", "#D0D9E3"), ("active", "#FFFFFF")],
         foreground=[("disabled", MUTED)],
+        bordercolor=[("disabled", BORDER), ("active", ACCENT), ("pressed", "#0B5F5A")],
+        lightcolor=[("disabled", BORDER), ("active", "#5EEAD4"), ("pressed", ACCENT)],
+        darkcolor=[("disabled", BORDER), ("active", ACCENT), ("pressed", "#0B5F5A")],
     )
     style.configure(
         "Accent.TButton",
@@ -126,15 +129,18 @@ def apply_theme(root: tk.Misc) -> ttk.Style:
         foreground="#FFFFFF",
         font=FONT_BOLD,
         padding=(14, 7),
-        bordercolor=ACCENT,
-        lightcolor=ACCENT,
-        darkcolor=ACCENT,
+        bordercolor="#115E59",
+        lightcolor="#5EEAD4",
+        darkcolor="#115E59",
+        borderwidth=2,
     )
     style.map(
         "Accent.TButton",
         background=[("disabled", "#9FB3C8"), ("pressed", "#0B5F5A"), ("active", ACCENT_HOVER)],
         foreground=[("disabled", "#E8EEF4")],
-        bordercolor=[("disabled", "#9FB3C8"), ("pressed", "#0B5F5A"), ("active", ACCENT_HOVER)],
+        bordercolor=[("disabled", "#9FB3C8"), ("pressed", "#0B5F5A"), ("active", "#CCFBF1")],
+        lightcolor=[("disabled", "#9FB3C8"), ("pressed", "#5EEAD4"), ("active", "#ECFDF5")],
+        darkcolor=[("disabled", "#9FB3C8"), ("pressed", "#0B5F5A"), ("active", "#99F6E4")],
     )
     style.configure(
         "Brand.TButton",
@@ -142,14 +148,56 @@ def apply_theme(root: tk.Misc) -> ttk.Style:
         foreground="#FFFFFF",
         font=FONT,
         padding=(12, 6),
-        bordercolor=NAVY_MID,
-        lightcolor=NAVY_MID,
-        darkcolor=NAVY_MID,
+        bordercolor="#7DD3FC",
+        lightcolor="#BAE6FD",
+        darkcolor="#0369A1",
+        borderwidth=2,
     )
     style.map(
         "Brand.TButton",
-        background=[("active", "#334E68"), ("pressed", "#0B1F33")],
-        bordercolor=[("active", "#334E68")],
+        background=[("disabled", "#334E68"), ("active", "#334E68"), ("pressed", "#0B1F33")],
+        foreground=[("disabled", "#9FB3C8")],
+        bordercolor=[("disabled", "#486581"), ("active", "#E0F2FE"), ("pressed", "#7DD3FC")],
+        lightcolor=[("disabled", "#486581"), ("active", "#F0F9FF"), ("pressed", "#BAE6FD")],
+        darkcolor=[("disabled", "#334E68"), ("active", "#38BDF8"), ("pressed", "#0369A1")],
+    )
+    style.configure(
+        "Danger.TButton",
+        background=BAD,
+        foreground="#FFFFFF",
+        font=FONT_BOLD,
+        padding=(12, 6),
+        bordercolor="#7F1D1D",
+        lightcolor="#FECACA",
+        darkcolor="#7F1D1D",
+        borderwidth=2,
+    )
+    style.map(
+        "Danger.TButton",
+        background=[("disabled", "#E8C4C0"), ("pressed", "#7F1D1D"), ("active", "#DC2626")],
+        foreground=[("disabled", "#FFFFFF")],
+        bordercolor=[("disabled", "#E8C4C0"), ("pressed", "#7F1D1D"), ("active", "#FEE2E2")],
+        lightcolor=[("disabled", "#E8C4C0"), ("pressed", "#FECACA"), ("active", "#FFF1F2")],
+        darkcolor=[("disabled", "#E8C4C0"), ("pressed", "#7F1D1D"), ("active", "#FCA5A5")],
+    )
+    style.configure(
+        "Add.TButton",
+        background="#166534",
+        foreground="#FFFFFF",
+        font=FONT_BOLD,
+        padding=(12, 6),
+        bordercolor="#14532D",
+        lightcolor="#BBF7D0",
+        darkcolor="#14532D",
+        borderwidth=2,
+    )
+    style.map(
+        "Add.TButton",
+        background=[("disabled", "#9FB3C8"), ("pressed", "#14532D"), ("active", "#15803D")],
+        foreground=[("disabled", "#FFFFFF")],
+        bordercolor=[("disabled", "#9FB3C8"), ("pressed", "#14532D"), ("active", "#DCFCE7")],
+        lightcolor=[("disabled", "#9FB3C8"), ("pressed", "#BBF7D0"), ("active", "#F0FDF4")],
+        darkcolor=[("disabled", "#9FB3C8"), ("pressed", "#14532D"), ("active", "#86EFAC")],
     )
 
     style.configure(
@@ -243,14 +291,18 @@ def apply_theme(root: tk.Misc) -> ttk.Style:
         foreground=NAVY,
         font=FONT_SMALL,
         padding=(8, 2),
-        bordercolor=BORDER,
-        lightcolor=SURFACE,
-        darkcolor=BORDER,
+        bordercolor="#9FB3C8",
+        lightcolor="#FFFFFF",
+        darkcolor="#9FB3C8",
+        borderwidth=2,
     )
     style.map(
         "Locate.TButton",
-        background=[("disabled", "#EEF2F6"), ("active", "#E4EBF2"), ("pressed", "#D0D9E3")],
+        background=[("disabled", "#EEF2F6"), ("active", FOCUS_BG), ("pressed", "#D0D9E3")],
         foreground=[("disabled", MUTED)],
+        bordercolor=[("disabled", BORDER), ("active", ACCENT), ("pressed", "#0B5F5A")],
+        lightcolor=[("disabled", BORDER), ("active", "#5EEAD4"), ("pressed", ACCENT)],
+        darkcolor=[("disabled", BORDER), ("active", ACCENT), ("pressed", "#0B5F5A")],
     )
     style.configure(
         "TRadiobutton",

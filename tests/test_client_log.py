@@ -102,6 +102,37 @@ def test_find_prefers_named_book(tmp_path: Path) -> None:
     assert find_client_book(tmp_path, "2026-Tanzim") == wanted
 
 
+def test_find_child_job_uses_parent_book(tmp_path: Path) -> None:
+    out = tmp_path / CLIENT_OUT
+    out.mkdir(parents=True)
+    parent = out / "CT-2026-077.xlsm"
+    parent.write_bytes(b"live")
+    (out / "CT-2026-077-notes.xlsm").write_bytes(b"extra")
+    assert find_client_book(tmp_path, "2026-077-1") == parent
+
+
+def test_find_child_book_wins_over_parent(tmp_path: Path) -> None:
+    out = tmp_path / CLIENT_OUT
+    out.mkdir(parents=True)
+    child = out / "CT-2026-077-1.xlsm"
+    child.write_bytes(b"child")
+    (out / "CT-2026-077.xlsm").write_bytes(b"parent")
+    assert find_client_book(tmp_path, "2026-077-1") == child
+
+
+def test_prepare_leaves_parent_book_and_template(tmp_path: Path) -> None:
+    out = tmp_path / CLIENT_OUT
+    out.mkdir(parents=True)
+    template = out / "CT-202X-XXX.xlsm"
+    template.write_bytes(b"blank")
+    parent = out / "CT-2026-077.xlsm"
+    parent.write_bytes(b"live")
+    dest = prepare_client_book(tmp_path, "2026-077-1")
+    assert dest == parent
+    assert template.is_file()
+    assert not (out / "CT-2026-077-1.xlsm").exists()
+
+
 def test_prepare_renames_template_book(tmp_path: Path) -> None:
     out = tmp_path / CLIENT_OUT
     out.mkdir(parents=True)
@@ -201,6 +232,29 @@ def test_refuses_wrong_job_book(tmp_path: Path) -> None:
         raise AssertionError("should refuse")
     except LogError as exc:
         assert "2026-075" in str(exc)
+
+
+def test_file_child_job_keeps_parent_book_number(tmp_path: Path) -> None:
+    path = tmp_path / "CT-2026-077.xlsx"
+    wb = empty_client_workbook()
+    wb["TRANSMITTAL"]["A12"] = "2026-077"
+    wb["TRANSMITTAL"]["A2"] = 4
+    wb.save(path)
+    wb.close()
+    result = file_client_transmittal(
+        path,
+        "2026-077-1",
+        [LogLine("2026-077-1-1", "0", "Drawing-1", "APPROVAL")],
+        issued=date(2026, 9, 30),
+    )
+    assert result.cover_id == "CT-2026-077-4"
+    inspect = inspect_client_book(path, "2026-077-1")
+    assert inspect.job_number == "2026-077"
+    assert inspect.cover_id == "CT-2026-077-5"
+    wb = load_workbook(path)
+    assert wb["TRANSMITTAL"]["A12"].value == "2026-077"
+    assert wb["4"]["A12"].value == "2026-077"
+    wb.close()
 
 
 def test_file_real_template_copy_if_sandbox_exists(tmp_path: Path) -> None:
@@ -408,3 +462,22 @@ def test_pick_cover_falls_back_to_pep_when_letter_blank() -> None:
     chosen = pick_cover_fields(book=BookCover(), pep=pep)
     assert chosen.to_line == "pep@example.com"
     assert chosen.project_description == "From PEP"
+
+
+def test_field_cover_uses_settings_when_letter_and_pack_are_blank() -> None:
+    chosen = pick_cover_fields(
+        book=BookCover(),
+        kind=FIELD,
+        field_to="foreman@eliteintegrityservices.com",
+        field_cc="super@eliteintegrityservices.com",
+    )
+    assert chosen.to_line == "foreman@eliteintegrityservices.com"
+    assert chosen.cc_line == "super@eliteintegrityservices.com"
+    letter = pick_cover_fields(
+        book=BookCover(to_line="already@eliteintegrityservices.com", cc_line=""),
+        kind=FIELD,
+        field_to="foreman@eliteintegrityservices.com",
+        field_cc="super@eliteintegrityservices.com",
+    )
+    assert letter.to_line == "already@eliteintegrityservices.com"
+    assert letter.cc_line == "super@eliteintegrityservices.com"

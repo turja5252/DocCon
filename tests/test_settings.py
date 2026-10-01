@@ -60,6 +60,23 @@ def test_saved_emails_roundtrip(tmp_path, monkeypatch) -> None:
     assert "token" not in saved
 
 
+def test_field_transmittal_addresses_roundtrip(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    save_settings(
+        AppSettings(
+            email="sarah@example.com",
+            field_to=("Foreman@eliteintegrityservices.com", "foreman@eliteintegrityservices.com"),
+            field_cc=("super@eliteintegrityservices.com",),
+        )
+    )
+    loaded = load_settings()
+    assert loaded.field_to == ("Foreman@eliteintegrityservices.com",)
+    assert loaded.field_cc == ("super@eliteintegrityservices.com",)
+    saved = json.loads((tmp_path / "EliteIntegrity" / "DocCon" / "settings.json").read_text(encoding="utf-8"))
+    assert saved["field_to"] == ["Foreman@eliteintegrityservices.com"]
+    assert saved["field_cc"] == ["super@eliteintegrityservices.com"]
+
+
 def test_normalize_and_append_emails() -> None:
     assert normalize_saved_emails("Ada <ada@elite.com>; bob@elite.com") == ("ada@elite.com", "bob@elite.com")
     assert normalize_saved_emails(["ada@elite.com", "Ada@elite.com"]) == ("ada@elite.com",)

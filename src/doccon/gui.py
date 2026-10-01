@@ -23,6 +23,7 @@ from doccon.client_log import (
     expected_return_from_issued,
     find_book,
     inspect_book,
+    lines_from_extras,
     lines_from_rows,
     parse_expected_return,
     parse_issued_date,
@@ -41,6 +42,7 @@ from doccon.drop_pdfs import (
     NOT_PDF,
     apply_board_drop,
     apply_row_drop,
+    delete_dropped_copy,
     ingest_sources,
     rename_email_dropped_pdf,
     replace_paired_pdf,
@@ -65,10 +67,12 @@ from doccon.jira_client import (
 )
 from doccon.jobs import job_folder_identity, resolve_job_folder
 from doccon.kinds import CLIENT, FIELD, LABELS, PREFIX, SHOP
+from doccon.log_layout import layout_for
 from doccon.match import (
     LocatedPdf,
     MatchedRow,
     apply_located_pdfs,
+    is_dropped_pdf_path,
     keep_located_pdfs,
     match_pdf_hits,
     outgoing_rev_from_filename,
@@ -80,7 +84,9 @@ from doccon.outlook_contacts import OutlookContactsError, import_saved_emails_fr
 from doccon.pack_mail import draft_subject
 from doccon.pack_state import (
     ClientPack,
+    PackExtra,
     cover_recipients,
+    extra_from_path,
     load_client_pack,
     save_client_pack,
     with_cover_recipients,
@@ -112,7 +118,14 @@ from doccon.settings import (
     normalize_saved_emails,
     remember_job_folder,
     remember_locate_dir,
+    remember_shop_folder,
+    remembered_shop_folder,
     save_settings,
+)
+from doccon.shop_place import (
+    MISSING_SHOP_FOLDER,
+    find_shop_ifc_folder,
+    shop_folder_choices,
 )
 from doccon.theme import (
     FOLDER,
@@ -122,7 +135,6 @@ from doccon.theme import (
     IDENTITY_MISSING,
     JIRA,
     NAVY,
-    NAVY_MID,
     ThemeProgress,
     apply_theme,
     style_text,
@@ -140,7 +152,7 @@ CREATE_EDDI_BTN = "Create EDDI"
 SELECT_ROW_FIRST = (
     "That PDF does not match any drawing on this job by filename.\n\n"
     "Click the drawing row you want, then Paste PDF — the selected row always wins. "
-    "Several files wait in New PDFs: click a row, pick one, then Assign to selected row."
+    "Several files wait in New PDFs: Assign to a drawing, or Include with pack when there is no Jira issue."
 )
 
 
@@ -443,7 +455,9 @@ class SettingsDialog(tk.Toplevel):
         self._new_address.grid(row=1, column=0, sticky="ew", pady=(8, 0), padx=(0, 8))
         self._new_address.bind("<Return>", lambda _event: self._add_address())
         ttk.Button(book, text="Add", command=self._add_address).grid(row=1, column=1, pady=(8, 0), padx=(0, 8))
-        ttk.Button(book, text="Remove", command=self._remove_address).grid(row=1, column=2, pady=(8, 0))
+        ttk.Button(book, text="Remove", style="Danger.TButton", command=self._remove_address).grid(
+            row=1, column=2, pady=(8, 0)
+        )
         ttk.Button(book, text="Import from Outlook…", command=self._import_outlook).grid(
             row=2, column=0, columnspan=3, sticky="w", pady=(8, 0)
         )
@@ -455,8 +469,38 @@ class SettingsDialog(tk.Toplevel):
         book.columnconfigure(0, weight=1)
         self._fill_addresses(settings.saved_emails)
 
+        field = ttk.LabelFrame(self, text="Field transmittal TO / CC", padding=8)
+        field.grid(row=7, column=0, columnspan=2, sticky="ew", padx=12, pady=(4, 4))
+        ttk.Label(field, text="TO").grid(row=0, column=0, sticky="w")
+        ttk.Label(field, text="CC").grid(row=0, column=1, sticky="w", padx=(8, 0))
+        self._field_to = tk.Listbox(field, height=3, width=28, exportselection=False)
+        self._field_cc = tk.Listbox(field, height=3, width=28, exportselection=False)
+        self._field_to.grid(row=1, column=0, sticky="ew")
+        self._field_cc.grid(row=1, column=1, sticky="ew", padx=(8, 0))
+        self._field_new = ttk.Entry(field, width=28)
+        self._field_new.grid(row=2, column=0, sticky="ew", pady=(8, 0))
+        self._field_new.bind("<Return>", lambda _event: self._add_field_address("to"))
+        adds = ttk.Frame(field)
+        adds.grid(row=2, column=1, sticky="w", padx=(8, 0), pady=(8, 0))
+        ttk.Button(adds, text="Add to TO", command=lambda: self._add_field_address("to")).pack(side="left")
+        ttk.Button(adds, text="Add to CC", command=lambda: self._add_field_address("cc")).pack(
+            side="left", padx=(8, 0)
+        )
+        ttk.Button(field, text="Remove", style="Danger.TButton", command=self._remove_field_address).grid(
+            row=3, column=0, sticky="w", pady=(8, 0)
+        )
+        ttk.Label(
+            field,
+            text="This PC only. Field cover uses these when the FT letter has no TO or CC yet.",
+            style="Muted.TLabel",
+        ).grid(row=4, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        field.columnconfigure(0, weight=1)
+        field.columnconfigure(1, weight=1)
+        self._fill_list(self._field_to, settings.field_to)
+        self._fill_list(self._field_cc, settings.field_cc)
+
         buttons = ttk.Frame(self)
-        buttons.grid(row=7, column=0, columnspan=2, sticky="e", padx=12, pady=(8, 14))
+        buttons.grid(row=8, column=0, columnspan=2, sticky="e", padx=12, pady=(8, 14))
         ttk.Button(buttons, text="Open log folder", command=self._open_log_folder).pack(
             side="left", padx=(0, 8)
         )
@@ -469,10 +513,16 @@ class SettingsDialog(tk.Toplevel):
         except OSError as exc:
             messagebox.showerror("Settings", str(exc), parent=self)
 
-    def _fill_addresses(self, emails: tuple[str, ...] | list[str]) -> None:
-        self._addresses.delete(0, "end")
+    def _fill_list(self, box: tk.Listbox, emails: tuple[str, ...] | list[str]) -> None:
+        box.delete(0, "end")
         for addr in emails:
-            self._addresses.insert("end", addr)
+            box.insert("end", addr)
+
+    def _fill_addresses(self, emails: tuple[str, ...] | list[str]) -> None:
+        self._fill_list(self._addresses, emails)
+
+    def _list_emails(self, box: tk.Listbox) -> tuple[str, ...]:
+        return normalize_saved_emails(list(box.get(0, "end")))
 
     def _listed_emails(self) -> tuple[str, ...]:
         return normalize_saved_emails(list(self._addresses.get(0, "end")))
@@ -501,6 +551,27 @@ class SettingsDialog(tk.Toplevel):
         ]
         self._fill_addresses(remaining)
         self._persist_addresses()
+
+    def _add_field_address(self, which: str) -> None:
+        added = normalize_saved_emails(self._field_new.get())
+        if not added:
+            messagebox.showerror("Settings", "Type an email address.", parent=self)
+            return
+        box = self._field_to if which == "to" else self._field_cc
+        merged = normalize_saved_emails(list(self._list_emails(box)) + list(added))
+        self._fill_list(box, merged)
+        self._field_new.delete(0, "end")
+
+    def _remove_field_address(self) -> None:
+        box = self._field_to if self._field_to.curselection() else self._field_cc
+        selected = list(box.curselection())
+        if not selected:
+            messagebox.showinfo("Settings", "Select a Field TO or CC address to remove.", parent=self)
+            return
+        remaining = [
+            addr for index, addr in enumerate(self._list_emails(box)) if index not in set(selected)
+        ]
+        self._fill_list(box, remaining)
 
     def _import_outlook(self, *, lister=None) -> None:
         self.configure(cursor="watch")
@@ -534,10 +605,13 @@ class SettingsDialog(tk.Toplevel):
             email=self.email.get().strip(),
             project_key=self.project.get().strip(),
             saved_emails=self._listed_emails(),
+            field_to=self._list_emails(self._field_to),
+            field_cc=self._list_emails(self._field_cc),
             last_locate_dir=load_settings().last_locate_dir,
             board_col_px=load_settings().board_col_px,
             board_layout_rev=load_settings().board_layout_rev,
             job_folders=dict(load_settings().job_folders),
+            shop_ifc_folders=dict(load_settings().shop_ifc_folders),
         )
         token = self.token.get().strip()
         return settings, token
@@ -594,6 +668,8 @@ class DocConApp(tk.Tk):
         self._cover_loading = False
         self._jira_loading = False
         self._located_pdfs: dict[str, LocatedPdf] = {}
+        self._pack_extras: list[PackExtra] = []
+        self._shop_root: Path | None = None
         self._job_project: JobProject | None = None
         self._eddi_contexts: dict[str, tuple[FieldOption, ...]] = {}
         self._open_path = _os_open_path
@@ -647,6 +723,9 @@ class DocConApp(tk.Tk):
                 command=self._kind_changed,
                 style="Brand.TRadiobutton",
             ).pack(side="left", padx=(0, 6))
+        self.shop_locate_btn = ttk.Button(
+            bar, text="Locate shop folder…", style="Brand.TButton", command=self._locate_shop_folder
+        )
         self.send_btn = ttk.Button(bar, text=CREATE_TRANSMITTAL_BTN, style="Accent.TButton", command=self._issue_pack)
         self.send_btn.pack(side="left", padx=(8, 0))
         ttk.Button(bar, text="Update Jira…", style="Brand.TButton", command=self._update_jira).pack(
@@ -665,7 +744,7 @@ class DocConApp(tk.Tk):
         identity.pack(fill="x", pady=(6, 0))
         ttk.Button(
             identity,
-            text="Paste PDF",
+            text="Paste PDF from email",
             style="Brand.TButton",
             command=self._paste_pdf,
         ).pack(side="right", padx=(8, 0))
@@ -681,23 +760,11 @@ class DocConApp(tk.Tk):
             style="Brand.TButton",
             command=self._locate_job_folder,
         ).pack(side="left", padx=(16, 0))
-        self.new_issue_btn = tk.Button(
+        self.new_issue_btn = ttk.Button(
             identity,
             text=CREATE_ISSUE_BTN,
+            style="Brand.TButton",
             command=self._new_issue,
-            bg=NAVY_MID,
-            fg="#FFFFFF",
-            activebackground="#334E68",
-            activeforeground="#FFFFFF",
-            disabledforeground="#9FB3C8",
-            font=FONT_SMALL,
-            relief="flat",
-            borderwidth=0,
-            highlightthickness=0,
-            padx=8,
-            pady=0,
-            cursor="hand2",
-            justify="center",
         )
         self.new_issue_btn.pack(side="left", padx=(8, 0))
         self.new_issue_btn.configure(state=tk.DISABLED)
@@ -725,6 +792,7 @@ class DocConApp(tk.Tk):
         attach_calendar(self.issued, parent=self, on_change=self._on_issued_change, allow_na=True)
         ttk.Label(dates, text="Expected return").pack(side="left")
         self.expected = ttk.Entry(dates, width=12)
+        self._explicit_no_return = False
         set_na_text(self.expected)
         self.expected.pack(side="left", padx=(4, 0))
         attach_calendar(
@@ -741,6 +809,7 @@ class DocConApp(tk.Tk):
                 text=label,
                 command=lambda offset=days: self._apply_expected_preset(offset),
             ).pack(side="left", padx=(2, 0))
+        ttk.Button(dates, text="No return", command=self._apply_no_return).pack(side="left", padx=(8, 0))
         ttk.Button(dates, text="Locate PEP…", command=self._locate_pep).pack(side="left", padx=(12, 0))
         ttk.Button(dates, text="Save", command=self._save_pack).pack(side="left", padx=(6, 0))
         self.pep_label = ttk.Label(dates, text="PEP: load a job", style="Muted.TLabel")
@@ -810,9 +879,35 @@ class DocConApp(tk.Tk):
         ).pack(side="left", padx=8)
         ttk.Button(
             self._new_pdf_bar,
+            text="Include with pack",
+            style="Brand.TButton",
+            command=self._include_new_pdf,
+        ).pack(side="left", padx=(0, 4))
+        ttk.Button(
+            self._new_pdf_bar,
             text="Dismiss",
             style="Brand.TButton",
             command=self._dismiss_new_pdf,
+        ).pack(side="left", padx=(0, 10))
+        self._pack_extra_bar = tk.Frame(body, bg=NAVY, highlightthickness=0, bd=0)
+        tk.Label(
+            self._pack_extra_bar,
+            text="Non Jira",
+            bg=NAVY,
+            fg=FOLDER,
+            font=FONT_SMALL,
+        ).pack(side="left", padx=(8, 8), pady=2)
+        ttk.Button(
+            self._pack_extra_bar,
+            text="Add PDF…",
+            style="Add.TButton",
+            command=self._add_pack_extra,
+        ).pack(side="left", padx=8)
+        ttk.Button(
+            self._pack_extra_bar,
+            text="Remove",
+            style="Danger.TButton",
+            command=self._remove_pack_extra,
         ).pack(side="left", padx=(0, 10))
         self.board = DrawingBoard(
             body,
@@ -824,16 +919,29 @@ class DocConApp(tk.Tk):
             cover_issued_stamp=lambda: cover_date_stamp(self.issued.get()),
             on_cancel_next=self._on_cancel_next,
             on_draft_change=self._schedule_pack_save,
+            on_no_return=self._mark_cover_no_return,
         )
         self.board.pack(fill="both", expand=True)
 
     def _settings(self) -> None:
         SettingsDialog(self)
 
+    def _field_default_lines(self) -> tuple[str, str]:
+        settings = load_settings()
+        return email_line("; ".join(settings.field_to)), email_line("; ".join(settings.field_cc))
+
     def _pick_cover_email(self, which: str) -> None:
-        emails = load_settings().saved_emails
+        settings = load_settings()
+        if self.kind.get() == FIELD:
+            emails = settings.field_to if which == "to" else settings.field_cc
+            empty = "Add Field transmittal TO addresses in Settings first." if which == "to" else (
+                "Add Field transmittal CC addresses in Settings first."
+            )
+        else:
+            emails = settings.saved_emails
+            empty = "Save email addresses in Settings first."
         if not emails:
-            messagebox.showinfo("Pick address", "Save email addresses in Settings first.")
+            messagebox.showinfo("Pick address", empty)
             return
         menu = tk.Menu(self, tearoff=0)
         for addr in emails:
@@ -855,11 +963,20 @@ class DocConApp(tk.Tk):
             self.cover_hint.configure(
                 text="TO and CC are email addresses only. Add more with a semicolon."
             )
+        elif self.kind.get() == FIELD:
+            self.cover_hint.configure(
+                text="Field TO and CC start from Settings when the FT letter is empty."
+            )
         else:
             self.cover_hint.configure(
-                text="Shop/Field TO and CC come from that ST/FT letter if Sarah already filled them."
+                text="Shop TO and CC come from the ST letter if Sarah already filled them."
             )
         self._show_kind_cover()
+        if self.board.extras_painted():
+            self.board.set_pack_extras(
+                self._current_extras(), statuses=layout_for(self.kind.get()).statuses
+            )
+        self._refresh_shop_place()
         self._refresh_cover_hint()
 
     def _show_kind_cover(self) -> None:
@@ -872,6 +989,7 @@ class DocConApp(tk.Tk):
                 pep = load_pep(self._pep_path)
             except PepError:
                 pep = None
+        field_to, field_cc = self._field_default_lines()
         chosen = pick_cover_fields(
             book=book_cover_for_job(self._job_folder, self._job_number, kind),
             pack_to=pack_to,
@@ -879,6 +997,8 @@ class DocConApp(tk.Tk):
             pack_project="",
             pep=pep,
             kind=kind,
+            field_to=field_to,
+            field_cc=field_cc,
         )
         self._cover_loading = True
         try:
@@ -939,6 +1059,12 @@ class DocConApp(tk.Tk):
                     to_line = cover.to_line
                 if not cc_line:
                     cc_line = cover.cc_line
+            elif kind == FIELD:
+                field_to, field_cc = self._field_default_lines()
+                if not to_line:
+                    to_line = field_to
+                if not cc_line:
+                    cc_line = field_cc
             to_line = email_line(to_line)
             cc_line = email_line(cc_line)
             project = (
@@ -984,6 +1110,12 @@ class DocConApp(tk.Tk):
             selected_keys=self.board.selected_keys(),
             located_pdfs=dict(self._located_pdfs),
             next_edits=self.board.next_edits(),
+            pack_extras=tuple(self._current_extras()),
+            shop_folders=(
+                self.board.shop_folder_picks()
+                if self.board.shop_folders_open()
+                else (existing.shop_folders if existing is not None else {})
+            ),
             job_folder=str(self._job_folder) if self._job_folder else "",
         )
         return with_cover_recipients(
@@ -1009,6 +1141,21 @@ class DocConApp(tk.Tk):
         self._reset_cover_dates()
         self._save_pack(quiet=True)
 
+    def _mark_cover_no_return(self) -> None:
+        """Expected return shows N/A. A later focus-out must not put the old return date back."""
+        self._explicit_no_return = True
+        set_na_text(self.expected)
+
+    def _apply_no_return(self) -> None:
+        """This pack expects no document back. Stamps packed Return Request Date to N/A."""
+        self._mark_cover_no_return()
+        count = self.board.stamp_packed_no_return()
+        if count:
+            self._set_status(f"No return date on {count} packed drawing(s). Jira was not written.")
+        else:
+            self._set_status("No return date. Tick Pack to stamp it onto drawings.")
+        self._save_pack(quiet=True)
+
     def _apply_expected_preset(self, days: int) -> None:
         """Set Expected return to Date issued plus calendar days. Does not write Jira."""
         stamp = expected_return_from_issued(self.issued.get(), days)
@@ -1025,9 +1172,12 @@ class DocConApp(tk.Tk):
 
     def _on_expected_return_change(self) -> None:
         if not self._cover_loading:
-            self.board.apply_cover_date_change(
-                "return_request_date", cover_date_stamp(self.expected.get())
-            )
+            stamp = cover_date_stamp(self.expected.get())
+            if not stamp and self._explicit_no_return:
+                self._save_pack(quiet=True)
+                return
+            self._explicit_no_return = False
+            self.board.apply_cover_date_change("return_request_date", stamp)
         self._save_pack(quiet=True)
 
     def _save_pack(self, quiet: bool = False, *, force: bool = False) -> bool:
@@ -1107,6 +1257,7 @@ class DocConApp(tk.Tk):
         pack = load_client_pack(folder, job)
         kind = self.kind.get()
         pack_to, pack_cc = cover_recipients(pack, kind)
+        field_to, field_cc = self._field_default_lines()
         chosen = pick_cover_fields(
             book=book_cover_for_job(folder, job, kind),
             pack_to=pack_to,
@@ -1114,6 +1265,8 @@ class DocConApp(tk.Tk):
             pack_project=pack.project_description if pack else "",
             pep=cover,
             kind=kind,
+            field_to=field_to,
+            field_cc=field_cc,
         )
         self._cover_loading = True
         try:
@@ -1124,8 +1277,13 @@ class DocConApp(tk.Tk):
             self._write_cover_date_defaults()
             if pack is not None:
                 self.board.apply_next_edits(pack.next_edits)
+                self._pack_extras = list(pack.pack_extras)
+            else:
+                self._pack_extras = []
         finally:
             self._cover_loading = False
+        self.board.set_pack_extras(self._pack_extras, statuses=layout_for(kind).statuses)
+        self._show_pack_extras()
 
     def _cover_for_write(self) -> PepCover | None:
         kind = self.kind.get()
@@ -1357,6 +1515,8 @@ class DocConApp(tk.Tk):
         self._set_new_issue_enabled(False)
         self._new_pdfs.clear()
         self._show_new_pdfs()
+        self._pack_extras = []
+        self._show_pack_extras()
         self._start_progress("Fetching from Jira…" if wait_key else f"Loading {job}…")
         self._set_job_identity(None, None, loading=True)
         with contextlib.suppress(tk.TclError):
@@ -1627,6 +1787,7 @@ class DocConApp(tk.Tk):
         self._set_status(
             f"{job}: {len(matched)} drawing(s), {missing} missing PDF  |  {folder_label}{extra}{cover}{pep}"
         )
+        self._refresh_shop_place()
         self._start_watcher()
 
     def _reset_locate_to_job(self, folder: Path | None) -> None:
@@ -2049,8 +2210,13 @@ class DocConApp(tk.Tk):
             )
             return
         rows = self._selected_rows()
-        if not rows:
+        pack_extras = [item for item in self._current_extras() if item.packed]
+        if not rows and not pack_extras:
             messagebox.showinfo(label, "Tick Pack on the drawings for this send.")
+            return
+        missing_extra = next((item for item in pack_extras if not Path(item.path).is_file()), None)
+        if missing_extra is not None:
+            messagebox.showerror(label, f"Missing {Path(missing_extra.path).name}.")
             return
         try:
             book = prepare_book(folder, job, kind)
@@ -2082,6 +2248,9 @@ class DocConApp(tk.Tk):
             self._settings()
             return
         names = "\n".join(f"  {row.drawing.drawing_id or row.drawing.key}" for row in rows)
+        if pack_extras:
+            extra_names = "\n".join(f"  {item.document_no} (no Jira)" for item in pack_extras)
+            names = f"{names}\n{extra_names}".strip()
         extra = ""
         if info.filed_tabs:
             extra = f"\nThis book already has filed tabs: {', '.join(info.filed_tabs)}."
@@ -2090,13 +2259,43 @@ class DocConApp(tk.Tk):
             extra += f"\n{missing} packed drawing(s) have no PDF and will not be attached."
         extra += self._jira_change_note(jira_rows, packed=True)
         expected_label = expected.isoformat() if isinstance(expected, date) else expected
-        subject = draft_subject(info.cover_id, job)
+        subject = draft_subject(info.cover_id, info.job_number)
         cover_pdf = f"{info.cover_id}.pdf"
+        shop_root: Path | None = None
+        shop_copies: list[tuple[Path, str]] = []
+        if kind == SHOP:
+            self._refresh_shop_place()
+            shop_root = self._shop_root
+            if shop_root is None:
+                messagebox.showerror(label, MISSING_SHOP_FOLDER)
+                return
+            picks = self.board.shop_folder_picks()
+            for row in rows:
+                if row.pdf is not None and row.pdf.path.is_file():
+                    shop_copies.append((row.pdf.path, picks.get(row.drawing.key, "Root")))
+            for item in pack_extras:
+                shop_copies.append((Path(item.path), picks.get(item.id, "Root")))
+        if kind == SHOP:
+            file_line = (
+                f"file {info.cover_id}, copy the drawings into the shop folder, "
+                f"attach only the transmittal form, "
+            )
+            attach_line = (
+                f"Attachments: {cover_pdf} only. Drawings are copied into {shop_root.name}, not zipped.\n"
+            )
+        else:
+            file_line = (
+                f"file {info.cover_id}, attach the transmittal PDF and a zip of the drawing PDFs, "
+            )
+            attach_line = (
+                f"Attachments: {cover_pdf} plus {info.cover_id}.zip "
+                f"(drawings only; not the transmittal form).\n"
+            )
         if not messagebox.askyesno(
             "Confirm?",
             (
                 f"One click: check that Jira and the log can be written, then update Jira, "
-                f"file {info.cover_id}, attach the transmittal PDF and a zip of the drawing PDFs, "
+                f"{file_line}"
                 f"open an Outlook draft from THIS PC.\n"
                 f"If a check fails, nothing is written.\n\n"
                 f"{book}\n\n"
@@ -2109,8 +2308,7 @@ class DocConApp(tk.Tk):
                 f"Date issued: {issued.isoformat()}\n"
                 f"Expected return: {expected_label}\n"
                 f"Subject: {subject}\n"
-                f"Attachments: {cover_pdf} plus {info.cover_id}.zip "
-                f"(drawings only; not the transmittal form).\n"
+                f"{attach_line}"
                 "Also prints a dated copy of the EDDI form "
                 "(matched PDFs only, not only this pack; live book unchanged; not attached).\n\n"
                 f"Close the {PREFIX[kind]} book first. Nothing is sent until you click Send in Outlook."
@@ -2119,7 +2317,8 @@ class DocConApp(tk.Tk):
             return
         if not self._save_pack(quiet=True, force=True):
             return
-        lines = lines_from_rows(rows, kind)
+        lines = lines_from_rows(rows, kind) + lines_from_extras(pack_extras, kind)
+        extra_pdfs = [Path(item.path) for item in pack_extras]
         self._busy = True
         self._work = "confirm"
         self._job_number = job
@@ -2152,6 +2351,9 @@ class DocConApp(tk.Tk):
                     job_folder=folder,
                     eddi_drawings=eddi_drawings,
                     eddi_contexts=eddi_contexts,
+                    extra_pdfs=extra_pdfs,
+                    shop_root=shop_root,
+                    shop_copies=shop_copies,
                 )
                 cover_id = result.cover_id
                 saved_attach = result.attach_note
@@ -2193,6 +2395,8 @@ class DocConApp(tk.Tk):
         if jira_ok and jira_rows:
             for row in jira_rows:
                 self._apply_row(row)
+        if not error:
+            self._consume_pack_extras()
         self._save_pack(quiet=True, force=True)
         self._refresh_cover_hint()
         label = LABELS.get(self.kind.get(), LABELS[CLIENT])
@@ -2376,7 +2580,8 @@ class DocConApp(tk.Tk):
             return
         with contextlib.suppress(tk.TclError):
             if not self._new_pdf_bar.winfo_ismapped():
-                self._new_pdf_bar.pack(fill="x", pady=(0, 4), before=self.board)
+                before = self._pack_extra_bar if self._pack_extra_bar.winfo_ismapped() else self.board
+                self._new_pdf_bar.pack(fill="x", pady=(0, 4), before=before)
         self._new_pdf_list.selection_clear(0, "end")
         self._new_pdf_list.selection_set(0)
 
@@ -2427,6 +2632,101 @@ class DocConApp(tk.Tk):
         ident = updated.drawing.drawing_id or updated.drawing.key
         log("INFO", "watch", f"assigned {staged[0].name} row={updated.drawing.key}")
         self._set_status(f"Paired {staged[0].name} for {ident}.")
+
+    def _show_pack_extras(self) -> None:
+        if self._job_folder is None:
+            with contextlib.suppress(tk.TclError):
+                self._pack_extra_bar.pack_forget()
+            return
+        with contextlib.suppress(tk.TclError):
+            if not self._pack_extra_bar.winfo_ismapped():
+                self._pack_extra_bar.pack(fill="x", pady=(0, 4), before=self.board)
+
+    def _current_extras(self) -> list[PackExtra]:
+        if self.board.extras_painted():
+            return self.board.pack_extras()
+        return list(self._pack_extras)
+
+    def _paint_extras(self, items: list[PackExtra]) -> None:
+        self._pack_extras = list(items)
+        self.board.set_pack_extras(items, statuses=layout_for(self.kind.get()).statuses)
+        self._show_pack_extras()
+
+    def _extra_path_taken(self, path: Path) -> bool:
+        token = str(path).casefold()
+        return any(item.path.casefold() == token for item in self._current_extras())
+
+    def _add_pack_extra(self) -> None:
+        if not self._job_number:
+            messagebox.showinfo("Non Jira", "Enter a Job Number and click Load first.")
+            return
+        if self._job_folder is None:
+            messagebox.showinfo("Non Jira", NEED_FOLDER)
+            return
+        chosen = filedialog.askopenfilename(
+            title="Add a PDF with no Jira issue",
+            initialdir=self._picker_dir(),
+            filetypes=[("PDF", "*.pdf"), ("All files", "*.*")],
+        )
+        if not chosen:
+            return
+        path = Path(chosen)
+        if not path.is_file() or path.suffix.casefold() != ".pdf":
+            messagebox.showinfo("Non Jira", NOT_PDF)
+            return
+        if self._extra_path_taken(path):
+            messagebox.showinfo("Non Jira", f"{path.name} is already on this pack.")
+            return
+        item = extra_from_path(path, kind=self.kind.get())
+        self._remember_pdf_folder(path)
+        self._paint_extras([*self._current_extras(), item])
+        self.board.focus_key(item.id)
+        self._save_pack(quiet=True)
+        self._set_status(f"{item.document_no} is under Non Jira. No Jira issue.")
+
+    def _include_new_pdf(self) -> None:
+        index = self._selected_new_pdf()
+        if index < 0:
+            messagebox.showinfo("Non Jira", "Pick a PDF in the New PDFs list first.")
+            return
+        if self._job_folder is None:
+            messagebox.showinfo("Non Jira", NEED_FOLDER)
+            return
+        path = self._new_pdfs[index]
+        if not path.is_file():
+            messagebox.showinfo("Non Jira", f"Missing {path.name}.")
+            return
+        if self._extra_path_taken(path):
+            messagebox.showinfo("Non Jira", f"{path.name} is already on this pack.")
+            return
+        item = extra_from_path(path, kind=self.kind.get())
+        self._new_pdfs.pop(index)
+        self._show_new_pdfs()
+        self._paint_extras([*self._current_extras(), item])
+        self.board.focus_key(item.id)
+        self._save_pack(quiet=True)
+        self._set_status(f"{item.document_no} is under Non Jira. No Jira issue.")
+
+    def _remove_pack_extra(self) -> None:
+        key = self.board.explicit_focus_key()
+        items = self._current_extras()
+        match = next((item for item in items if item.id == key), None)
+        if match is None:
+            messagebox.showinfo("Non Jira", "Click a Non Jira row first.")
+            return
+        self._paint_extras([item for item in items if item.id != key])
+        self._save_pack(quiet=True)
+        self._set_status(f"Removed {match.document_no} from this pack.")
+
+    def _consume_pack_extras(self) -> None:
+        """Create transmittal succeeded. Drop packed Non Jira rows and delete staged copies."""
+        keep: list[PackExtra] = []
+        for item in self._current_extras():
+            if item.packed and item.email_dropped:
+                delete_dropped_copy(item.path)
+            if not item.packed:
+                keep.append(item)
+        self._paint_extras(keep)
 
     def _apply_drop(self, sources, root_x: int, root_y: int, *, strip_leftovers: bool = False) -> None:
         try:
@@ -2598,7 +2898,9 @@ class DocConApp(tk.Tk):
                 f"{len(leftover)} in New PDFs — select a row, then Assign.{extra}"
             )
             return
-        self._set_status(f"{names} did not match a row — select a drawing row, then Paste PDF.{extra}")
+        self._set_status(
+            f"{names} did not match a row — Assign to a drawing, or Include with pack.{extra}"
+        )
         messagebox.showinfo("Paste PDF", SELECT_ROW_FIRST)
 
     def _pair_located(self, row: MatchedRow, *, remember_folder: bool = True, save: bool = True) -> None:
@@ -2659,7 +2961,48 @@ class DocConApp(tk.Tk):
         self._set_status(f"Renamed to {dest.name} for {updated.drawing.drawing_id or updated.drawing.key}.")
         log("INFO", "drop", f"renamed dropped={dest.name} row={updated.drawing.key}")
 
+    def _refresh_shop_place(self) -> None:
+        if self.kind.get() != SHOP or not self._job_number:
+            if self.shop_locate_btn.winfo_ismapped():
+                self.shop_locate_btn.pack_forget()
+            self._shop_root = None
+            self.board.set_shop_folders(())
+            return
+        if not self.shop_locate_btn.winfo_ismapped():
+            self.shop_locate_btn.pack(side="left", padx=(8, 0), before=self.send_btn)
+        remembered = remembered_shop_folder(self._job_number)
+        found = find_shop_ifc_folder(self._job_number, self._job_folder, remembered)
+        self._shop_root = found
+        if found is None:
+            self.board.set_shop_folders(())
+            return
+        self.board.set_shop_folders(shop_folder_choices(found))
+        pack = load_client_pack(self._job_folder, self._job_number)
+        self.board.apply_shop_folder_picks(pack.shop_folders if pack is not None else {})
+
+    def _locate_shop_folder(self) -> None:
+        if not self._job_number:
+            messagebox.showinfo("Shop folder", "Enter a Job Number and click Load first.")
+            return
+        start = self._shop_root or self._job_folder
+        chosen = filedialog.askdirectory(
+            title="Locate shop folder in 1.0 Current IFC Drawings",
+            initialdir=str(start) if start is not None else self._picker_dir(),
+        )
+        if not chosen:
+            return
+        path = Path(chosen)
+        if not path.is_dir():
+            messagebox.showerror("Shop folder", "That folder is not available.")
+            return
+        remember_shop_folder(self._job_number, path)
+        self._refresh_shop_place()
+        self._set_status(f"Shop folder: {path.name}")
+
     def _locate_pdf(self, key: str = "") -> None:
+        if key and self._extra_item(key) is not None:
+            self._locate_pack_extra(key)
+            return
         if key:
             self.board.focus_key(key)
         row = self._matches.get(key) if key else None
@@ -2683,6 +3026,12 @@ class DocConApp(tk.Tk):
         self._set_status(f"Located {pdf_path.name} for {updated.drawing.drawing_id or updated.drawing.key}.")
 
     def _open_pdf_key(self, key: str) -> None:
+        extra = self._extra_item(key)
+        if extra is not None:
+            error = open_row_pdf(Path(extra.path), opener=self._open_path)
+            if error:
+                messagebox.showerror("Open PDF", error)
+            return
         self.board.focus_key(key)
         row = self._matches.get(key) or self.board.focused_row()
         if row is None:
@@ -2696,7 +3045,63 @@ class DocConApp(tk.Tk):
         else:
             messagebox.showerror("Open PDF", error)
 
+    def _extra_item(self, key: str) -> PackExtra | None:
+        token = (key or "").strip()
+        if not token:
+            return None
+        return next((item for item in self._current_extras() if item.id == token), None)
+
+    def _locate_pack_extra(self, key: str) -> None:
+        current = self._extra_item(key)
+        if current is None:
+            return
+        self.board.focus_key(key)
+        chosen = filedialog.askopenfilename(
+            title="Locate PDF for this item",
+            initialdir=self._picker_dir(),
+            filetypes=[("PDF", "*.pdf"), ("All files", "*.*")],
+        )
+        if not chosen:
+            return
+        path = Path(chosen)
+        if not path.is_file():
+            messagebox.showerror("Locate PDF", "That file is not available.")
+            return
+        rev = outgoing_rev_from_filename(path.name) or current.rev
+        updated = PackExtra(
+            path=str(path),
+            document_no=current.document_no,
+            rev=rev,
+            description=current.description,
+            status=current.status,
+            email_dropped=is_dropped_pdf_path(path),
+            id=current.id,
+            packed=current.packed,
+        )
+        self._remember_pdf_folder(path)
+        self._paint_extras([updated if item.id == key else item for item in self._current_extras()])
+        self.board.focus_key(key)
+        self._save_pack(quiet=True)
+        self._set_status(f"Located {path.name} for {updated.document_no}.")
+
     def _preview_pdf_key(self, key: str) -> None:
+        extra = self._extra_item(key)
+        if extra is not None:
+            pdf = Path(extra.path)
+            if not pdf.is_file():
+                messagebox.showerror("Preview PDF", f"That PDF is not on disk: {pdf.name}")
+                return
+            heading = f"{extra.document_no}  ·  {pdf.name}"
+
+            def on_grab(text: str, issue_key: str = key) -> bool:
+                wrote = self.board.set_next_description(issue_key, text)
+                if wrote:
+                    self._set_status(f"Grabbed description onto {extra.document_no}.")
+                    self._save_pack(quiet=True)
+                return wrote
+
+            open_pdf_preview(self, pdf, heading=heading, on_grab=on_grab)
+            return
         self.board.focus_key(key)
         row = self._matches.get(key) or self.board.focused_row()
         if row is None:

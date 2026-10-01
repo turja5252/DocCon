@@ -2,6 +2,74 @@
 
 Newest first. Append a dated entry when a decision is locked, a test runs, or the next step changes.
 
+## 2026-10-01 — Elite DocCon 1.87 exe
+
+**Exe rebuilt 2026-10-01** — `Elite DocCon.exe` is **1.87**. Close every old DocCon; double-click that file. Load `2026-Tanzim`. Do not Confirm 075.
+
+Includes the parent-job book, No return on IFI/IFC, the Non Jira group, Field TO/CC defaults, the Shop folder pick, red delete buttons, green Add PDF…, Paste PDF from email, button borders and hover, and the mouse wheel leaving dropdowns alone.
+
+## 2026-10-01 — Delete and add buttons (1.84)
+
+Clear, Cancel Next, and Remove are red. Add PDF… is green. Restart to **1.84**.
+
+## 2026-10-01 — Shop folder pick (1.83)
+
+Tanzim: shop drawings go in `1.0 Current IFC Drawings`, and each file can land in the root or in a subfolder (`1.0.1 MID Sheets`, `1.0.6 BOM`, …). The transmittal form is still saved in the job Doc Con folder. The email attaches only that form.
+
+**Built.** Shop rows, including Non Jira, show a folder pick. Default is **Root**. Create transmittal copies each packed PDF there, replaces an older rev of the same drawing, and copies `ST-{job}-{n}.pdf` into `Transmittals` under that shop folder. The Doc Con copy in `3.2 Shop Transmittals` stays. No zip. If the engineer has not created the `1.0` job folder, Create transmittal writes nothing. **Locate shop folder…** remembers the folder on this PC.
+
+Tests: find the shop folder, child job subfolder, rev replace, form in Transmittals — **29 passed** with confirm, pack, and settings.
+
+Source is **1.83**. Frozen exe is still **1.77**.
+
+## 2026-10-01 — Field transmittal TO / CC defaults (1.82)
+
+Tanzim: Field TO and CC are not the client list. Settings should let the operator add field-transmittal addresses, and those are the defaults.
+
+**Built.** Settings **Field transmittal TO / CC** is stored on this PC (LOCALAPPDATA), not Dropbox. Add to TO / Add to CC. When Field is selected, those addresses fill the cover if the FT letter and the saved pack TO/CC are empty. A filled letter or pack still wins. Pick… on Field offers that list. Client saved addresses are unchanged.
+
+Source is **1.82**. Frozen exe is still **1.77**.
+
+## 2026-10-01 — Non Jira group on the drawing list (1.81)
+
+Tanzim: a file with no Jira issue should be a row in the drawing table, in its own group, like EDDI 1–9. Only the letter fields are editable. Locate, Open, and Preview stay on the row.
+
+**Built.** Header **Non Jira** sits after groups 1–9. The row is packed. Document number, description, outgoing rev, and the letter status edit in the row. The other Next fields stay blank. **Add PDF…** browses a file in with no drawing selected. **Include with pack** moves a New PDFs file into the group. **Remove** drops the Non Jira row that is clicked. Create transmittal prints packed Non Jira lines after the drawings and zips those PDFs. Jira and the EDDI snapshot are unchanged. **Packed only** keeps the header when one of those rows is packed.
+
+Tests: Non Jira row group, disabled Jira fields, pack JSON — **13 passed** with confirm.
+
+Source is **1.81**. Frozen exe is still **1.77**. Restart DocCon from source to see it. Do not Confirm 075.
+
+## 2026-10-01 — With this pack, no Jira issue (1.80)
+
+Tanzim: some files are pasted or browsed and still go on the transmittal, with no Jira issue and no EDDI line. Locate… only exists on a drawing row, so there was no browse for those files.
+
+**Built.** **With this pack** sits under New PDFs once a job is loaded. **Add PDF…** opens the file picker in the job folder and does not need a selected row. **Include with pack** takes the PDF picked in New PDFs. Each item has a document number (from the filename), a rev when the name has `REV n`, a description, and the letter status (Client / Shop / Field default **INFORMATION**). Create transmittal prints those lines after the packed drawings and adds the PDFs to the zip. Jira and EDDI are unchanged. A pack can be only these files. They save in `client-pack.json`. Success clears the list and deletes an email-dropped copy. A Dropbox file is not copied into `dropped/`.
+
+Tests: filename rev, letter status, pack JSON, and zip order — **20 passed** with pack state and confirm.
+
+Source is **1.80**. Frozen exe is still **1.77**.
+
+## 2026-09-30 — No return date for IFI / IFC (1.79)
+
+Tanzim: a send for Info (status IFI or IFC) does not expect a document back. There needs to be an explicit no-return choice, and IFI/IFC should set that automatically.
+
+**Built.** **No return** beside the Expected return presets stamps packed Next Return Request Date to N/A and sets the letter to N/A. A calendar day still overwrites it. The Expected return calendar’s own N/A still restores Now. **Set packed to IFI or IFC**, a pack tick while that is selected, or picking IFI/IFC on a row, stamps that row’s Return Request Date to N/A. Confirm writes Jira `null` for that date and for Due Date. Blank and N/A are the same when Jira had no date, so an empty row does not turn yellow.
+
+Tests: No return stamp, IFC/IFI pack tick, and Jira null for the cleared dates — passed with the board, register, gui, and client-log suites (**145 passed**, 2 skipped).
+
+Source is **1.79**. Frozen exe is still **1.77**.
+
+## 2026-09-30 — Child Job Number files the parent transmittal book (1.78)
+
+Tanzim: Jira Job Number `2026-077-1` already opens Dropbox folder `2026-077`, but Create transmittal still asked for `CT-2026-077-1.xlsm`. The book in `3.1.1 Out` is `CT-2026-077.xlsm`.
+
+**Built.** Lookup tries the typed name, then the parent (`2026-077-1`, then `2026-077`) for CT, ST, FT, and the live EDDI form. Exact child book still wins. The opened book’s job cell is left as `2026-077`, and the cover is `CT-2026-077-n`. A blank template is not renamed to `CT-2026-077-1` when the parent book is already there. Dated EDDI snapshot uses the live form’s name (`EDDI-2026-077-{date}`).
+
+Tests: parent-book lookup, job-cell keep, EDDI parent form, confirm, and book adopt — **43 passed**.
+
+No exe yet. Source is **1.78**. Frozen `Elite DocCon.exe` is still **1.77**.
+
 ## 2026-09-30 — Packed only stacks rows (1.77)
 
 Tanzim: Packed only left drawings in their original holes, so a handful of ticks looked sparse. Hidden unpacked rows (and empty EDDI groups) now collapse; the remaining packed rows stack like a normal filter. Same for the text Find filter.

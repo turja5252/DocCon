@@ -21,10 +21,11 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.cell.cell import MergedCell
 from openpyxl.worksheet.worksheet import Worksheet
 
-from doccon.jobs import find_job_folder
-from doccon.kinds import BOOK_DIR, CLIENT, PREFIX
+from doccon.jobs import find_job_folder, job_folder_keys
+from doccon.kinds import BOOK_DIR, CLIENT, FIELD, PREFIX
 from doccon.log_layout import CLIENT_LAYOUT, BookLayout, layout_for
 from doccon.match import MatchedRow
+from doccon.pack_state import PackExtra, letter_status
 from doccon.pep import DOC_CONTROL_FROM, PepCover, email_line
 from doccon.transmittal_books import adopt_transmittal_books
 
@@ -124,6 +125,22 @@ def lines_from_rows(rows: list[MatchedRow], kind: str = CLIENT) -> list[LogLine]
     return lines
 
 
+def lines_from_extras(items: list[PackExtra] | tuple[PackExtra, ...], kind: str = CLIENT) -> list[LogLine]:
+    """Letter lines for PDFs that have no Jira issue. They are not an EDDI row."""
+    lines: list[LogLine] = []
+    for item in items:
+        document_no = (item.document_no or "").strip() or Path(item.path).stem
+        lines.append(
+            LogLine(
+                document_no=document_no,
+                rev=(item.rev or "").strip(),
+                description=(item.description or "").strip(),
+                status=letter_status(kind, item.status),
+            )
+        )
+    return lines
+
+
 def pages_needed(line_count: int, layout: BookLayout | None = None) -> int:
     form = layout or CLIENT_LAYOUT
     try:
@@ -167,15 +184,52 @@ def find_client_book(job_folder: Path, job_number: str) -> Path | None:
     return find_book(job_folder, job_number, CLIENT)
 
 
-def find_book(job_folder: Path, job_number: str, kind: str = CLIENT) -> Path | None:
+def _exact_named_book(folder: Path, prefix: str, job: str) -> Path | None:
+    for suffix in (".xlsm", ".xlsx"):
+        candidate = folder / f"{prefix}-{job}{suffix}"
+        if candidate.is_file() and not candidate.name.startswith("~$"):
+            return candidate
+    return None
+
+
+def _named_book(job_folder: Path, job_number: str, kind: str) -> Path | None:
+    """Exact CT|ST|FT-{job}.xlsm, then the parent job (`2026-077-1` → `CT-2026-077`)."""
     out = Path(job_folder) / BOOK_DIR[kind]
     if not out.is_dir():
         return None
-    job = job_number.strip()
     prefix = PREFIX[kind]
-    exact = out / f"{prefix}-{job}.xlsm"
-    if exact.is_file():
-        return exact
+    for key in job_folder_keys(job_number):
+        found = _exact_named_book(out, prefix, key)
+        if found is not None:
+            return found
+    return None
+
+
+def resolved_log_job(path: Path, typed_job: str, stored_job: str) -> str:
+    """Job number to keep on the letter.
+
+    A child Jira Job Number may file the parent book. The cell stays `2026-077`
+    and the cover stays `CT-2026-077-n`. A different job still refuses.
+    """
+    typed = typed_job.strip()
+    stored = (stored_job or "").strip()
+    folded = {key.casefold(): key for key in job_folder_keys(typed)}
+    if stored and stored not in PLACEHOLDER_JOBS:
+        match = folded.get(stored.casefold())
+        if match is None:
+            raise LogError(f"{path.name} is for job {stored}, not {typed}.")
+        return match
+    return typed
+
+
+def find_book(job_folder: Path, job_number: str, kind: str = CLIENT) -> Path | None:
+    named = _named_book(job_folder, job_number, kind)
+    if named is not None:
+        return named
+    out = Path(job_folder) / BOOK_DIR[kind]
+    if not out.is_dir():
+        return None
+    prefix = PREFIX[kind]
     if kind == CLIENT:
         for name in TEMPLATE_BOOK_NAMES:
             candidate = out / name
@@ -223,19 +277,26 @@ def prepare_client_book(job_folder: Path, job_number: str) -> Path:
 
 
 def prepare_book(job_folder: Path, job_number: str, kind: str = CLIENT) -> Path:
-    """Point at {CT|ST|FT}-{job}.xlsm, renaming a template book when that name is free."""
+    """Point at {CT|ST|FT}-{job}.xlsm, or the parent-job book when that is the file.
+
+    A template is renamed to the typed Job Number only when no named book exists.
+    `CT-2026-077.xlsm` is not renamed to `CT-2026-077-1.xlsm`.
+    """
     job = job_number.strip()
     if not job:
         raise LogError("Job Number is required.")
+    named = _named_book(job_folder, job, kind)
+    if named is not None:
+        return named
     adopt_transmittal_books(job_folder, job)
     dest = Path(job_folder) / BOOK_DIR[kind] / f"{PREFIX[kind]}-{job}.xlsm"
     if dest.is_file():
         return dest
     found = find_book(job_folder, job, kind)
     if found is None:
+        expected = " or ".join(f"{PREFIX[kind]}-{key}.xlsm" for key in job_folder_keys(job))
         raise LogError(
-            f"No {kind} transmittal book in {BOOK_DIR[kind]}. "
-            f"Expected {PREFIX[kind]}-{job}.xlsm."
+            f"No {kind} transmittal book in {BOOK_DIR[kind]}. Expected {expected}."
         )
     return found
 
@@ -253,13 +314,12 @@ def inspect_book(path: Path, job_number: str, kind: str = CLIENT) -> ClientBook:
             raise LogError(f"{path.name} has no {WORKING_SHEET} tab.")
         ws = wb[WORKING_SHEET]
         stored_job = str(ws[layout.job_cell].value or "").strip()
-        if stored_job and stored_job not in PLACEHOLDER_JOBS and stored_job.casefold() != job.casefold():
-            raise LogError(f"{path.name} is for job {stored_job}, not {job}.")
+        log_job = resolved_log_job(path, job, stored_job)
         next_number = _as_int(ws[layout.number_cell].value, default=1)
         filed = tuple(name for name in wb.sheetnames if name != WORKING_SHEET and _is_filed_tab(name))
     finally:
         wb.close()
-    return ClientBook(path=path, job_number=job, next_number=next_number, filed_tabs=filed, kind=kind)
+    return ClientBook(path=path, job_number=log_job, next_number=next_number, filed_tabs=filed, kind=kind)
 
 
 def read_book_cover(path: Path, kind: str = CLIENT) -> BookCover:
@@ -302,10 +362,22 @@ def pick_cover_fields(
     pack_project: str = "",
     pep: PepCover | None = None,
     kind: str = CLIENT,
+    field_to: str = "",
+    field_cc: str = "",
 ) -> BookCover:
-    """Prefer Sarah's letter, then the saved pack, then PEP (Client only)."""
-    pep_to = pep.to_line if pep is not None and kind == CLIENT else ""
-    pep_cc = pep.cc_line if pep is not None and kind == CLIENT else ""
+    """Prefer the letter, then the saved pack, then the default for this kind.
+
+    Client default is the PEP. Field default is the Field TO / CC list from Settings.
+    """
+    if kind == FIELD:
+        pep_to = field_to
+        pep_cc = field_cc
+    elif pep is not None and kind == CLIENT:
+        pep_to = pep.to_line
+        pep_cc = pep.cc_line
+    else:
+        pep_to = ""
+        pep_cc = ""
     pep_project = pep.project_description if pep is not None else ""
     return BookCover(
         to_line=_first_filled(book.to_line, pack_to, pep_to),
@@ -382,8 +454,7 @@ def _commit_transmittal(
             raise LogError(f"{path.name} has no {WORKING_SHEET} tab.")
         ws = wb[WORKING_SHEET]
         stored_job = str(ws[layout.job_cell].value or "").strip()
-        if stored_job and stored_job not in PLACEHOLDER_JOBS and stored_job.casefold() != job.casefold():
-            raise LogError(f"{path.name} is for job {stored_job}, not {job}.")
+        job = resolved_log_job(path, job, stored_job)
         number = _as_int(ws[layout.number_cell].value, default=1)
         sheet_name = str(number)
         if archive and sheet_name in wb.sheetnames:
