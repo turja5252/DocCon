@@ -12,9 +12,11 @@ from doccon.pack_mail import (
     draft_body,
     draft_subject,
     drawing_pdfs,
+    load_mail_formats,
     mail_attachments,
     normalize_recipients,
     pick_outlook_send_account,
+    save_mail_formats,
     write_drawings_zip,
 )
 from doccon.register import DrawingRow
@@ -80,6 +82,33 @@ def test_drawings_zip_excludes_transmittal_form(tmp_path: Path) -> None:
     assert "shop transmittal" in shop
     field = draft_body(cover_id="FT-2026-Tanzim-1", project="", rows=[_row("EIS-1", drawing)])
     assert "field transmittal" in field
+
+
+def test_custom_wording_replaces_markers(tmp_path, monkeypatch) -> None:
+    dest = tmp_path / "mail-formats.json"
+    monkeypatch.setattr("doccon.paths.mail_formats_path", lambda: dest)
+    save_mail_formats(
+        {
+            "client": ("{job} {cover}", "Hello {project}\n{documents}\n"),
+            "shop": ("", ""),
+        }
+    )
+    loaded = load_mail_formats()
+    assert loaded["client"] == ("{job} {cover}", "Hello {project}\n{documents}\n")
+    assert "shop" not in loaded
+    drawing = tmp_path / "2026-Tanzim-1-1 REV 0.pdf"
+    body = draft_body(
+        cover_id="CT-2026-Tanzim-1",
+        project="Tank 9",
+        rows=[_row("2026-Tanzim-1-1", drawing)],
+        job="2026-Tanzim",
+        template=loaded["client"][1],
+    )
+    assert "Hello Tank 9" in body
+    assert "2026-Tanzim-1-1" in body
+    assert draft_subject("CT-2026-Tanzim-1", "2026-Tanzim", template=loaded["client"][0]) == (
+        "2026-Tanzim CT-2026-Tanzim-1"
+    )
 
 
 def test_pick_outlook_send_account_prefers_doc_control() -> None:

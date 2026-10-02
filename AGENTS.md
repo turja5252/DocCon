@@ -38,7 +38,9 @@ The summary is an ID, then optional wording. Empty description is allowed.
 
 No extra Jira status or custom trigger field. Engineer emails Sarah the pack list; she runs DocCon.
 
-**Next:** Source is **1.94**. Load `2026-Tanzim`. Do not Confirm 075.
+**Next:** Source and the frozen exe are **1.95**. Load `2026-Tanzim`. Do not Confirm 075.
+
+**1.95 Email wording is one file for every PC.** Settings **Email wording…** edits Client, Shop, and Field. The markers `{cover}`, `{job}`, `{project}`, and `{documents}` stay on that window. A blank box keeps today's wording. The file sits next to Elite DocCon in Dropbox. Drag is not back.
 
 **1.94 Settings has Shop transmittal TO / CC beside Field.** Shop cover uses that list when the ST letter and the saved pack are empty. A letter or pack value still wins. Pick… on Shop uses that list. Client saved addresses stay separate. Drag is not back.
 

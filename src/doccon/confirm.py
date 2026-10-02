@@ -32,7 +32,9 @@ from doccon.pack_mail import (
     display_outlook_draft,
     draft_body,
     draft_subject,
+    load_mail_formats,
     mail_attachments,
+    mail_kind_key,
     write_drawings_zip,
 )
 from doccon.pep import PepCover
@@ -184,14 +186,17 @@ def run_confirm_client_pack(
                 attach_note=note,
                 pdf_note=pdf_note,
             )
+        wording = load_mail_formats().get(mail_kind_key(kind), ("", ""))
         display_outlook_draft(
             to_line=cover.to_line,
             cc_line=cover.cc_line,
-            subject=draft_subject(cover_id, log_job),
+            subject=draft_subject(cover_id, log_job, template=wording[0]),
             body=draft_body(
                 cover_id=cover_id,
                 project=cover.project_description,
                 rows=rows,
+                job=log_job,
+                template=wording[1],
             ),
             attachments=files,
             require_to=kind == CLIENT,

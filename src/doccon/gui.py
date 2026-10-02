@@ -84,7 +84,16 @@ from doccon.match import (
     scan_library_pdfs,
 )
 from doccon.outlook_contacts import OutlookContactsError, import_saved_emails_from_outlook
-from doccon.pack_mail import draft_subject
+from doccon.pack_mail import (
+    MAIL_KIND_LABELS,
+    MAIL_MARKERS,
+    default_mail_body,
+    default_mail_subject,
+    draft_subject,
+    load_mail_formats,
+    mail_kind_key,
+    save_mail_formats,
+)
 from doccon.pack_state import (
     ClientPack,
     PackExtra,
@@ -418,6 +427,68 @@ class CreateIssueDialog(tk.Toplevel):
         self.destroy()
 
 
+class EmailWordingDialog(tk.Toplevel):
+    """Client, Shop, and Field subject and body. One file in the Dropbox program folder."""
+
+    def __init__(self, master: tk.Misc) -> None:
+        super().__init__(master)
+        self.withdraw()
+        self.title("Email wording")
+        self.resizable(True, True)
+        self.transient(master)
+        self.grab_set()
+        apply_theme(self)
+        self._subjects: dict[str, ttk.Entry] = {}
+        self._bodies: dict[str, tk.Text] = {}
+        stored = load_mail_formats()
+        intro = ttk.Frame(self, padding=(12, 12, 12, 4))
+        intro.pack(fill="x")
+        ttk.Label(
+            intro,
+            text="One wording for every PC. It is saved next to Elite DocCon in Dropbox, not on this computer.",
+            wraplength=520,
+            justify="left",
+        ).pack(anchor="w")
+        ttk.Label(intro, text=MAIL_MARKERS, style="Muted.TLabel").pack(anchor="w", pady=(6, 0))
+        book = ttk.Notebook(self)
+        book.pack(fill="both", expand=True, padx=12, pady=8)
+        for key, title in MAIL_KIND_LABELS:
+            page = ttk.Frame(book, padding=8)
+            book.add(page, text=title)
+            subject, body = stored.get(key, ("", ""))
+            ttk.Label(page, text="Subject").pack(anchor="w")
+            subject_box = ttk.Entry(page, width=64)
+            subject_box.insert(0, subject.strip() or default_mail_subject())
+            subject_box.pack(fill="x", pady=(2, 8))
+            ttk.Label(page, text="Body").pack(anchor="w")
+            body_box = tk.Text(page, width=64, height=12, wrap="word", font=FONT)
+            body_box.insert("1.0", body if body.strip() else default_mail_body(key))
+            body_box.pack(fill="both", expand=True, pady=(2, 4))
+            ttk.Label(page, text=MAIL_MARKERS, style="Muted.TLabel").pack(anchor="w")
+            self._subjects[key] = subject_box
+            self._bodies[key] = body_box
+        buttons = ttk.Frame(self, padding=(12, 0, 12, 12))
+        buttons.pack(fill="x")
+        ttk.Button(buttons, text="Cancel", command=self.destroy).pack(side="right")
+        ttk.Button(buttons, text="Save", style="Accent.TButton", command=self._save).pack(side="right", padx=(0, 8))
+        self.protocol("WM_DELETE_WINDOW", self.destroy)
+        reveal_on_parent(self)
+
+    def _save(self) -> None:
+        formats: dict[str, tuple[str, str]] = {}
+        for key, _title in MAIL_KIND_LABELS:
+            subject = self._subjects[key].get().strip()
+            body = self._bodies[key].get("1.0", "end").replace("\r\n", "\n")
+            formats[key] = (subject, body)
+        try:
+            path = save_mail_formats(formats)
+        except OSError as exc:
+            messagebox.showerror("Email wording", str(exc), parent=self)
+            return
+        messagebox.showinfo("Email wording", f"Saved for every PC.\n{path.name}", parent=self)
+        self.destroy()
+
+
 class SettingsDialog(tk.Toplevel):
     def __init__(self, master: tk.Tk) -> None:
         super().__init__(master)
@@ -509,9 +580,13 @@ class SettingsDialog(tk.Toplevel):
         ttk.Button(buttons, text="Open log folder", command=self._open_log_folder).pack(
             side="left", padx=(0, 8)
         )
+        ttk.Button(buttons, text="Email wording…", command=self._email_wording).pack(side="left", padx=(0, 8))
         ttk.Button(buttons, text="Test connection", command=self._test).pack(side="left", padx=(0, 8))
         ttk.Button(buttons, text="Save", style="Accent.TButton", command=self._save).pack(side="left")
         reveal_on_parent(self)
+
+    def _email_wording(self) -> None:
+        EmailWordingDialog(self)
 
     def _address_pair(
         self,
@@ -2571,7 +2646,8 @@ class DocConApp(tk.Tk):
             extra += f"\n{missing} packed drawing(s) have no PDF and will not be attached."
         extra += self._jira_change_note(jira_rows, packed=True)
         expected_label = expected.isoformat() if isinstance(expected, date) else expected
-        subject = draft_subject(info.cover_id, info.job_number)
+        wording = load_mail_formats().get(mail_kind_key(kind), ("", ""))
+        subject = draft_subject(info.cover_id, info.job_number, template=wording[0])
         cover_pdf = f"{info.cover_id}.pdf"
         shop_root: Path | None = None
         shop_copies: list[tuple[Path, str]] = []

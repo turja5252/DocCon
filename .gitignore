@@ -9,6 +9,7 @@ build/
 .ruff_cache/
 .env
 *.token
+mail-formats.json
 doccon.log
 doccon.log.old
 .DS_Store

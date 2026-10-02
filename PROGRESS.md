@@ -2,6 +2,10 @@
 
 Newest first. Append a dated entry when a decision is locked, a test runs, or the next step changes.
 
+## 2026-10-02 — Email wording is shared (1.95)
+
+Settings **Email wording…** edits Client, Shop, and Field subject and body. The markers `{cover}`, `{job}`, `{project}`, and `{documents}` stay on the window. A blank box keeps today's wording. The file is `mail-formats.json` next to Elite DocCon in Dropbox, not on each PC. Source and **Elite DocCon.exe** are **1.95**.
+
 ## 2026-10-01 — Shop addresses in Settings (1.94)
 
 Settings has **Shop transmittal TO / CC** beside **Field transmittal TO / CC**. Both are this PC only. Shop cover uses the shop list when the ST letter and the saved pack are empty. Pick… on Shop uses that list. Client saved addresses stay the client list. **Elite DocCon.exe** is **1.94**.

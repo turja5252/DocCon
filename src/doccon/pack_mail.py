@@ -126,25 +126,20 @@ def attachment_note(files: list[Path]) -> str:
     return "Attached: " + "; ".join(names)
 
 
-def draft_subject(cover_id: str, job: str) -> str:
-    return f"{cover_id}  {job}"
+def draft_subject(cover_id: str, job: str, *, template: str = "") -> str:
+    text = apply_mail_template(
+        template,
+        fallback=default_mail_subject(),
+        cover=cover_id,
+        job=job,
+        project="",
+        documents="",
+    )
+    return text.strip()
 
 
-def draft_body(*, cover_id: str, project: str, rows: list[MatchedRow]) -> str:
-    token = (cover_id or "").split("-", 1)[0].upper()
-    if token == "ST":
-        label = "shop transmittal"
-    elif token == "FT":
-        label = "field transmittal"
-    else:
-        label = "client transmittal"
-    lines = [
-        f"Please find {label} {cover_id}.",
-        "",
-    ]
-    if project:
-        lines.extend([project, ""])
-    lines.append("Documents:")
+def documents_text(rows: list[MatchedRow]) -> str:
+    lines: list[str] = []
     for row in rows:
         drawing = row.drawing
         rev = (row.pdf.rev if row.pdf else "") or drawing.outgoing_rev or "—"
@@ -153,10 +148,133 @@ def draft_body(*, cover_id: str, project: str, rows: list[MatchedRow]) -> str:
         if title:
             line = f"{line}  {title}"
         lines.append(line)
-    lines.extend(
-        ["", "The transmittal PDF is attached. Drawing PDFs are in the zip (not the transmittal form).", ""]
-    )
     return "\n".join(lines)
+
+
+MAIL_KINDS = ("client", "shop", "field")
+MAIL_MARKERS = "{cover}    {job}    {project}    {documents}"
+MAIL_KIND_LABELS = (("client", "Client"), ("shop", "Shop"), ("field", "Field"))
+
+
+def load_mail_formats() -> dict[str, tuple[str, str]]:
+    """Subject and body overrides shared on Dropbox. Missing file means today's wording."""
+    from doccon.paths import mail_formats_path
+
+    path = mail_formats_path()
+    if not path.is_file():
+        return {}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, tuple[str, str]] = {}
+    for key in MAIL_KINDS:
+        item = raw.get(key)
+        if not isinstance(item, dict):
+            continue
+        subject = str(item.get("subject") or "").replace("\r\n", "\n")
+        body = str(item.get("body") or "").replace("\r\n", "\n")
+        if subject.strip() or body.strip():
+            out[key] = (subject, body)
+    return out
+
+
+def save_mail_formats(formats: dict[str, tuple[str, str]]) -> Path:
+    """Write the shared wording file next to the program. Does not touch this PC's settings."""
+    from doccon.paths import mail_formats_path
+
+    payload: dict[str, dict[str, str]] = {}
+    for key in MAIL_KINDS:
+        subject, body = formats.get(key, ("", ""))
+        subject = str(subject or "").replace("\r\n", "\n")
+        body = str(body or "").replace("\r\n", "\n")
+        if subject.strip() == default_mail_subject().strip():
+            subject = ""
+        if body.strip() == default_mail_body(key).strip():
+            body = ""
+        if subject.strip() or body.strip():
+            payload[key] = {"subject": subject, "body": body}
+    path = mail_formats_path()
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
+def mail_kind_key(kind: str) -> str:
+    token = (kind or "").strip().casefold()
+    if token in {"shop", "st"} or token.startswith("st-"):
+        return "shop"
+    if token in {"field", "ft"} or token.startswith("ft-"):
+        return "field"
+    if token.startswith("st"):
+        return "shop"
+    if token.startswith("ft"):
+        return "field"
+    return "client"
+
+
+def default_mail_subject() -> str:
+    return "{cover}  {job}"
+
+
+def default_mail_body(kind: str) -> str:
+    key = mail_kind_key(kind)
+    label = {"shop": "shop transmittal", "field": "field transmittal"}.get(key, "client transmittal")
+    closing = (
+        "The transmittal form is attached."
+        if key == "shop"
+        else "The transmittal PDF is attached. Drawing PDFs are in the zip (not the transmittal form)."
+    )
+    return (
+        f"Please find {label} {{cover}}.\n"
+        "\n"
+        "{project}\n"
+        "\n"
+        "Documents:\n"
+        "{documents}\n"
+        "\n"
+        f"{closing}\n"
+    )
+
+
+def apply_mail_template(
+    template: str,
+    *,
+    fallback: str,
+    cover: str,
+    job: str,
+    project: str,
+    documents: str,
+) -> str:
+    text = template if (template or "").strip() else fallback
+    if not (project or "").strip():
+        text = "\n".join(line for line in text.splitlines() if line.strip() != "{project}")
+    return (
+        text.replace("{cover}", cover or "")
+        .replace("{job}", job or "")
+        .replace("{project}", project or "")
+        .replace("{documents}", documents or "")
+    )
+
+
+def draft_body(
+    *,
+    cover_id: str,
+    project: str,
+    rows: list[MatchedRow],
+    job: str = "",
+    template: str = "",
+) -> str:
+    kind = mail_kind_key(cover_id)
+    return apply_mail_template(
+        template,
+        fallback=default_mail_body(kind),
+        cover=cover_id,
+        job=job,
+        project=project,
+        documents=documents_text(rows),
+    ).rstrip() + "\n"
 
 
 def pick_outlook_send_account(addresses: list[str], *, preferred: str = DOC_CONTROL_FROM) -> str:
