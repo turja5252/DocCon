@@ -77,6 +77,23 @@ def test_field_transmittal_addresses_roundtrip(tmp_path, monkeypatch) -> None:
     assert saved["field_cc"] == ["super@eliteintegrityservices.com"]
 
 
+def test_shop_transmittal_addresses_roundtrip(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    save_settings(
+        AppSettings(
+            email="sarah@example.com",
+            shop_to=("Shop@eliteintegrityservices.com",),
+            shop_cc=("buyer@eliteintegrityservices.com",),
+        )
+    )
+    loaded = load_settings()
+    assert loaded.shop_to == ("Shop@eliteintegrityservices.com",)
+    assert loaded.shop_cc == ("buyer@eliteintegrityservices.com",)
+    saved = json.loads((tmp_path / "EliteIntegrity" / "DocCon" / "settings.json").read_text(encoding="utf-8"))
+    assert saved["shop_to"] == ["Shop@eliteintegrityservices.com"]
+    assert saved["shop_cc"] == ["buyer@eliteintegrityservices.com"]
+
+
 def test_normalize_and_append_emails() -> None:
     assert normalize_saved_emails("Ada <ada@elite.com>; bob@elite.com") == ("ada@elite.com", "bob@elite.com")
     assert normalize_saved_emails(["ada@elite.com", "Ada@elite.com"]) == ("ada@elite.com",)

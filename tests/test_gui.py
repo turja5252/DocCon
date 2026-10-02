@@ -323,10 +323,21 @@ def test_expected_return_presets_use_issued_and_stamp_packed(monkeypatch) -> Non
     monkeypatch.setattr(jira_client, "apply_drawing_update", _bang)
     try:
         labels = _button_texts(app)
-        assert "Urgent same day" in labels
-        assert "Urgent +1" in labels
-        assert "7 days" in labels
-        assert "14 days" in labels
+        assert "Urgent same day" not in labels
+        assert "No return" not in labels
+        app.expected._doccon_calendar.invoke()
+        from doccon.date_picker import CalendarPopup
+
+        popup = CalendarPopup._open
+        assert popup is not None
+        popup_labels = _button_texts(popup)
+        assert "Urgent same day" in popup_labels
+        assert "Urgent +1" in popup_labels
+        assert "7 days" in popup_labels
+        assert "14 days" in popup_labels
+        assert "No return" in popup_labels
+        assert "N/A" in popup_labels
+        popup.destroy()
         app.board.set_rows([_pack_row(key="P2024-1")], checked={"P2024-1"})
         app.issued.delete(0, "end")
         app.issued.insert(0, "2026-09-16")
@@ -937,11 +948,13 @@ def test_console_has_paste_pdf_and_no_pdf_from_outlook_button() -> None:
         assert "Create EDDI" in labels
         assert "Confirm…" not in labels
         assert "EDDI…" not in labels
-        assert "Paste PDF" in labels
+        assert "Paste PDF from email" in labels
         assert "Create new Jira Issue" in labels
         assert "Create new\nJira Issue" not in labels
         assert "Batch Next…" in labels
-        assert "Pack all" in labels
+        assert "Pack all" not in labels
+        assert "Submitted to Client For" in _label_texts(app)
+        assert "Approval" in app.board._pack_purpose.cget("values")
         assert "Set packed to…" not in labels
         assert "Set packed to" in _label_texts(app)
         assert "OFA" in app.board._pack_status.cget("values")
@@ -954,10 +967,11 @@ def test_console_has_paste_pdf_and_no_pdf_from_outlook_button() -> None:
         assert "Load starts Date issued" not in " ".join(_label_texts(app))
         assert "New issue…" not in labels
         assert "PDF from Outlook" not in labels
-        assert "Urgent same day" in labels
-        assert "Urgent +1" in labels
-        assert "7 days" in labels
-        assert "14 days" in labels
+        assert "Urgent same day" not in labels
+        assert "Urgent +1" not in labels
+        assert "7 days" not in labels
+        assert "14 days" not in labels
+        assert "No return" not in labels
         assert not hasattr(app, "_pdf_from_outlook")
         assert not hasattr(app, "_outlook_hunt")
         assert not hasattr(app, "_drop_hint")

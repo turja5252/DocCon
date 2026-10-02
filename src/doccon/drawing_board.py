@@ -15,6 +15,7 @@ from pathlib import Path
 from tkinter import messagebox, ttk
 
 from doccon.date_picker import CalendarPopup, attach_calendar
+from doccon.dpi import pixel_scale
 from doccon.drop_pdfs import dropped_pdf_filename
 from doccon.match import (
     MatchedRow,
@@ -24,6 +25,7 @@ from doccon.match import (
     pdf_is_email_dropped,
 )
 from doccon.pack_state import PackExtra
+from doccon.popups import install as _install_popups
 from doccon.register import (
     APPROVAL_VALUES,
     DRAWING_STATUSES,
@@ -51,6 +53,8 @@ from doccon.theme import (
     apply_theme,
     match_style,
 )
+
+_install_popups()
 
 # Convenience list when Jira editmeta does not send allowedValues (text schema or fetch missed).
 # Option-schema rev fields use Jira's allowedValues. Now values still come from Load, not this list.
@@ -159,8 +163,13 @@ def field_is_typeable_combo(field: str) -> bool:
     """Outgoing / Incoming Rev: ▼ picks; typing only after double-click."""
     return field in TYPEABLE_REV_FIELDS
 
-PAINT_BATCH = 16
+# Two rows, then back to the message loop. Sixteen rows on a slow laptop
+# builds widgets long enough that Windows stops delivering clicks.
+PAINT_BATCH = 2
 PAINT_SLICE_MS = 1
+# Full Next editors for the first screen. The rest stay labels until scrolled into view.
+VISIBLE_EDITORS = 20
+SHELL_ROW_PX = 56
 FROZEN_SYNC_MAX = 4
 PACK_COL_INDEX = 0
 DRAWING_COL_INDEX = 1
@@ -403,6 +412,28 @@ def row_matches_filter(row: MatchedRow, needle: str, extra: str = "") -> bool:
     return all(token in hay for token in text.split())
 
 
+class _Held:
+    """Stand-in for a Next editor that has not been built yet."""
+
+    def __init__(self, value: str = "") -> None:
+        self.value = value
+
+    def get(self) -> str:
+        return self.value
+
+    def set(self, value: str) -> None:
+        self.value = "" if value is None else str(value)
+
+    def cget(self, _key: str = "") -> str:
+        return ""
+
+    def configure(self, **_kwargs: object) -> None:
+        return None
+
+    def winfo_exists(self) -> int:
+        return 0
+
+
 class PackMark(tk.Label):
     """Pack select: empty box, teal tick when included. clam Checkbutton looks like a cross."""
 
@@ -413,7 +444,10 @@ class PackMark(tk.Label):
             width=2,
             height=1,
             relief="solid",
-            bd=1,
+            bd=2,
+            highlightthickness=1,
+            highlightbackground="#102A43",
+            highlightcolor="#102A43",
             bg=SURFACE,
             fg=OK,
             font=("Segoe UI", 9, "bold"),
@@ -438,21 +472,21 @@ class _Block:
     group: str
     include: tk.BooleanVar
     originals: dict[str, ttk.Label]
-    nexts: dict[str, NextWidget]
+    nexts: dict[str, NextWidget | _Held]
     drawing_label: ttk.Label
-    drawing_id_next: NextEntry
+    drawing_id_next: NextEntry | _Held
     title_label: ttk.Label
-    title_next: NextEntry
+    title_next: NextEntry | _Held
     status_label: ttk.Label
-    status_next: ttk.Combobox
+    status_next: ttk.Combobox | _Held
     match_label: ttk.Label
     pdf_label: ttk.Label
     pdf_cell: tk.Frame
     pack_mark: PackMark
-    locate_btn: ttk.Button
-    rename_btn: ttk.Button
-    open_btn: ttk.Button
-    preview_btn: ttk.Button
+    locate_btn: ttk.Button | None
+    rename_btn: ttk.Button | None
+    open_btn: ttk.Button | None
+    preview_btn: ttk.Button | None
     widgets: list[tk.Misc]
     # The four 1px separators (top/bottom × scrolling/frozen pane) that bracket this row.
     rules: tuple[tk.Frame, ...]
@@ -462,6 +496,8 @@ class _Block:
     extra_path: str = ""
     extra_dropped: bool = False
     shop_folder: ttk.Combobox | None = None
+    mounted: bool = True
+    grid_top: int = 0
 
 
 class DrawingBoard(ttk.Frame):
@@ -506,6 +542,8 @@ class DrawingBoard(ttk.Frame):
         self._batch_note: ttk.Label
         self._pack_status: ttk.Combobox
         self._pack_status_loading = False
+        self._pack_purpose: ttk.Combobox
+        self._pack_purpose_loading = False
         self._packed_only_btn: ttk.Button
         self._bump_packed_btn: ttk.Button
         self._tip: tk.Toplevel | None = None
@@ -517,11 +555,17 @@ class DrawingBoard(ttk.Frame):
         self._paint_checked: set[str] | None = None
         self._paint_total = 0
         self._paint_done = 0
+        self._defer_editors = False
+        self._editor_count = 0
+        self._mount_after = ""
         self._paint_on_progress = None
         self._paint_on_done = None
         self._suspend_layout = False
         saved = load_settings()
         self._col_px = merge_col_px(saved.board_col_px, saved.board_layout_rev)
+        factor = pixel_scale(self)
+        if factor > 1.02:
+            self._col_px = [max(1, int(round(px * factor))) for px in self._col_px]
         self._header_labels: list[ttk.Label] = []
         self._header_wraps: list[tuple[int, ttk.Label]] = []
         self._group_headers: list[tuple[str, ttk.Label]] = []
@@ -554,7 +598,6 @@ class DrawingBoard(ttk.Frame):
         )
         self._packed_only_btn = ttk.Button(self._find_bar, text="Packed only", command=self._toggle_packed_only)
         self._packed_only_btn.pack(side="left", padx=(0, 8))
-        ttk.Button(self._find_bar, text="Pack all", command=lambda: self.set_pack(True)).pack(side="left")
         ttk.Button(self._find_bar, text="Pack none", command=lambda: self.set_pack(False)).pack(
             side="left", padx=(4, 4)
         )
@@ -572,6 +615,13 @@ class DrawingBoard(ttk.Frame):
         self._pack_status.pack(side="left", padx=(4, 8))
         self._pack_status.bind("<<ComboboxSelected>>", self._on_pack_status_change)
         self._quiet_dropdown(self._pack_status)
+        ttk.Label(self._find_bar, text="Submitted to Client For").pack(side="left")
+        self._pack_purpose = ttk.Combobox(
+            self._find_bar, width=12, values=PURPOSE_VALUES, state="readonly"
+        )
+        self._pack_purpose.pack(side="left", padx=(4, 8))
+        self._pack_purpose.bind("<<ComboboxSelected>>", self._on_pack_purpose_change)
+        self._quiet_dropdown(self._pack_purpose)
         self._batch_toggle = ttk.Button(self._find_bar, text="Batch Next…", command=self._toggle_batch)
         self._batch_toggle.pack(side="left")
         self._filter_note = ttk.Label(self._find_bar, text="Type, then Find", style="Muted.TLabel")
@@ -646,7 +696,8 @@ class DrawingBoard(ttk.Frame):
             (0, 0), window=self._freeze_header, anchor="nw"
         )
         self._freeze_window = self._canvas.create_window((0, 0), window=self._freeze_inner, anchor="nw")
-        self._canvas.configure(yscrollcommand=vscroll.set, xscrollcommand=self._on_xscroll)
+        self._vscroll = vscroll
+        self._canvas.configure(yscrollcommand=self._on_yscroll, xscrollcommand=self._on_xscroll)
         self._header_canvas.grid(row=0, column=0, sticky="ew", padx=(8, 0), pady=(0, 0))
         self._canvas.grid(row=1, column=0, sticky="nsew", padx=(8, 0), pady=(0, 0))
         vscroll.grid(row=0, column=1, rowspan=2, sticky="ns", padx=(0, 8), pady=(0, 0))
@@ -680,7 +731,7 @@ class DrawingBoard(ttk.Frame):
                 try:
                     ys.append(int(item.winfo_rooty()))
                     ys.append(int(item.winfo_rooty()) + max(int(item.winfo_height()), 1))
-                except (tk.TclError, TypeError, ValueError):
+                except (tk.TclError, TypeError, ValueError, AttributeError):
                     continue
             if not ys:
                 continue
@@ -721,8 +772,12 @@ class DrawingBoard(ttk.Frame):
                 fill="",
                 tags="drop_hover",
             )
-        except (tk.TclError, TypeError, ValueError):
+        except (tk.TclError, TypeError, ValueError, AttributeError):
             return
+
+    def _on_yscroll(self, first: str, last: str) -> None:
+        self._vscroll.set(first, last)
+        self._schedule_mount()
 
     def _xview(self, *args) -> None:
         self._canvas.xview(*args)
@@ -1274,6 +1329,7 @@ class DrawingBoard(ttk.Frame):
             return
         self.stamp_cover_dates_on_keys((key,))
         self.stamp_status_on_keys(self.pack_status(), (key,))
+        self.stamp_purpose_on_keys(self.pack_purpose(), (key,))
 
     def _run_pack_filter(self) -> None:
         self._pack_filter_after = ""
@@ -1466,6 +1522,7 @@ class DrawingBoard(ttk.Frame):
         self._sync_scroll()
 
     def set_rows(self, rows: list[MatchedRow], *, checked: set[str] | None = None) -> None:
+        self._defer_editors = False
         self._begin_rows(rows, checked=checked)
         while self._paint_queue:
             self._paint_next()
@@ -1479,6 +1536,7 @@ class DrawingBoard(ttk.Frame):
         on_progress=None,
         on_done=None,
     ) -> None:
+        self._defer_editors = True
         self._begin_rows(rows, checked=checked)
         self._paint_on_progress = on_progress
         self._paint_on_done = on_done
@@ -1490,7 +1548,10 @@ class DrawingBoard(ttk.Frame):
     def _begin_rows(self, rows: list[MatchedRow], *, checked: set[str] | None = None) -> None:
         self._set_batch_open(False)
         self._pack_status_loading = True
+        self._pack_purpose_loading = True
         self._pack_status.set("")
+        self._pack_purpose.set("")
+        self._editor_count = 0
         self.clear()
         self._suspend_layout = True
         self._frozen_passes = 0
@@ -1557,10 +1618,13 @@ class DrawingBoard(ttk.Frame):
         self._paint_on_done = None
         if done is not None:
             done()
+        self._schedule_mount()
         try:
             self.after_idle(self._clear_pack_status_loading)
+            self.after_idle(self._clear_pack_purpose_loading)
         except tk.TclError:
             self._pack_status_loading = False
+            self._pack_purpose_loading = False
 
     def _bind_overflow(self, widget: tk.Misc, get_text, min_chars: int) -> None:
         """Hover tip on clipped Now labels. Text Next boxes stay in-place (no copy window)."""
@@ -1661,7 +1725,143 @@ class DrawingBoard(ttk.Frame):
         freeze.grid(row=grid_row, column=0, columnspan=FROZEN_COLS, sticky="ew")
         return rest, freeze
 
-    def _add_block(self, top: int, row: MatchedRow, *, include: bool) -> None:
+    def _add_shell(self, top: int, row: MatchedRow, *, include: bool) -> None:
+        """Pack, id, and the Now labels. Next editors wait until the row is on screen."""
+        drawing = row.drawing
+        group = eddi_group_title(drawing.eddi_status)
+        h_top, h_top_f = self._hline(top)
+        now_row = top + 1
+        next_row = top + 2
+        pack = tk.BooleanVar(value=include)
+        pack_mark = PackMark(self._freeze_inner, pack)
+        pack_mark.grid(row=now_row, column=PACK_COL_INDEX, rowspan=2, padx=(4, SASH_PX), pady=4)
+        drawing_label = self._clip_label(
+            drawing.drawing_id or drawing.key,
+            wrap_col=DRAWING_COL_INDEX,
+            parent=self._freeze_inner,
+        )
+        self._place(drawing_label, now_row, DRAWING_COL_INDEX)
+        title_label = self._clip_label(drawing.title or "—", wrap_col=DESC_COL_INDEX)
+        self._place(title_label, now_row, DESC_COL_INDEX)
+        status_label = self._clip_label(drawing.status)
+        self._place(status_label, now_row, STATUS_COL_INDEX)
+        match_label = self._clip_label(row.confidence, match_style(row.confidence))
+        self._place(match_label, now_row, MATCH_COL_INDEX)
+        pdf_cell = tk.Frame(self._inner, bg=BG, highlightthickness=0, bd=0)
+        pdf_label = ttk.Label(pdf_cell, text=pdf_address_text(row), style="Board.TLabel", anchor="w")
+        pdf_label.pack(fill="both", expand=True, padx=2, pady=1)
+        self._place(pdf_cell, now_row, PDF_COL_INDEX)
+        originals: dict[str, ttk.Label] = {}
+        for offset, (field, _title, _values, _width, _kind) in enumerate(FIELD_KEYS):
+            original = self._clip_label(getattr(drawing, field) or "—")
+            self._place(original, now_row, FIELD_COL_START + offset)
+            originals[field] = original
+        for frame in (self._inner, self._freeze_inner):
+            frame.rowconfigure(now_row, minsize=SHELL_ROW_PX // 2, weight=0)
+            frame.rowconfigure(next_row, minsize=SHELL_ROW_PX // 2, weight=0)
+        h_bot, h_bot_f = self._hline(top + 3)
+        nexts: dict[str, NextWidget | _Held] = {
+            field: _Held(getattr(drawing, field) or "") for field, _t, _v, _w, _k in FIELD_KEYS
+        }
+        widgets: list[tk.Misc] = [
+            h_top,
+            h_top_f,
+            pack_mark,
+            drawing_label,
+            title_label,
+            status_label,
+            match_label,
+            pdf_cell,
+            *originals.values(),
+            h_bot,
+            h_bot_f,
+        ]
+        self._blocks[drawing.key] = _Block(
+            key=drawing.key,
+            group=group,
+            include=pack,
+            originals=originals,
+            nexts=nexts,
+            drawing_label=drawing_label,
+            drawing_id_next=_Held(drawing.drawing_id or ""),
+            title_label=title_label,
+            title_next=_Held(drawing.title or ""),
+            status_label=status_label,
+            status_next=_Held(drawing.status or ""),
+            match_label=match_label,
+            pdf_label=pdf_label,
+            pdf_cell=pdf_cell,
+            pack_mark=pack_mark,
+            locate_btn=None,
+            rename_btn=None,
+            open_btn=None,
+            preview_btn=None,
+            widgets=widgets,
+            rules=(h_top, h_top_f, h_bot, h_bot_f),
+            mounted=False,
+            grid_top=top,
+        )
+        pack.trace_add("write", lambda *_args, drawing_key=drawing.key: self._on_pack_tick(drawing_key))
+        drawing_label.bind("<Button-1>", lambda _event, key=drawing.key: self._focus_and_mount(key))
+
+    def _focus_and_mount(self, key: str) -> None:
+        self._mount_key(key)
+        self._set_focus(key)
+
+    def _mount_key(self, key: str) -> None:
+        block = self._blocks.get(key)
+        if block is not None:
+            self._mount_block(block)
+
+    def _mount_block(self, block: _Block) -> None:
+        if block.mounted:
+            return
+        row = self._matches.get(block.key)
+        if row is None:
+            return
+        top = block.grid_top
+        include = bool(block.include.get())
+        focused = block.focused or self._focus_key == block.key
+        for widget in list(block.widgets):
+            with contextlib.suppress(tk.TclError, AttributeError):
+                widget.destroy()
+        self._blocks.pop(block.key, None)
+        self._add_block(top, row, include=include, force=True)
+        fresh = self._blocks.get(row.drawing.key)
+        if fresh is not None and focused:
+            fresh.focused = True
+            self._style_row_focus(fresh)
+
+    def _schedule_mount(self) -> None:
+        if self._mount_after or not self._defer_editors:
+            return
+        try:
+            self._mount_after = self.after_idle(self._mount_visible)
+        except tk.TclError:
+            self._mount_after = ""
+
+    def _mount_visible(self) -> None:
+        self._mount_after = ""
+        try:
+            y0 = float(self._canvas.canvasy(0))
+            height = max(int(self._canvas.winfo_height()), 480)
+        except tk.TclError:
+            return
+        low = max(0.0, y0 - 240)
+        high = y0 + height + 480
+        for block in list(self._blocks.values()):
+            if block.mounted:
+                continue
+            y = block.grid_top * SHELL_ROW_PX
+            if low <= y <= high:
+                self._mount_block(block)
+
+    def _add_block(self, top: int, row: MatchedRow, *, include: bool, force: bool = False) -> None:
+        defer = not force and self._defer_editors and self._editor_count >= VISIBLE_EDITORS
+        if defer:
+            self._add_shell(top, row, include=include)
+            return
+        self._editor_count += 1
         drawing = row.drawing
         group = eddi_group_title(drawing.eddi_status)
         h_top, h_top_f = self._hline(top)
@@ -1825,6 +2025,8 @@ class DrawingBoard(ttk.Frame):
             widgets=widgets,
             rules=(h_top, h_top_f, h_bot, h_bot_f),
             shop_folder=shop_folder,
+            mounted=True,
+            grid_top=top,
         )
         pack.trace_add("write", lambda *_args, drawing_key=drawing.key: self._on_pack_tick(drawing_key))
         self._watch_next(self._blocks[drawing.key])
@@ -2145,6 +2347,12 @@ class DrawingBoard(ttk.Frame):
         restore are not the operator pointing at a drawing, and `explicit_focus_key` is
         what a paste lands on.
         """
+        if not block.mounted:
+            self._mount_block(block)
+            fresh = self._blocks.get(block.key)
+            if fresh is None:
+                return
+            block = fresh
         status_value = (status or "").strip()
         if status_value:
             block.status_next.set(status_value)
@@ -2371,6 +2579,78 @@ class DrawingBoard(ttk.Frame):
         if count:
             self._batch_note.configure(text="Packed Status restored to Now.")
 
+    def pack_purpose(self) -> str:
+        try:
+            return (self._pack_purpose.get() or "").strip()
+        except tk.TclError:
+            return ""
+
+    def set_pack_purpose(self, purpose: str, *, stamp: bool = True) -> int:
+        """Set the filter-row Submitted to Client For. stamp writes packed Next."""
+        value = (purpose or "").strip()
+        self._pack_purpose_loading = True
+        try:
+            self._pack_purpose.set(value)
+        finally:
+            if stamp:
+                self._pack_purpose_loading = False
+            else:
+                try:
+                    self.after_idle(self._clear_pack_purpose_loading)
+                except tk.TclError:
+                    self._pack_purpose_loading = False
+        if not stamp:
+            return 0
+        return self.apply_pack_purpose_change(value)
+
+    def _clear_pack_purpose_loading(self) -> None:
+        self._pack_purpose_loading = False
+
+    def stamp_purpose_on_keys(self, purpose: str, keys: tuple[str, ...]) -> int:
+        """Set Next Submitted to Client For on those packed rows. Blank does not clear."""
+        value = (purpose or "").strip()
+        if not value:
+            return 0
+        count = 0
+        for key in keys:
+            block = self._blocks.get(key)
+            if block is None or not block.include.get() or block.extra:
+                continue
+            self._apply_next_to_block(block, fields={"purpose": value})
+            count += 1
+        return count
+
+    def apply_pack_purpose_change(self, purpose: str) -> int:
+        """Stamp packed Next purpose, or restore Now when the filter pick is blank."""
+        value = (purpose or "").strip()
+        if not value:
+            count = 0
+            for key, block in self._blocks.items():
+                if not block.include.get() or block.extra:
+                    continue
+                if self.restore_next_field(key, "purpose"):
+                    count += 1
+            return count
+        return self.apply_next_to_pack(fields={"purpose": value})
+
+    def _on_pack_purpose_change(self, _event: object | None = None) -> None:
+        if self._pack_purpose_loading:
+            return
+        value = self.pack_purpose()
+        count = self.apply_pack_purpose_change(value)
+        if value and count:
+            self._batch_note.configure(
+                text=f"Set Submitted to Client For to {value} on {count} packed drawing(s). Jira was not written."
+            )
+            return
+        if value:
+            self._batch_note.configure(
+                text="Tick Pack — Submitted to Client For will stamp onto packed drawings."
+            )
+            return
+        if count:
+            self._batch_note.configure(text="Packed Submitted to Client For restored to Now.")
+
     def _bump_packed(self) -> None:
         count = self.bump_packed_revs()
         if count:
@@ -2440,6 +2720,7 @@ class DrawingBoard(ttk.Frame):
             count += 1
         self._batch_status.set("")
         self.set_pack_status("", stamp=False)
+        self.set_pack_purpose("", stamp=False)
         for box in self._batch_fields.values():
             box.set("")
         return count
@@ -2493,6 +2774,8 @@ class DrawingBoard(ttk.Frame):
         """Dirty Next fields keyed by Jira issue key. Empty when Next matches Now."""
         edits: dict[str, dict[str, str]] = {}
         for key, block in self._blocks.items():
+            if not block.mounted:
+                continue
             row = self._matches.get(key)
             if row is None:
                 continue
@@ -2681,6 +2964,8 @@ class DrawingBoard(ttk.Frame):
                 *block.nexts.values(),
             ]
             for item in items:
+                if item is None:
+                    continue
                 owners[id(item)] = key
         current: object | None = widget
         seen: set[int] = set()
@@ -2767,6 +3052,10 @@ class DrawingBoard(ttk.Frame):
         block = self._blocks.get(drawing.key)
         if block is None:
             return
+        if not block.mounted:
+            block.match_label.configure(text=row.confidence, style=match_style(row.confidence))
+            block.pdf_label.configure(text=pdf_address_text(row))
+            return
         block.match_label.configure(
             text=row.confidence, style=match_style(row.confidence, focused=block.focused)
         )
@@ -2801,6 +3090,23 @@ class DrawingBoard(ttk.Frame):
         self._matches[drawing.key] = row
         block = self._blocks.get(drawing.key)
         if block is None:
+            return
+        if not block.mounted:
+            block.drawing_label.configure(text=drawing.drawing_id or drawing.key)
+            block.drawing_id_next.set(drawing.drawing_id or "")
+            block.title_label.configure(text=drawing.title or "—")
+            block.title_next.set(drawing.title or "")
+            block.status_label.configure(text=drawing.status)
+            block.status_next.set(drawing.status)
+            block.match_label.configure(text=row.confidence, style=match_style(row.confidence))
+            block.pdf_label.configure(text=pdf_address_text(row))
+            for field, _title, _values, _width, _kind in FIELD_KEYS:
+                value = getattr(drawing, field) or ""
+                if field in block.originals:
+                    block.originals[field].configure(text=value or "—")
+                held = block.nexts.get(field)
+                if held is not None:
+                    held.set(value)
             return
         block.drawing_label.configure(text=drawing.drawing_id or drawing.key)
         block.drawing_id_next.set(drawing.drawing_id or "")
@@ -3108,7 +3414,7 @@ class DrawingBoard(ttk.Frame):
     def pending_rows(self) -> list[MatchedRow]:
         pending: list[MatchedRow] = []
         for key, block in self._blocks.items():
-            if block.extra:
+            if block.extra or not block.mounted:
                 continue
             row = self._matches.get(key)
             if row is None:

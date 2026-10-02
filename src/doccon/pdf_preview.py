@@ -18,6 +18,7 @@ from doccon.pdf_grab import (
     grabbed_text_is_usable,
     text_from_page_clip,
 )
+from doccon.popups import place_on_parent
 from doccon.theme import ACCENT, apply_theme
 
 ZOOM_MIN = 0.4
@@ -46,6 +47,7 @@ class PdfPreviewDialog(tk.Toplevel):
                 previous.destroy()
         super().__init__(master)
         PdfPreviewDialog._open = self
+        self.withdraw()
         self.title("Preview PDF")
         self.geometry("920x720")
         self.minsize(640, 480)
@@ -116,6 +118,7 @@ class PdfPreviewDialog(tk.Toplevel):
         self.bind("<Escape>", lambda _event: self.destroy())
         self.protocol("WM_DELETE_WINDOW", self.destroy)
         self._load(path, heading=heading)
+        place_on_parent(self)
         self.deiconify()
         self.lift()
 

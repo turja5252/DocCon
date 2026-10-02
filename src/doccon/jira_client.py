@@ -340,10 +340,15 @@ def ping(site: str, email: str, token: str) -> str:
     return name
 
 
+# A loose Job Number search must not page forever when Jira keeps handing back a token.
+MAX_SEARCH_PAGES = 8
+
+
 def _search_issues(site: str, email: str, token: str, jql: str) -> list[dict]:
     issues: list[dict] = []
     next_page: str | None = None
-    while True:
+    seen_tokens: set[str] = set()
+    for _page in range(MAX_SEARCH_PAGES):
         body: dict = {
             "jql": jql,
             "maxResults": 100,
@@ -358,12 +363,28 @@ def _search_issues(site: str, email: str, token: str, jql: str) -> list[dict]:
         for issue in page:
             if isinstance(issue, dict):
                 issues.append(issue)
-        token_page = payload.get("nextPageToken")
+        token_page = str(payload.get("nextPageToken") or "").strip()
         is_last = payload.get("isLast", True)
-        if is_last or not token_page:
+        if is_last or not token_page or token_page in seen_tokens:
             break
-        next_page = str(token_page)
+        seen_tokens.add(token_page)
+        next_page = token_page
     return issues
+
+
+def _keeps_typed_job(issue: dict, job: str) -> bool:
+    """Drop a fuzzy hit whose Job Number is a different code (`2026-070-1` is not `2026-070`).
+
+    A blank or missing Job Number stays. Children of the job Project often never
+    had the field copied, and the project walk still needs them.
+    """
+    fields = issue.get("fields") or {}
+    if JOB_NUMBER_FIELD not in fields:
+        return True
+    value = option_value(fields.get(JOB_NUMBER_FIELD))
+    if not value:
+        return True
+    return value.casefold() == job.casefold()
 
 
 def _search_many(site: str, email: str, token: str, jqls: list[str]) -> list[list[dict]]:
@@ -422,6 +443,10 @@ def fetch_job_pack(
         token,
         [drawings_jql(job, key), job_project_jql(job, key)],
     )
+    pack_issues = [issue for issue in pack_issues if _keeps_typed_job(issue, job)]
+    project_issues = [issue for issue in project_issues if _keeps_typed_job(issue, job)]
+    if not pack_issues and not project_issues:
+        raise JiraError(f"{job} was not found on Jira.")
     add_issues(pack_issues)
     job_project = job_project_from_issues(project_issues)
     job_keys = [

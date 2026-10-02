@@ -209,6 +209,46 @@ def test_fetch_drawings_includes_job_tree(monkeypatch) -> None:
     assert project.summary == "2026-Tanzim"
 
 
+def test_fetch_job_pack_says_not_found_when_only_a_child_job_matches(monkeypatch) -> None:
+    from doccon import jira_client
+
+    def fake_request(_site, _email, _token, _method, _path, body=None):
+        jql = (body or {}).get("jql", "")
+        if "issuetype = Project" in jql:
+            return {
+                "issues": [
+                    {
+                        "key": "P2024-70",
+                        "fields": {
+                            "issuetype": {"name": "Project"},
+                            "summary": "2026-070-1",
+                            "customfield_10300": "2026-070-1",
+                        },
+                    }
+                ],
+                "isLast": True,
+            }
+        return {
+            "issues": [
+                {
+                    "key": "P2024-71",
+                    "fields": {
+                        "summary": "2026-070-1-1 Drawing",
+                        "issuetype": {"name": "Sub-task"},
+                        "customfield_10300": "2026-070-1",
+                    },
+                }
+            ],
+            "isLast": True,
+        }
+
+    monkeypatch.setattr(jira_client, "_request", fake_request)
+    with pytest.raises(JiraError, match="2026-070 was not found on Jira"):
+        jira_client.fetch_job_pack(
+            "https://example.atlassian.net", "a@b.c", "token", "2026-070", "P2024"
+        )
+
+
 def test_fetch_drawings_drops_generic(monkeypatch) -> None:
     from doccon import jira_client
 

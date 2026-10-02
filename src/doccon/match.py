@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import os
 import re
+import threading
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -280,24 +281,52 @@ def _prefer_hit(previous: PdfHit | None, hit: PdfHit) -> PdfHit:
         new_depth = len(hit.path.parts)
         if new_depth != prev_depth:
             return hit if new_depth < prev_depth else previous
-    try:
-        if hit.path.stat().st_mtime >= previous.path.stat().st_mtime:
-            return hit
-    except OSError:
-        return hit
+    # Same kind: keep the one already chosen. Do not stat(); on an online-only
+    # Dropbox file that downloads the PDF just to compare dates.
     return previous
 
 
-def scan_current_pdfs(job_folder: Path) -> list[PdfHit]:
+# A Dropbox folder that will not list in this long is skipped. The walk thread is
+# abandoned so the rest of Load can finish.
+_WALK_SECONDS = 8.0
+
+
+def _collect_hits(root: Path, *, current_pdf_only: bool, library: bool = False, bounded: bool = False) -> list[PdfHit]:
+    if not bounded:
+        return _pdf_hits_under(root, current_pdf_only=current_pdf_only, library=library)
+    found: list[list[PdfHit]] = []
+
+    def run() -> None:
+        found.append(_pdf_hits_under(root, current_pdf_only=current_pdf_only, library=library))
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    thread.join(_WALK_SECONDS)
+    if thread.is_alive() or not found:
+        return []
+    return found[0]
+
+
+def scan_job_pdfs(job_folder: Path, *, bounded: bool = True) -> list[PdfHit]:
+    """PDFs that live in this job. Filenames only; the shared WPS library is separate."""
     hits: list[PdfHit] = []
     drafting = job_folder / "2.0 Drafting"
-    if drafting.is_dir():
-        hits.extend(_pdf_hits_under(drafting, current_pdf_only=True))
+    hits.extend(_collect_hits(drafting, current_pdf_only=True, bounded=bounded))
     for root in extra_document_roots(job_folder):
-        hits.extend(_pdf_hits_under(root, current_pdf_only=False))
-    for root in wps_library_roots(hint=job_folder):
-        hits.extend(_pdf_hits_under(root, current_pdf_only=False, library=True))
+        hits.extend(_collect_hits(root, current_pdf_only=False, bounded=bounded))
     return hits
+
+
+def scan_library_pdfs(job_folder: Path, *, bounded: bool = True) -> list[PdfHit]:
+    """Shared WPS/PQR library. Run after the job's own PDFs so a slow person-folder waits."""
+    hits: list[PdfHit] = []
+    for root in wps_library_roots(hint=job_folder):
+        hits.extend(_collect_hits(root, current_pdf_only=False, library=True, bounded=bounded))
+    return hits
+
+
+def scan_current_pdfs(job_folder: Path) -> list[PdfHit]:
+    return scan_job_pdfs(job_folder, bounded=False) + scan_library_pdfs(job_folder, bounded=False)
 
 
 def match_pdf_hits(

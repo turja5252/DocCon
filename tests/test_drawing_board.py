@@ -1047,6 +1047,43 @@ def test_set_packed_status_stamps_like_cover_dates() -> None:
         root.destroy()
 
 
+def test_submitted_to_client_for_stamps_packed_rows() -> None:
+    root = _board_root()
+    try:
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.set_rows(
+            [
+                _row(key="P2024-1", drawing_id="2026-Tanzim-1-1"),
+                _row(key="P2024-2", drawing_id="2026-Tanzim-1-2"),
+            ]
+        )
+        board.set_pack(False)
+        board.set_pack_purpose("Approval", stamp=False)
+        assert board.pack_purpose() == "Approval"
+        assert board._blocks["P2024-1"].nexts["purpose"].get() == "Info"
+        board._blocks["P2024-1"].include.set(True)
+        root.update_idletasks()
+        assert board._blocks["P2024-1"].nexts["purpose"].get() == "Approval"
+        assert board._blocks["P2024-2"].nexts["purpose"].get() == "Info"
+        board.set_pack_purpose("Planned")
+        assert board._blocks["P2024-1"].nexts["purpose"].get() == "Planned"
+        assert board._blocks["P2024-2"].nexts["purpose"].get() == "Info"
+        board._blocks["P2024-2"].include.set(True)
+        root.update_idletasks()
+        assert board._blocks["P2024-2"].nexts["purpose"].get() == "Planned"
+        board.set_pack_purpose("")
+        assert board._blocks["P2024-1"].nexts["purpose"].get() == "Info"
+        assert board._blocks["P2024-2"].nexts["purpose"].get() == "Info"
+        board.set_pack(False)
+        board._blocks["P2024-1"].nexts["purpose"].set("NA")
+        board.set_pack_purpose("", stamp=False)
+        board._blocks["P2024-1"].include.set(True)
+        root.update_idletasks()
+        assert board._blocks["P2024-1"].nexts["purpose"].get() == "NA"
+    finally:
+        root.destroy()
+
+
 def test_bump_and_set_packed_zero_packed_does_not_crash() -> None:
     root = _board_root()
     try:

@@ -44,6 +44,7 @@ exe = EXE(
     upx_exclude=[],
     runtime_tmpdir=None,
     console=False,
+    manifest="dpi_aware.manifest",
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,

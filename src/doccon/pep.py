@@ -105,7 +105,14 @@ def load_pep(path: Path) -> PepCover:
     raise PepError(f"{file_path.name} is not a PEP Excel or PDF.")
 
 
+_LEFTOVER_PEP_NAMES: set[str] | None = None
+
+
 def template_pep_filenames() -> set[str]:
+    """Names of template PEP files. Cached so Load does not walk every job folder again."""
+    global _LEFTOVER_PEP_NAMES
+    if _LEFTOVER_PEP_NAMES is not None:
+        return set(_LEFTOVER_PEP_NAMES)
     names: set[str] = set()
     for token in ("202X-0XX", "202X-XXX"):
         folder = find_job_folder(token)
@@ -120,7 +127,8 @@ def template_pep_filenames() -> set[str]:
                     names.add(child.name)
         except OSError:
             continue
-    return names
+    _LEFTOVER_PEP_NAMES = set(names)
+    return set(names)
 
 
 def empty_pep_workbook() -> Workbook:

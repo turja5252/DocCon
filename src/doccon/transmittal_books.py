@@ -59,7 +59,8 @@ def _adopt_one(job_folder: Path, job: str, kind: str) -> AdoptedBook | None:
     prefix = PREFIX[kind]
     dest = folder / f"{prefix}-{job}.xlsm"
     if dest.is_file():
-        _stamp_job_number(dest, kind, job)
+        # The named book is already there. Do not open it on Load — on Sarah's
+        # laptop that downloads the Dropbox xlsm and the window stops taking clicks.
         return None
     source = _find_template(folder, prefix)
     if source is None:

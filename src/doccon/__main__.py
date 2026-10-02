@@ -7,6 +7,10 @@ from __future__ import annotations
 import os
 import sys
 
+from doccon.dpi import enable_process_dpi
+
+enable_process_dpi()
+
 
 def _wants_paste(argv: list[str]) -> bool:
     return "--paste" in argv

@@ -16,6 +16,7 @@ from tkinter import filedialog, messagebox, ttk
 
 from doccon import APP_DISPLAY_NAME, __version__
 from doccon.client_log import (
+    BookCover,
     LogError,
     book_cover_for_job,
     cover_date_stamp,
@@ -78,7 +79,9 @@ from doccon.match import (
     outgoing_rev_from_filename,
     pair_pdf,
     pdf_is_email_dropped,
-    scan_current_pdfs,
+    scan_current_pdfs,  # noqa: F401  — tests patch this name
+    scan_job_pdfs,
+    scan_library_pdfs,
 )
 from doccon.outlook_contacts import OutlookContactsError, import_saved_emails_from_outlook
 from doccon.pack_mail import draft_subject
@@ -93,6 +96,8 @@ from doccon.pack_state import (
 )
 from doccon.pdf_preview import close_pdf_preview, open_pdf_preview
 from doccon.pep import DOC_CONTROL_FROM, SALES_DIR, PepCover, PepError, email_line, find_pep, load_pep
+from doccon.popups import install as _install_popups
+from doccon.popups import reveal_on_parent
 from doccon.register import (
     MISSING_JIRA_PROJECT,
     DrawingRow,
@@ -142,6 +147,8 @@ from doccon.theme import (
 from doccon.transmittal_books import adopt_transmittal_books
 from doccon.watch_inbox import POLL_MS as WATCH_POLL_MS
 from doccon.watch_inbox import InboxWatcher, plan_watch_hits
+
+_install_popups()
 
 NO_ROW_PDF = "No PDF for this row — use Locate…"
 PACK_SAVE_MS = 1000
@@ -202,6 +209,7 @@ class RenameDroppedDialog(tk.Toplevel):
 
     def __init__(self, master: tk.Misc, *, current: str, suggested: str) -> None:
         super().__init__(master)
+        self.withdraw()
         self.title("Rename PDF")
         self.resizable(False, False)
         self.transient(master)
@@ -230,6 +238,7 @@ class RenameDroppedDialog(tk.Toplevel):
         self.bind("<Return>", lambda _event: self._accept())
         self.bind("<Escape>", lambda _event: self._cancel())
         self.protocol("WM_DELETE_WINDOW", self._cancel)
+        reveal_on_parent(self)
 
     def _use_drawing(self) -> None:
         if self._suggested:
@@ -249,6 +258,7 @@ class EddiConflictDialog(tk.Toplevel):
 
     def __init__(self, master: tk.Misc, conflicts: list[EddiConflict]) -> None:
         super().__init__(master)
+        self.withdraw()
         self.title("Multiple EDDI Status")
         self.resizable(True, True)
         self.transient(master)
@@ -296,6 +306,7 @@ class EddiConflictDialog(tk.Toplevel):
         )
         self.protocol("WM_DELETE_WINDOW", self._skip)
         self.bind("<Escape>", lambda _event: self._skip())
+        reveal_on_parent(self)
 
     def _accept(self) -> None:
         self.result = {
@@ -321,6 +332,7 @@ class CreateIssueDialog(tk.Toplevel):
         job_prefix: str,
     ) -> None:
         super().__init__(master)
+        self.withdraw()
         self.title("Create new Jira Issue")
         self.resizable(False, False)
         self.transient(master)
@@ -381,6 +393,7 @@ class CreateIssueDialog(tk.Toplevel):
         self.bind("<Return>", lambda _event: self._accept())
         self.bind("<Escape>", lambda _event: self._cancel())
         self.protocol("WM_DELETE_WINDOW", self._cancel)
+        reveal_on_parent(self)
 
     def _accept(self) -> None:
         parent_key = self._parent_by_label.get(self._parent.get().strip(), "")
@@ -408,6 +421,7 @@ class CreateIssueDialog(tk.Toplevel):
 class SettingsDialog(tk.Toplevel):
     def __init__(self, master: tk.Tk) -> None:
         super().__init__(master)
+        self.withdraw()
         self.title("Settings")
         self.resizable(False, False)
         self.transient(master)
@@ -469,35 +483,26 @@ class SettingsDialog(tk.Toplevel):
         book.columnconfigure(0, weight=1)
         self._fill_addresses(settings.saved_emails)
 
-        field = ttk.LabelFrame(self, text="Field transmittal TO / CC", padding=8)
-        field.grid(row=7, column=0, columnspan=2, sticky="ew", padx=12, pady=(4, 4))
-        ttk.Label(field, text="TO").grid(row=0, column=0, sticky="w")
-        ttk.Label(field, text="CC").grid(row=0, column=1, sticky="w", padx=(8, 0))
-        self._field_to = tk.Listbox(field, height=3, width=28, exportselection=False)
-        self._field_cc = tk.Listbox(field, height=3, width=28, exportselection=False)
-        self._field_to.grid(row=1, column=0, sticky="ew")
-        self._field_cc.grid(row=1, column=1, sticky="ew", padx=(8, 0))
-        self._field_new = ttk.Entry(field, width=28)
-        self._field_new.grid(row=2, column=0, sticky="ew", pady=(8, 0))
-        self._field_new.bind("<Return>", lambda _event: self._add_field_address("to"))
-        adds = ttk.Frame(field)
-        adds.grid(row=2, column=1, sticky="w", padx=(8, 0), pady=(8, 0))
-        ttk.Button(adds, text="Add to TO", command=lambda: self._add_field_address("to")).pack(side="left")
-        ttk.Button(adds, text="Add to CC", command=lambda: self._add_field_address("cc")).pack(
-            side="left", padx=(8, 0)
+        pairs = ttk.Frame(self)
+        pairs.grid(row=7, column=0, columnspan=2, sticky="ew", padx=12, pady=(4, 4))
+        pairs.columnconfigure(0, weight=1)
+        pairs.columnconfigure(1, weight=1)
+        self._shop_to, self._shop_cc, self._shop_new = self._address_pair(
+            pairs,
+            0,
+            "Shop transmittal TO / CC",
+            "This PC only. Shop cover uses these when the ST letter has no TO or CC yet.",
+            settings.shop_to,
+            settings.shop_cc,
         )
-        ttk.Button(field, text="Remove", style="Danger.TButton", command=self._remove_field_address).grid(
-            row=3, column=0, sticky="w", pady=(8, 0)
+        self._field_to, self._field_cc, self._field_new = self._address_pair(
+            pairs,
+            1,
+            "Field transmittal TO / CC",
+            "This PC only. Field cover uses these when the FT letter has no TO or CC yet.",
+            settings.field_to,
+            settings.field_cc,
         )
-        ttk.Label(
-            field,
-            text="This PC only. Field cover uses these when the FT letter has no TO or CC yet.",
-            style="Muted.TLabel",
-        ).grid(row=4, column=0, columnspan=2, sticky="w", pady=(6, 0))
-        field.columnconfigure(0, weight=1)
-        field.columnconfigure(1, weight=1)
-        self._fill_list(self._field_to, settings.field_to)
-        self._fill_list(self._field_cc, settings.field_cc)
 
         buttons = ttk.Frame(self)
         buttons.grid(row=8, column=0, columnspan=2, sticky="e", padx=12, pady=(8, 14))
@@ -506,6 +511,50 @@ class SettingsDialog(tk.Toplevel):
         )
         ttk.Button(buttons, text="Test connection", command=self._test).pack(side="left", padx=(0, 8))
         ttk.Button(buttons, text="Save", style="Accent.TButton", command=self._save).pack(side="left")
+        reveal_on_parent(self)
+
+    def _address_pair(
+        self,
+        parent: ttk.Frame,
+        column: int,
+        title: str,
+        hint: str,
+        to_emails: tuple[str, ...],
+        cc_emails: tuple[str, ...],
+    ) -> tuple[tk.Listbox, tk.Listbox, ttk.Entry]:
+        frame = ttk.LabelFrame(parent, text=title, padding=8)
+        frame.grid(row=0, column=column, sticky="nsew", padx=(0 if column == 0 else 8, 0))
+        ttk.Label(frame, text="TO").grid(row=0, column=0, sticky="w")
+        ttk.Label(frame, text="CC").grid(row=0, column=1, sticky="w", padx=(8, 0))
+        to_box = tk.Listbox(frame, height=4, width=24, exportselection=False)
+        cc_box = tk.Listbox(frame, height=4, width=24, exportselection=False)
+        to_box.grid(row=1, column=0, sticky="ew")
+        cc_box.grid(row=1, column=1, sticky="ew", padx=(8, 0))
+        entry = ttk.Entry(frame, width=24)
+        entry.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        entry.bind("<Return>", lambda _event, box=None: self._add_pair_address(entry, to_box, "to"))
+        adds = ttk.Frame(frame)
+        adds.grid(row=3, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        ttk.Button(adds, text="Add to TO", command=lambda: self._add_pair_address(entry, to_box, "to")).pack(
+            side="left"
+        )
+        ttk.Button(
+            adds, text="Add to CC", command=lambda: self._add_pair_address(entry, cc_box, "cc")
+        ).pack(side="left", padx=(8, 0))
+        ttk.Button(
+            adds,
+            text="Remove",
+            style="Danger.TButton",
+            command=lambda: self._remove_pair_address(to_box, cc_box),
+        ).pack(side="left", padx=(8, 0))
+        ttk.Label(frame, text=hint, style="Muted.TLabel", wraplength=280).grid(
+            row=4, column=0, columnspan=2, sticky="w", pady=(6, 0)
+        )
+        frame.columnconfigure(0, weight=1)
+        frame.columnconfigure(1, weight=1)
+        self._fill_list(to_box, to_emails)
+        self._fill_list(cc_box, cc_emails)
+        return to_box, cc_box, entry
 
     def _open_log_folder(self) -> None:
         try:
@@ -552,26 +601,30 @@ class SettingsDialog(tk.Toplevel):
         self._fill_addresses(remaining)
         self._persist_addresses()
 
-    def _add_field_address(self, which: str) -> None:
-        added = normalize_saved_emails(self._field_new.get())
+    def _add_pair_address(self, entry: ttk.Entry, box: tk.Listbox, _which: str) -> None:
+        added = normalize_saved_emails(entry.get())
         if not added:
             messagebox.showerror("Settings", "Type an email address.", parent=self)
             return
-        box = self._field_to if which == "to" else self._field_cc
         merged = normalize_saved_emails(list(self._list_emails(box)) + list(added))
         self._fill_list(box, merged)
-        self._field_new.delete(0, "end")
+        entry.delete(0, "end")
 
-    def _remove_field_address(self) -> None:
-        box = self._field_to if self._field_to.curselection() else self._field_cc
+    def _remove_pair_address(self, to_box: tk.Listbox, cc_box: tk.Listbox) -> None:
+        box = to_box if to_box.curselection() else cc_box
         selected = list(box.curselection())
         if not selected:
-            messagebox.showinfo("Settings", "Select a Field TO or CC address to remove.", parent=self)
+            messagebox.showinfo("Settings", "Select a TO or CC address to remove.", parent=self)
             return
-        remaining = [
-            addr for index, addr in enumerate(self._list_emails(box)) if index not in set(selected)
-        ]
+        remaining = [addr for index, addr in enumerate(self._list_emails(box)) if index not in set(selected)]
         self._fill_list(box, remaining)
+
+    def _add_field_address(self, which: str) -> None:
+        box = self._field_to if which == "to" else self._field_cc
+        self._add_pair_address(self._field_new, box, which)
+
+    def _remove_field_address(self) -> None:
+        self._remove_pair_address(self._field_to, self._field_cc)
 
     def _import_outlook(self, *, lister=None) -> None:
         self.configure(cursor="watch")
@@ -607,6 +660,8 @@ class SettingsDialog(tk.Toplevel):
             saved_emails=self._listed_emails(),
             field_to=self._list_emails(self._field_to),
             field_cc=self._list_emails(self._field_cc),
+            shop_to=self._list_emails(self._shop_to),
+            shop_cc=self._list_emails(self._shop_cc),
             last_locate_dir=load_settings().last_locate_dir,
             board_col_px=load_settings().board_col_px,
             board_layout_rev=load_settings().board_layout_rev,
@@ -650,6 +705,9 @@ class SettingsDialog(tk.Toplevel):
 class DocConApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
+        from doccon.dpi import apply_window_dpi
+
+        apply_window_dpi(self)
         self.title(f"{APP_DISPLAY_NAME}  {__version__}")
         self.geometry("1680x820")
         self.minsize(1200, 640)
@@ -659,6 +717,10 @@ class DocConApp(tk.Tk):
         self._load_gen = 0
         self._load_note: tuple[int, str] | None = None
         self._pending_rows: tuple | None = None
+        self._pending_files: tuple | None = None
+        self._book_covers: dict[str, BookCover] = {}
+        self._pep_cover: PepCover | None = None
+        self._cover_stamp: tuple[str, str, str] = ("", "", "")
         self._load_pump = ""
         self._matches: dict[str, MatchedRow] = {}
         self._job_folder: Path | None = None
@@ -796,20 +858,18 @@ class DocConApp(tk.Tk):
         set_na_text(self.expected)
         self.expected.pack(side="left", padx=(4, 0))
         attach_calendar(
-            self.expected, parent=self, on_change=self._on_expected_return_change, allow_na=True
+            self.expected,
+            parent=self,
+            on_change=self._on_expected_return_change,
+            allow_na=True,
+            presets=(
+                ("Urgent same day", lambda: self._apply_expected_preset(0)),
+                ("Urgent +1", lambda: self._apply_expected_preset(1)),
+                ("7 days", lambda: self._apply_expected_preset(7)),
+                ("14 days", lambda: self._apply_expected_preset(14)),
+                ("No return", self._apply_no_return),
+            ),
         )
-        for label, days in (
-            ("Urgent same day", 0),
-            ("Urgent +1", 1),
-            ("7 days", 7),
-            ("14 days", 14),
-        ):
-            ttk.Button(
-                dates,
-                text=label,
-                command=lambda offset=days: self._apply_expected_preset(offset),
-            ).pack(side="left", padx=(2, 0))
-        ttk.Button(dates, text="No return", command=self._apply_no_return).pack(side="left", padx=(8, 0))
         ttk.Button(dates, text="Locate PEP…", command=self._locate_pep).pack(side="left", padx=(12, 0))
         ttk.Button(dates, text="Save", command=self._save_pack).pack(side="left", padx=(6, 0))
         self.pep_label = ttk.Label(dates, text="PEP: load a job", style="Muted.TLabel")
@@ -930,12 +990,22 @@ class DocConApp(tk.Tk):
         settings = load_settings()
         return email_line("; ".join(settings.field_to)), email_line("; ".join(settings.field_cc))
 
+    def _shop_default_lines(self) -> tuple[str, str]:
+        settings = load_settings()
+        return email_line("; ".join(settings.shop_to)), email_line("; ".join(settings.shop_cc))
+
     def _pick_cover_email(self, which: str) -> None:
         settings = load_settings()
-        if self.kind.get() == FIELD:
+        kind = self.kind.get()
+        if kind == FIELD:
             emails = settings.field_to if which == "to" else settings.field_cc
             empty = "Add Field transmittal TO addresses in Settings first." if which == "to" else (
                 "Add Field transmittal CC addresses in Settings first."
+            )
+        elif kind == SHOP:
+            emails = settings.shop_to if which == "to" else settings.shop_cc
+            empty = "Add Shop transmittal TO addresses in Settings first." if which == "to" else (
+                "Add Shop transmittal CC addresses in Settings first."
             )
         else:
             emails = settings.saved_emails
@@ -969,7 +1039,7 @@ class DocConApp(tk.Tk):
             )
         else:
             self.cover_hint.configure(
-                text="Shop TO and CC come from the ST letter if Sarah already filled them."
+                text="Shop TO and CC start from Settings when the ST letter is empty."
             )
         self._show_kind_cover()
         if self.board.extras_painted():
@@ -983,15 +1053,14 @@ class DocConApp(tk.Tk):
         kind = self.kind.get()
         pack = load_client_pack(self._job_folder, self._job_number) if self._job_number else None
         pack_to, pack_cc = cover_recipients(pack, kind)
-        pep = None
-        if kind == CLIENT and self._pep_path is not None and self._pep_path.is_file():
-            try:
-                pep = load_pep(self._pep_path)
-            except PepError:
-                pep = None
+        pep = self._pep_cover if kind == CLIENT else None
         field_to, field_cc = self._field_default_lines()
+        shop_to, shop_cc = self._shop_default_lines()
+        if kind not in self._book_covers and self._job_folder is not None and self._job_number:
+            self._book_covers[kind] = BookCover()
+            self._read_kind_cover_later(kind)
         chosen = pick_cover_fields(
-            book=book_cover_for_job(self._job_folder, self._job_number, kind),
+            book=self._book_covers.get(kind, BookCover()),
             pack_to=pack_to,
             pack_cc=pack_cc,
             pack_project="",
@@ -999,6 +1068,8 @@ class DocConApp(tk.Tk):
             kind=kind,
             field_to=field_to,
             field_cc=field_cc,
+            shop_to=shop_to,
+            shop_cc=shop_cc,
         )
         self._cover_loading = True
         try:
@@ -1006,6 +1077,31 @@ class DocConApp(tk.Tk):
             self._set_text(self.cc_box, email_line(chosen.cc_line))
         finally:
             self._cover_loading = False
+        self._cover_stamp = self._cover_text_now()
+
+    def _read_kind_cover_later(self, kind: str) -> None:
+        """Read the letter off the window thread. A Dropbox xlsm must not freeze the click."""
+        folder = self._job_folder
+        job = self._job_number
+        gen = self._load_gen
+
+        def work() -> None:
+            try:
+                book = book_cover_for_job(folder, job, kind) if folder is not None else BookCover()
+            except (OSError, KeyError, ValueError, TypeError):
+                book = BookCover()
+
+            def apply() -> None:
+                if gen != self._load_gen or self._job_number != job:
+                    return
+                self._book_covers[kind] = book
+                if self.kind.get() == kind:
+                    self._fill_cover_if_untouched(kind)
+
+            with contextlib.suppress(tk.TclError, RuntimeError):
+                self.after(0, apply)
+
+        threading.Thread(target=work, daemon=True).start()
 
     def _cover_suffix(self) -> str:
         kind = self.kind.get()
@@ -1013,12 +1109,11 @@ class DocConApp(tk.Tk):
             return ""
         try:
             book = find_book(self._job_folder, self._job_number, kind)
-            if book is None:
-                return ""
-            info = inspect_book(book, self._job_number, kind)
         except (LogError, OSError):
             return ""
-        return f"  |  next {info.cover_id} ({book.name})"
+        if book is None:
+            return ""
+        return f"  |  {book.name}"
 
     def _pep_suffix(self) -> str:
         if self._pep_path is None:
@@ -1065,6 +1160,12 @@ class DocConApp(tk.Tk):
                     to_line = field_to
                 if not cc_line:
                     cc_line = field_cc
+            elif kind == SHOP:
+                shop_to, shop_cc = self._shop_default_lines()
+                if not to_line:
+                    to_line = shop_to
+                if not cc_line:
+                    cc_line = shop_cc
             to_line = email_line(to_line)
             cc_line = email_line(cc_line)
             project = (
@@ -1258,8 +1359,9 @@ class DocConApp(tk.Tk):
         kind = self.kind.get()
         pack_to, pack_cc = cover_recipients(pack, kind)
         field_to, field_cc = self._field_default_lines()
+        shop_to, shop_cc = self._shop_default_lines()
         chosen = pick_cover_fields(
-            book=book_cover_for_job(folder, job, kind),
+            book=self._book_covers.get(kind, BookCover()),
             pack_to=pack_to,
             pack_cc=pack_cc,
             pack_project=pack.project_description if pack else "",
@@ -1267,6 +1369,8 @@ class DocConApp(tk.Tk):
             kind=kind,
             field_to=field_to,
             field_cc=field_cc,
+            shop_to=shop_to,
+            shop_cc=shop_cc,
         )
         self._cover_loading = True
         try:
@@ -1274,6 +1378,7 @@ class DocConApp(tk.Tk):
             self._set_text(self.to_box, email_line(chosen.to_line))
             self._set_text(self.cc_box, email_line(chosen.cc_line))
             self._set_text(self.project_box, chosen.project_description)
+            self._cover_stamp = self._cover_text_now()
             self._write_cover_date_defaults()
             if pack is not None:
                 self.board.apply_next_edits(pack.next_edits)
@@ -1517,6 +1622,7 @@ class DocConApp(tk.Tk):
         self._show_new_pdfs()
         self._pack_extras = []
         self._show_pack_extras()
+        kind_now = self.kind.get()
         self._start_progress("Fetching from Jira…" if wait_key else f"Loading {job}…")
         self._set_job_identity(None, None, loading=True)
         with contextlib.suppress(tk.TclError):
@@ -1529,11 +1635,7 @@ class DocConApp(tk.Tk):
             rev_options: dict[str, tuple[str, ...]] = {}
             eddi_contexts: dict[str, tuple[FieldOption, ...]] = {}
             folder: Path | None = None
-            hits: list = []
             folder_label = ""
-            orphans = 0
-            matched: list[MatchedRow] = []
-            located: dict = {}
 
             def jira_work() -> None:
                 nonlocal error, rows, project, rev_options, eddi_contexts
@@ -1570,7 +1672,7 @@ class DocConApp(tk.Tk):
                     error = str(exc)
 
             def folder_work() -> None:
-                nonlocal folder, hits, folder_label
+                nonlocal folder, folder_label
                 try:
                     self._post_status(gen, f"Finding {job} folder…")
                     found = resolve_job_folder(job)
@@ -1578,53 +1680,261 @@ class DocConApp(tk.Tk):
                     if found is None:
                         folder_label = "job folder not found"
                         return
-                    adopted = adopt_transmittal_books(found, job)
                     folder_label = found.name
-                    if adopted:
-                        names = ", ".join(item.path.name for item in adopted)
-                        folder_label = f"{found.name}  |  named {names}"
-                    self._post_status(gen, f"Scanning PDFs in {found.name}…")
-                    hits = scan_current_pdfs(found)
                 except Exception:
-                    hits = []
+                    folder = None
+                    folder_label = "job folder not found"
 
             jira_thread = threading.Thread(target=jira_work, daemon=True)
             folder_thread = threading.Thread(target=folder_work, daemon=True)
             jira_thread.start()
             folder_thread.start()
             jira_thread.join()
+            # The Dropbox hunt can sit on online-only folders. Paint from Jira
+            # without waiting for it. A remembered folder is usually already done.
+            if folder_thread.is_alive():
+                self._post_rows(
+                    gen, job, rows, error, "finding job folder…", 0, None, project, rev_options, {}, eddi_contexts
+                )
+
+                def when_folder() -> None:
+                    folder_thread.join()
+                    ready_located: dict = {}
+                    if error is None and folder is not None:
+                        ready_located = self._located_from_pack(folder, job, rows)
+                        self._start_folder_files(gen, job, folder, kind_now)
+
+                    def deliver(
+                        located_pdfs: dict = ready_located,
+                        label: str = folder_label,
+                        found: Path | None = folder,
+                    ) -> None:
+                        self._attach_job_folder(gen, job, found, label, located_pdfs)
+
+                    with contextlib.suppress(tk.TclError, RuntimeError):
+                        self.after(0, deliver)
+
+                threading.Thread(target=when_folder, daemon=True).start()
+                return
             folder_thread.join()
-            if error is None:
-                self._post_status(gen, f"Matching PDFs for {job}…")
-                matched, orphans = match_pdf_hits(rows, hits, job)
-                try:
-                    self._post_status(gen, f"Restoring pack for {job}…")
-                    pack = load_client_pack(folder, job)
-                    previous_located = dict(pack.located_pdfs) if pack else {}
-                    matched = apply_located_pdfs(matched, previous_located)
-                    located = keep_located_pdfs(matched, previous_located)
-                    sweep_replaced_dropped_copies(matched, previous_located)
-                except (OSError, ValueError, TypeError):
-                    located = {}
-            self._pending_rows = (
-                gen,
-                job,
-                matched,
-                error,
-                folder_label,
-                orphans,
-                folder,
-                project,
-                rev_options,
-                located,
-                eddi_contexts,
+            located = self._located_from_pack(folder, job, rows) if error is None else {}
+            if error is None and folder is not None:
+                self._start_folder_files(gen, job, folder, kind_now)
+            self._post_rows(
+                gen, job, rows, error, folder_label, 0, folder, project, rev_options, located, eddi_contexts
             )
 
         threading.Thread(target=work, daemon=True).start()
 
+    def _located_from_pack(self, folder: Path | None, job: str, rows: list) -> dict:
+        """Saved PDF paths from client-pack.json. Does not open Excel or walk PDFs."""
+        if folder is None:
+            return {}
+        try:
+            matched, _orphans = match_pdf_hits(rows, [], job)
+            pack = load_client_pack(folder, job)
+            previous_located = dict(pack.located_pdfs) if pack else {}
+            matched = apply_located_pdfs(matched, previous_located)
+            located = keep_located_pdfs(matched, previous_located)
+            sweep_replaced_dropped_copies(matched, previous_located)
+        except (OSError, ValueError, TypeError):
+            return {}
+        return located
+
+    def _post_rows(
+        self,
+        gen: int,
+        job: str,
+        rows: list,
+        error: str | None,
+        folder_label: str,
+        orphans: int,
+        folder: Path | None,
+        project,
+        rev_options: dict,
+        located: dict,
+        eddi_contexts: dict,
+    ) -> None:
+        matched: list = []
+        if error is None:
+            self._post_status(gen, f"Matching PDFs for {job}…")
+            matched, _extra = match_pdf_hits(rows, [], job)
+            with contextlib.suppress(OSError, ValueError, TypeError):
+                matched = apply_located_pdfs(matched, located)
+        self._pending_rows = (
+            gen,
+            job,
+            matched,
+            error,
+            folder_label,
+            orphans,
+            folder,
+            project,
+            rev_options,
+            located,
+            eddi_contexts,
+        )
+
+    def _attach_job_folder(
+        self,
+        gen: int,
+        job: str,
+        folder: Path | None,
+        folder_label: str,
+        located: dict,
+    ) -> None:
+        """Folder hunt finished after the list was painted. Do not clobber typed Next."""
+        if gen != self._load_gen or self._job_number != job:
+            return
+        self._job_folder = folder
+        self._reset_locate_to_job(folder)
+        self._set_job_identity(self._job_project, folder)
+        self._located_pdfs.update(located)
+        if self._matches:
+            drawings = [row.drawing for row in self._matches.values()]
+            matched, _orphans = match_pdf_hits(drawings, [], job)
+            matched = apply_located_pdfs(matched, self._located_pdfs)
+            for row in matched:
+                self._matches[row.drawing.key] = row
+                self.board.apply_pdf(row)
+        if (
+            folder is not None
+            and self._work != "load"
+            and not self.board.pending_rows()
+            and self._cover_text_now() == self._cover_stamp
+        ):
+            self._restore_pack(folder, job, self._pep_cover)
+        label = folder_label or (folder.name if folder is not None else "job folder not found")
+        if self._work != "load":
+            missing = sum(1 for row in self._matches.values() if row.confidence == "Missing")
+            self._set_status(f"{job}: {len(self._matches)} drawing(s), {missing} missing PDF  |  {label}")
+
+    def _start_folder_files(self, gen: int, job: str, folder: Path, kind: str) -> None:
+        """PDF hunt, letter, and PEP stay off the window thread so clicks keep working."""
+
+        def files() -> None:
+            adopted_label = ""
+            hits: list = []
+            pep_path: Path | None = None
+            pep_cover: PepCover | None = None
+            book = BookCover()
+            try:
+                self._post_status(gen, f"Scanning PDFs in {folder.name}…")
+                adopted = adopt_transmittal_books(folder, job)
+                if adopted:
+                    names = ", ".join(item.path.name for item in adopted)
+                    adopted_label = f"  |  named {names}"
+                hits = scan_job_pdfs(folder)
+                self._post_folder_files(gen, job, hits, adopted_label, None, None, BookCover(), kind)
+                try:
+                    pep_path = find_pep(folder, job)
+                except (OSError, PepError, ValueError):
+                    pep_path = None
+                if pep_path is not None:
+                    try:
+                        pep_cover = load_pep(pep_path)
+                    except PepError:
+                        pep_cover = None
+                try:
+                    book = book_cover_for_job(folder, job, kind)
+                except (OSError, KeyError, ValueError, TypeError):
+                    book = BookCover()
+                library = scan_library_pdfs(folder)
+                if library:
+                    hits = [*hits, *library]
+            except Exception as exc:
+                log("WARN", "load", f"folder files {exc}")
+            self._post_folder_files(gen, job, hits, adopted_label, pep_path, pep_cover, book, kind)
+
+        threading.Thread(target=files, daemon=True).start()
+
+    def _post_folder_files(
+        self,
+        gen: int,
+        job: str,
+        hits: list,
+        adopted_label: str,
+        pep_path: Path | None,
+        pep_cover: PepCover | None,
+        book: BookCover,
+        kind: str,
+    ) -> None:
+        payload = (gen, job, hits, adopted_label, pep_path, pep_cover, book, kind)
+        with contextlib.suppress(tk.TclError, RuntimeError):
+            self.after(0, lambda item=payload: self._apply_folder_files(item))
+
+    def _apply_folder_files(self, payload: tuple) -> None:
+        gen, job, hits, adopted_label, pep_path, pep_cover, book, kind = payload
+        if gen != self._load_gen or self._job_number != job:
+            return
+        if self._work == "load" or not self._matches or len(self.board._blocks) < len(self._matches):
+            self._pending_files = payload
+            return
+        self._pending_files = None
+        if not isinstance(book, BookCover):
+            book = BookCover()
+        self._book_covers[kind] = book
+        drawings = [row.drawing for row in self._matches.values()]
+        matched, orphans = match_pdf_hits(drawings, hits, job)
+        matched = apply_located_pdfs(matched, self._located_pdfs)
+        for row in matched:
+            self._matches[row.drawing.key] = row
+            self.board.apply_pdf(row)
+        if isinstance(pep_cover, PepCover):
+            self._pep_cover = pep_cover
+        if pep_path is not None:
+            self._set_pep(pep_path)
+        if self.kind.get() == kind:
+            self._fill_cover_if_untouched(kind)
+        extra = f"  |  {orphans} extra PDF(s) not in Jira" if orphans else ""
+        folder_name = self._job_folder.name if self._job_folder is not None else job
+        missing = sum(1 for row in self._matches.values() if row.confidence == "Missing")
+        self._set_status(
+            f"{job}: {len(matched)} drawing(s), {missing} missing PDF  |  {folder_name}{adopted_label}{extra}"
+        )
+
+    def _cover_text_now(self) -> tuple[str, str, str]:
+        return (
+            self._email_value(self.to_box),
+            self._email_value(self.cc_box),
+            self._text_value(self.project_box),
+        )
+
+    def _fill_cover_if_untouched(self, kind: str) -> None:
+        """Letter and PEP arrive after the list. Leave anything she already typed."""
+        if self._cover_text_now() != self._cover_stamp:
+            return
+        pep = self._pep_cover if kind == CLIENT else None
+        pack = load_client_pack(self._job_folder, self._job_number)
+        pack_to, pack_cc = cover_recipients(pack, kind)
+        field_to, field_cc = self._field_default_lines()
+        shop_to, shop_cc = self._shop_default_lines()
+        chosen = pick_cover_fields(
+            book=self._book_covers.get(kind, BookCover()),
+            pack_to=pack_to,
+            pack_cc=pack_cc,
+            pack_project=pack.project_description if pack else "",
+            pep=pep,
+            kind=kind,
+            field_to=field_to,
+            field_cc=field_cc,
+            shop_to=shop_to,
+            shop_cc=shop_cc,
+        )
+        self._cover_loading = True
+        try:
+            self._set_text(self.to_box, email_line(chosen.to_line))
+            self._set_text(self.cc_box, email_line(chosen.cc_line))
+            self._set_text(self.project_box, chosen.project_description)
+        finally:
+            self._cover_loading = False
+        self._cover_stamp = self._cover_text_now()
+
     def _cancel_load(self) -> None:
         self.board.cancel_paint()
         self._pending_rows = None
+        self._pending_files = None
+        self._book_covers = {}
         self._load_note = None
         keep_meter = bool(self._create_wait_key) and self._progress.mode() != "idle"
         if not keep_meter:
@@ -1767,14 +2077,7 @@ class DocConApp(tk.Tk):
     ) -> None:
         if gen != self._load_gen:
             return
-        self._discover_pep(self._job_folder, job)
-        pep_cover = None
-        if self._pep_path is not None and self._pep_path.is_file():
-            try:
-                pep_cover = load_pep(self._pep_path)
-            except PepError:
-                pep_cover = None
-        self._restore_pack(self._job_folder, job, pep_cover)
+        self._restore_pack(self._job_folder, job, None)
         self._save_pack(quiet=True, force=True)
         cover = self._cover_suffix()
         pep = self._pep_suffix()
@@ -1789,6 +2092,9 @@ class DocConApp(tk.Tk):
         )
         self._refresh_shop_place()
         self._start_watcher()
+        pending = self._pending_files
+        if pending is not None:
+            self._apply_folder_files(pending)
 
     def _reset_locate_to_job(self, folder: Path | None) -> None:
         """First Locate… after Load starts in this job's Dropbox folder, not the last PC folder."""
@@ -1862,8 +2168,14 @@ class DocConApp(tk.Tk):
         self.after_idle(self._load)
         return True
 
+    def _note_if_busy(self) -> bool:
+        if not self._busy:
+            return False
+        self._set_status("Still loading this job. Clicks work again when the list is up.")
+        return True
+
     def _new_issue(self) -> None:
-        if self._busy:
+        if self._note_if_busy():
             return
         job = self._current_job()
         if not job or not self._job_number:
@@ -2040,7 +2352,7 @@ class DocConApp(tk.Tk):
             self._set_new_issue_enabled(bool(self._job_number))
 
     def _print_eddi(self) -> None:
-        if self._busy:
+        if self._note_if_busy():
             return
         job = self._current_job()
         folder = self._ensure_job_folder(job) if job else None
@@ -2118,7 +2430,7 @@ class DocConApp(tk.Tk):
         return extra
 
     def _update_jira(self) -> None:
-        if self._busy:
+        if self._note_if_busy():
             return
         job = self._current_job()
         if not job or not self._matches:
@@ -2194,7 +2506,7 @@ class DocConApp(tk.Tk):
         )
 
     def _issue_pack(self) -> None:
-        if self._busy:
+        if self._note_if_busy():
             return
         kind = self.kind.get()
         label = LABELS.get(kind, LABELS[CLIENT])
@@ -2440,7 +2752,7 @@ class DocConApp(tk.Tk):
         """Outlook Copy on one or more attachments, then Paste PDF here."""
         log("INFO", "paste", "Paste PDF clicked")
         try:
-            if self._busy:
+            if self._note_if_busy():
                 log("WARN", "paste", "ignored: console busy")
                 return
             if not self._job_number or not self._matches:

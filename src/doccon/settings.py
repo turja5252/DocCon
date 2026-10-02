@@ -23,6 +23,8 @@ ALLOWED_KEYS = (
     "saved_emails",
     "field_to",
     "field_cc",
+    "shop_to",
+    "shop_cc",
     "last_locate_dir",
     "board_col_px",
     "board_layout_rev",
@@ -39,6 +41,8 @@ class AppSettings:
     saved_emails: tuple[str, ...] = ()
     field_to: tuple[str, ...] = ()
     field_cc: tuple[str, ...] = ()
+    shop_to: tuple[str, ...] = ()
+    shop_cc: tuple[str, ...] = ()
     last_locate_dir: str = ""
     board_col_px: tuple[int, ...] = ()
     board_layout_rev: int = 0
@@ -69,6 +73,8 @@ def load_settings() -> AppSettings:
         saved_emails=normalize_saved_emails(raw.get("saved_emails")),
         field_to=normalize_saved_emails(raw.get("field_to")),
         field_cc=normalize_saved_emails(raw.get("field_cc")),
+        shop_to=normalize_saved_emails(raw.get("shop_to")),
+        shop_cc=normalize_saved_emails(raw.get("shop_cc")),
         last_locate_dir=str(raw.get("last_locate_dir") or "").strip(),
         board_col_px=_board_col_px(raw.get("board_col_px")),
         board_layout_rev=_board_layout_rev(raw.get("board_layout_rev")),
@@ -89,6 +95,8 @@ def save_settings(settings: AppSettings) -> None:
         "saved_emails": list(normalize_saved_emails(settings.saved_emails)),
         "field_to": list(normalize_saved_emails(settings.field_to)),
         "field_cc": list(normalize_saved_emails(settings.field_cc)),
+        "shop_to": list(normalize_saved_emails(settings.shop_to)),
+        "shop_cc": list(normalize_saved_emails(settings.shop_cc)),
         "last_locate_dir": settings.last_locate_dir.strip(),
         "board_col_px": list(settings.board_col_px),
         "board_layout_rev": int(settings.board_layout_rev),

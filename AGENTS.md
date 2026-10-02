@@ -38,7 +38,21 @@ The summary is an ID, then optional wording. Empty description is allowed.
 
 No extra Jira status or custom trigger field. Engineer emails Sarah the pack list; she runs DocCon.
 
-**Next:** Close **every** old DocCon. Double-click **1.87 Elite DocCon.exe**. Load `2026-Tanzim`. Do not Confirm 075.
+**Next:** Source is **1.94**. Load `2026-Tanzim`. Do not Confirm 075.
+
+**1.94 Settings has Shop transmittal TO / CC beside Field.** Shop cover uses that list when the ST letter and the saved pack are empty. A letter or pack value still wins. Pick… on Shop uses that list. Client saved addresses stay separate. Drag is not back.
+
+**1.93 The list paints when Jira returns, and a scaled laptop stays sharp.** The Dropbox folder hunt no longer holds the window. PDF names are read without opening the file, and the shared procedure library is a second pass. Next editors are built for the rows on screen. The exe is DPI-aware, and the Pack box has a dark border. Drag is not back.
+
+**1.92 Expected return shortcuts sit on the calendar.** Urgent same day, Urgent +1, 7 days, 14 days, and No return are on the Expected return date popup, with N/A. They are off the row under the navy bar. Drag is not back.
+
+**1.91 Popups open on the same screen as the console.** Message boxes, file pickers, Settings, Create new Jira Issue, and Preview follow the monitor DocCon is on. They no longer jump to the primary screen. Drag is not back.
+
+**1.90 Submitted to Client For sits on the Filter row.** Pick Approval, Info, Planned, or NA and packed Next turns yellow, the same way Set packed to stamps Status. Blank puts that Next back to Now. Pack-tick with a pick selected stamps the new row; a blank pick does not wipe a typed Next. **Pack all** is gone. Drag is not back.
+
+**1.89 The list comes up when Jira returns, and clicks keep working while Dropbox finishes.** Load no longer waits on the PDF walk or on opening the letter and the PEP. Those run after the rows are on screen. An existing CT/ST/FT book is not opened just to check it. Painting yields every two rows so a long list does not mark the window not responding. A click during the Jira fetch says the list is still coming up. Drag is not back.
+
+**1.88 A missing Job Number stops with a message.** Load `2026-070` when Jira only has `2026-070-1` says `2026-070 was not found on Jira.` The search no longer pages without end. Drag is not back.
 
 **1.87 Create new Jira Issue uses the same bordered hover button as the rest.** Paste PDF from email is the navy paste button. The mouse wheel still does not change a dropdown. Drag is not back.
 

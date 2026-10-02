@@ -22,7 +22,7 @@ from openpyxl.cell.cell import MergedCell
 from openpyxl.worksheet.worksheet import Worksheet
 
 from doccon.jobs import find_job_folder, job_folder_keys
-from doccon.kinds import BOOK_DIR, CLIENT, FIELD, PREFIX
+from doccon.kinds import BOOK_DIR, CLIENT, FIELD, PREFIX, SHOP
 from doccon.log_layout import CLIENT_LAYOUT, BookLayout, layout_for
 from doccon.match import MatchedRow
 from doccon.pack_state import PackExtra, letter_status
@@ -325,7 +325,9 @@ def inspect_book(path: Path, job_number: str, kind: str = CLIENT) -> ClientBook:
 def read_book_cover(path: Path, kind: str = CLIENT) -> BookCover:
     """TO, CC, and project already on TRANSMITTAL. Empty cells stay empty."""
     layout = layout_for(kind)
-    wb = load_workbook(path, data_only=False, keep_vba=path.suffix.casefold() == ".xlsm")
+    # Three cells only. keep_vba parses the macro blob; on an online-only Dropbox
+    # file that holds the window until the whole xlsm downloads.
+    wb = load_workbook(path, data_only=False, keep_vba=False)
     try:
         if WORKING_SHEET not in wb.sheetnames:
             return BookCover()
@@ -364,14 +366,19 @@ def pick_cover_fields(
     kind: str = CLIENT,
     field_to: str = "",
     field_cc: str = "",
+    shop_to: str = "",
+    shop_cc: str = "",
 ) -> BookCover:
     """Prefer the letter, then the saved pack, then the default for this kind.
 
-    Client default is the PEP. Field default is the Field TO / CC list from Settings.
+    Client default is the PEP. Shop and Field defaults are their Settings lists.
     """
     if kind == FIELD:
         pep_to = field_to
         pep_cc = field_cc
+    elif kind == SHOP:
+        pep_to = shop_to
+        pep_cc = shop_cc
     elif pep is not None and kind == CLIENT:
         pep_to = pep.to_line
         pep_cc = pep.cc_line

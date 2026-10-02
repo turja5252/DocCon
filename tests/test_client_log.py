@@ -481,3 +481,22 @@ def test_field_cover_uses_settings_when_letter_and_pack_are_blank() -> None:
     )
     assert letter.to_line == "already@eliteintegrityservices.com"
     assert letter.cc_line == "super@eliteintegrityservices.com"
+
+
+def test_shop_cover_uses_settings_when_letter_and_pack_are_blank() -> None:
+    chosen = pick_cover_fields(
+        book=BookCover(),
+        kind=SHOP,
+        shop_to="shop@eliteintegrityservices.com",
+        shop_cc="buyer@eliteintegrityservices.com",
+    )
+    assert chosen.to_line == "shop@eliteintegrityservices.com"
+    assert chosen.cc_line == "buyer@eliteintegrityservices.com"
+    letter = pick_cover_fields(
+        book=BookCover(to_line="already@eliteintegrityservices.com", cc_line=""),
+        kind=SHOP,
+        shop_to="shop@eliteintegrityservices.com",
+        shop_cc="buyer@eliteintegrityservices.com",
+    )
+    assert letter.to_line == "already@eliteintegrityservices.com"
+    assert letter.cc_line == "buyer@eliteintegrityservices.com"

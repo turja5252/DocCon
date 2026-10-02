@@ -85,6 +85,7 @@ class CalendarPopup(tk.Toplevel):
         on_pick,
         on_na=None,
         anchor: tk.Misc | None = None,
+        presets: tuple[tuple[str, object], ...] = (),
     ) -> None:
         previous = CalendarPopup._open
         if previous is not None:
@@ -101,6 +102,7 @@ class CalendarPopup(tk.Toplevel):
         self._anchor = anchor or master
         self._on_pick = on_pick
         self._on_na = on_na
+        self._presets = tuple(presets)
         self._year = initial.year
         self._month = initial.month
         self._selected = initial
@@ -115,6 +117,16 @@ class CalendarPopup(tk.Toplevel):
         ttk.Button(nav, text="Today", command=self._today).pack(side="right")
         if on_na is not None:
             ttk.Button(nav, text="N/A", command=self._na).pack(side="right", padx=(0, 4))
+
+        if self._presets:
+            choices = ttk.Frame(self, padding=(8, 0, 8, 4))
+            choices.pack(fill="x")
+            for label, action in self._presets:
+                ttk.Button(
+                    choices,
+                    text=str(label),
+                    command=lambda fn=action: self._preset(fn),
+                ).pack(side="left", padx=(0, 4))
 
         grid = ttk.Frame(self, padding=(8, 0, 8, 8))
         grid.pack()
@@ -195,6 +207,10 @@ class CalendarPopup(tk.Toplevel):
             self._on_na()
         self.destroy()
 
+    def _preset(self, action) -> None:
+        action()
+        self.destroy()
+
     def _click(self, row: int, col: int) -> None:
         day = self._days[row * 7 + col]
         if day is None:
@@ -229,9 +245,12 @@ def attach_calendar(
     on_change=None,
     parent: tk.Misc | None = None,
     allow_na: bool = False,
+    presets: tuple[tuple[str, object], ...] = (),
 ) -> ttk.Button:
     host = parent or entry.winfo_toplevel()
-    opener = _calendar_opener(entry, parent=host, on_change=on_change, allow_na=allow_na)
+    opener = _calendar_opener(
+        entry, parent=host, on_change=on_change, allow_na=allow_na, presets=presets
+    )
     btn = ttk.Button(entry.master, text="▾", width=2, command=opener)
     try:
         btn.pack(side="left", after=entry, padx=(2, 8))
@@ -265,7 +284,14 @@ def bind_date_picker(
     # Entry text stays editable. Cover dates get a ▾ button from attach_calendar.
 
 
-def _calendar_opener(box: ttk.Combobox | ttk.Entry | tk.Entry, *, parent: tk.Misc, on_change, allow_na: bool):
+def _calendar_opener(
+    box: ttk.Combobox | ttk.Entry | tk.Entry,
+    *,
+    parent: tk.Misc,
+    on_change,
+    allow_na: bool,
+    presets: tuple[tuple[str, object], ...] = (),
+):
     def pick() -> None:
         current = parse_entry_date(box.get())
 
@@ -285,6 +311,7 @@ def _calendar_opener(box: ttk.Combobox | ttk.Entry | tk.Entry, *, parent: tk.Mis
             on_pick=chosen,
             on_na=na if allow_na else None,
             anchor=box,
+            presets=presets,
         )
 
     return pick

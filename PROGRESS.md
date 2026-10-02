@@ -2,6 +2,38 @@
 
 Newest first. Append a dated entry when a decision is locked, a test runs, or the next step changes.
 
+## 2026-10-01 — Shop addresses in Settings (1.94)
+
+Settings has **Shop transmittal TO / CC** beside **Field transmittal TO / CC**. Both are this PC only. Shop cover uses the shop list when the ST letter and the saved pack are empty. Pick… on Shop uses that list. Client saved addresses stay the client list. **Elite DocCon.exe** is **1.94**.
+
+## 2026-10-01 — Fast on every PC (1.93)
+
+Load paints the drawing list when Jira returns. The Dropbox folder hunt, PDF names, the letter, and the PEP finish after that. PDF matching reads filenames and does not stat the file. The shared WPS library is scanned after the job's own PDFs. Next editors are created for the first screen; the rest of the list stays labels until it is scrolled into view. The exe asks Windows for per-monitor DPI so a 125% or 150% laptop is not a stretched bitmap, and the Pack box has a dark border. **Elite DocCon.exe** was rebuilt as **1.93** on 2026-10-01. Close every old DocCon and open that file. Load `2026-Tanzim`. Do not Confirm 075.
+
+## 2026-10-01 — Return shortcuts on the calendar (1.92)
+
+Tanzim: the Urgent / 7 days / 14 days buttons take space on the console. They belong on the Expected return calendar, with N/A.
+
+**Built.** That row is Date issued and Expected return only. Open the Expected return calendar for Urgent same day, Urgent +1, 7 days, 14 days, No return, and N/A. Same actions as before. Drawing-row calendars are unchanged. Source is **1.92**. The exe is still **1.87**.
+
+## 2026-10-01 — Popups follow the console screen (1.91)
+
+Tanzim: message boxes and the other windows always opened on the main monitor, even when DocCon was on the other screen.
+
+**Built.** Settings, Create new Jira Issue, the EDDI prompt, Rename, and Preview open centered on the console. Windows message boxes and file pickers use a tiny owner on that same screen, so they open there too. Source is **1.91**. The exe is still **1.87**.
+
+## 2026-10-01 — Submitted to Client For on the filter row (1.90)
+
+Tanzim: a pack is never every drawing, so **Pack all** is not needed. **Submitted to Client For** should be a visible dropdown, and a pick should land on the packed rows.
+
+**Built.** Pack all is off the Filter row. Submitted to Client For (Approval / Info / Planned / NA) sits beside Set packed to. A pick stamps packed Next and turns it yellow. Blank restores that Next to Now. A Pack tick uses the current pick; a blank pick does not wipe a typed Next. Jira is still written only on Create transmittal or Update Jira. Source is **1.90**. The exe is still **1.87**.
+
+## 2026-10-01 — Load stays clickable (1.89)
+
+Sarah’s exe sat there and ignored clicks. Load was waiting on her Dropbox: walking PDFs, and opening the transmittal book and the PEP on the window thread. Online-only files make that take minutes, and the window either ignores clicks or Windows marks it not responding.
+
+**Built.** The drawing list paints when Jira returns. PDF matching, the letter, and the PEP finish after that, off the window thread. A book that already has the job name is not opened on Load. The list paints two rows at a time so a long pack does not freeze the window. Source is **1.89**. The exe she used is still **1.87**.
+
 ## 2026-10-01 — Elite DocCon 1.87 exe
 
 **Exe rebuilt 2026-10-01** — `Elite DocCon.exe` is **1.87**. Close every old DocCon; double-click that file. Load `2026-Tanzim`. Do not Confirm 075.
