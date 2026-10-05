@@ -38,7 +38,9 @@ The summary is an ID, then optional wording. Empty description is allowed.
 
 No extra Jira status or custom trigger field. Engineer emails Sarah the pack list; she runs DocCon.
 
-**Next:** Source and the frozen exe are **1.96**. Load `2026-Tanzim`. Do not Confirm 075.
+**Next:** Source and the frozen exe are **1.97**. Load `2026-Tanzim`. Do not Confirm 075.
+
+**1.97 Scrolling a long list stays smooth.** Locate, Open, and Preview fill in after the scroll stops. Drag is not back.
 
 **1.96 Jira renamed the IFC columns, and Shop and Field each have a Submitted to list.** Same field ids. The board says **Shop Rev**, **Shop Issue Date**, **Field Rev**, and **Field Issue Date**. **Submitted to Shop For** (IFC / IFI / IFU / Purchasing Only) sits between Return Date and Shop Rev. **Submitted to Field For** (IFC / IFI) sits between Shop Issue Date and Field Rev. The letter status column uses Submitted to Client For on a client pack, Submitted to Shop For on a shop pack, and Submitted to Field For on a field pack. **Set packed to** stays Jira Status. The filter dropdown beside it is Submitted to Client For, Submitted to Shop For, or Submitted to Field For, matching the transmittal. A pick stamps that packed Next. Switching transmittal clears the pick and leaves a stamp already on the rows. Create transmittal writes them. Drag is not back.
 

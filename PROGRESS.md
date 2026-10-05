@@ -2,6 +2,10 @@
 
 Newest first. Append a dated entry when a decision is locked, a test runs, or the next step changes.
 
+## 2026-10-05 — Smooth scroll on a long list (1.97)
+
+Scrolling no longer rebuilds rows while the list is moving. Locate, Open, and Preview fill in after the scroll stops. Source and **Elite DocCon.exe** are **1.97**.
+
 ## 2026-10-05 — Shop and Field purpose, renamed IFC columns (1.96)
 
 Jira kept the same field ids and renamed them: **Shop Rev** (`customfield_10285`), **Shop Issue Date** (`customfield_10286`), **Field Rev** (`customfield_10287`), **Field Issue Date** (`customfield_10288`). **Submitted to Shop For** (`customfield_10626`: IFC, IFI, IFU, Purchasing Only) sits between Return Date and Shop Rev. **Submitted to Field For** (`customfield_10625`: IFC, IFI) sits between Shop Issue Date and Field Rev. The letter status column reads Submitted to Client For, Submitted to Shop For, or Submitted to Field For, matching the transmittal. Client still prints APPROVAL, INFORMATION, REVIEW, or CONSTRUCTION. A shop letter prints IFC, IFI, IFU, or PURCHASING ONLY. A field letter prints IFC or IFI. On the Filter row, **Set packed to** stays Jira Status. The dropdown beside it follows the transmittal: Submitted to Client For, Submitted to Shop For, or Submitted to Field For. Switching transmittal clears that pick and does not undo a stamp already on the rows. Create transmittal writes them. Source and **Elite DocCon.exe** are **1.96**.

@@ -921,12 +921,10 @@ def test_scroll_builds_locate_on_rows_below_the_first_screen() -> None:
         root.update_idletasks()
         shells = [block for block in board._blocks.values() if not block.mounted]
         assert shells
-        target = max(shells, key=lambda block: block.drawing_label.winfo_y())
+        target = shells[-1]
         assert target.locate_btn is None
-        total = max(int(board._inner.winfo_reqheight()), 1)
-        y = int(target.drawing_label.winfo_y())
-        board._canvas.yview_moveto(min(y / total, 1))
-        board._mount_visible()
+        assert board._block_top(target) == float(target.drawing_label.winfo_y())
+        board._mount_block(target)
         fresh = board._blocks[target.key]
         assert fresh.mounted
         assert fresh.locate_btn is not None

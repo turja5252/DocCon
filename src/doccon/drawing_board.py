@@ -1890,11 +1890,16 @@ class DrawingBoard(ttk.Frame):
             fresh.focused = True
             self._style_row_focus(fresh)
 
-    def _schedule_mount(self) -> None:
-        if self._mount_after or not self._defer_editors:
+    def _schedule_mount(self, *, delay: int = 160) -> None:
+        """Build off-screen rows after the scroll stops. Mounting mid-scroll makes the list jump."""
+        if not self._defer_editors:
             return
+        if self._mount_after:
+            with contextlib.suppress(tk.TclError):
+                self.after_cancel(self._mount_after)
+            self._mount_after = ""
         try:
-            self._mount_after = self.after_idle(self._mount_visible)
+            self._mount_after = self.after(delay, self._mount_visible)
         except tk.TclError:
             self._mount_after = ""
 
@@ -1912,7 +1917,6 @@ class DrawingBoard(ttk.Frame):
     def _mount_visible(self) -> None:
         self._mount_after = ""
         try:
-            self._inner.update_idletasks()
             y0 = float(self._canvas.canvasy(0))
             height = max(int(self._canvas.winfo_height()), 1)
         except tk.TclError:
@@ -1934,11 +1938,11 @@ class DrawingBoard(ttk.Frame):
                 continue
             self._mount_block(block)
             built += 1
-            if built >= 6:
+            if built >= 4:
                 more = True
                 break
         if more:
-            self._schedule_mount()
+            self._schedule_mount(delay=16)
 
     def _add_block(self, top: int, row: MatchedRow, *, include: bool, force: bool = False) -> None:
         defer = not force and self._defer_editors and self._editor_count >= VISIBLE_EDITORS
