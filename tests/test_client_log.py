@@ -35,7 +35,7 @@ from doccon.client_log import (
     prepare_client_book,
     read_book_cover,
 )
-from doccon.kinds import FIELD, SHOP
+from doccon.kinds import CLIENT, FIELD, SHOP
 from doccon.log_layout import FIELD_LAYOUT, SHOP_LAYOUT
 from doccon.match import MatchedRow, PdfHit
 from doccon.pep import DOC_CONTROL_FROM, PepCover
@@ -62,10 +62,13 @@ def test_status_maps_jira_purpose() -> None:
     assert client_status_from_jira("Approval") == "APPROVAL"
     assert client_status_from_jira("Info") == "INFORMATION"
     assert client_status_from_jira("") == "APPROVAL"
-    assert line_status("Info", SHOP) == "INFORMATION"
-    assert line_status("Approval", SHOP) == "CONSTRUCTION"
-    assert line_status("NA", SHOP) == "PURCHASING ONLY"
-    assert line_status("NA", FIELD) == "INFORMATION"
+    assert line_status("IFC", SHOP) == "IFC"
+    assert line_status("IFI", SHOP) == "IFI"
+    assert line_status("IFU", SHOP) == "IFU"
+    assert line_status("Purchasing Only", SHOP) == "PURCHASING ONLY"
+    assert line_status("IFC", FIELD) == "IFC"
+    assert line_status("IFI", FIELD) == "IFI"
+    assert line_status("IFU", FIELD) == "IFC"
 
 
 def test_pages_needed() -> None:
@@ -84,6 +87,14 @@ def test_lines_prefer_pdf_rev() -> None:
     lines = lines_from_rows([MatchedRow(drawing=drawing, pdf=hit, confidence="High")])
     assert lines[0].rev == "0"
     assert lines[0].status == "APPROVAL"
+
+
+def test_shop_and_field_letters_use_their_own_submitted_to() -> None:
+    drawing = _drawing(purpose="Approval", shop_purpose="Purchasing Only", field_purpose="IFI")
+    row = MatchedRow(drawing=drawing, pdf=None, confidence="Missing")
+    assert lines_from_rows([row], SHOP)[0].status == "PURCHASING ONLY"
+    assert lines_from_rows([row], FIELD)[0].status == "IFI"
+    assert lines_from_rows([row], CLIENT)[0].status == "APPROVAL"
 
 
 def test_lines_blank_description_when_title_empty() -> None:

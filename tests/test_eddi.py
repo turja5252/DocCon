@@ -206,8 +206,10 @@ def test_snapshot_fills_project_form_not_custom_list(tmp_path: Path) -> None:
             incoming_rev="A",
             approval="Approved",
             return_date="2026-09-30",
+            shop_purpose="Purchasing Only",
             shop_ifc_rev="0",
             shop_ifc_date="2026-09-01",
+            field_purpose="IFI",
             field_ifc_rev="0",
             field_ifc_date="2026-09-02",
         ),
@@ -278,11 +280,25 @@ def test_snapshot_fills_project_form_not_custom_list(tmp_path: Path) -> None:
     assert ws.cell(item, 7).value == "A"
     assert ws.cell(item, 8).value == "Approved"
     assert str(ws.cell(item, 9).value)[:10] == "2026-09-30"
-    assert ws.cell(item, 10).value == "0"
-    assert str(ws.cell(item, 11).value)[:10] == "2026-09-01"
-    assert ws.cell(item, 12).value == "0"
-    assert str(ws.cell(item, 13).value)[:10] == "2026-09-02"
-    blob = " ".join(str(ws.cell(row, col).value or "") for row in range(1, ws.max_row + 1) for col in range(1, 14))
+    assert ws.cell(item, 10).value == "Purchasing Only"
+    assert ws["J3"].font.bold is True
+    assert ws.cell(item, 10).alignment.wrap_text is True
+    assert ws.cell(item, 10).border.left.style == "thin"
+    assert ws.cell(item, 10).border.right.style == "thin"
+    assert not (ws.cell(item, 10).border.top and ws.cell(item, 10).border.top.style)
+    assert ws.cell(item, 10).border.bottom and ws.cell(item, 10).border.bottom.style == "thin"
+    assert (ws.row_dimensions[item].height or 0) >= 30
+    lists = [str(dv.formula1) for dv in ws.data_validations.dataValidation]
+    assert '"IFC,IFI,IFU,Purchasing Only"' in lists
+    assert '"IFC,IFI"' in lists
+    assert ws.cell(item, 11).value == "0"
+    assert str(ws.cell(item, 12).value)[:10] == "2026-09-01"
+    assert ws.cell(item, 13).value == "IFI"
+    assert ws.cell(item, 14).value == "0"
+    assert str(ws.cell(item, 15).value)[:10] == "2026-09-02"
+    assert ws.cell(4, 10).value == "SUBMITTED TO SHOP FOR"
+    assert ws.cell(4, 13).value == "SUBMITTED TO FIELD FOR"
+    blob = " ".join(str(ws.cell(row, col).value or "") for row in range(1, ws.max_row + 1) for col in range(1, 16))
     assert "To Do" not in blob
     assert "2099-01-01" not in blob
     assert "2099-02-02" not in blob
@@ -301,7 +317,7 @@ def test_snapshot_fills_project_form_not_custom_list(tmp_path: Path) -> None:
     for number in (1, 6, 9):
         header = by_num[number].header_row
         assert not _hidden(ws, header)
-        assert _merged(ws, f"A{header}:M{header}")
+        assert _merged(ws, f"A{header}:O{header}")
         align = ws.cell(header, 1).alignment
         assert align.horizontal == "center"
         assert align.vertical == "center"
@@ -366,14 +382,14 @@ def test_snapshot_hides_empty_groups_and_drops_stranded_break(tmp_path: Path) ->
     by_num = {group.number: group for group in groups}
     assert not _hidden(ws, by_num[6].header_row)
     assert not _hidden(ws, by_num[9].header_row)
-    assert _merged(ws, f"A{by_num[6].header_row}:M{by_num[6].header_row}")
-    assert _merged(ws, f"A{by_num[9].header_row}:M{by_num[9].header_row}")
+    assert _merged(ws, f"A{by_num[6].header_row}:O{by_num[6].header_row}")
+    assert _merged(ws, f"A{by_num[9].header_row}:O{by_num[9].header_row}")
     assert ws.cell(by_num[6].header_row, 1).value == "6. QC - WELDING"
     assert ws.cell(by_num[9].header_row, 1).value == "9. PROJECT MANAGEMENT"
     for number in (1, 2, 3, 4, 5, 7, 8):
         header = by_num[number].header_row
         assert _hidden(ws, header)
-        assert not _merged(ws, f"A{header}:M{header}")
+        assert not _merged(ws, f"A{header}:O{header}")
     assert [int(brk.id) for brk in ws.row_breaks.brk] == []
     wb.close()
 
@@ -455,6 +471,30 @@ def test_snapshot_keeps_book_when_pdf_print_fails(tmp_path: Path, monkeypatch) -
     assert snap.book.read_bytes() == b"filled-xlsm"
     assert "print" in snap.warning.casefold() or "PDF" in snap.warning
     assert "Traceback" not in snap.warning
+
+
+def test_new_template_keeps_rev_then_submitted_to(tmp_path: Path) -> None:
+    """Tanzim's EDDI form is Rev, Submitted to Shop/Field For, Date. Do not insert again."""
+    from doccon.eddi import fill_project_sheet
+
+    path = _project_fixture(tmp_path / "EDDI-2026-Tanzim.xlsx")
+    wb = load_workbook(path)
+    ws = wb.active
+    ws["J4"] = "REV"
+    ws["K4"] = "SUBMITTED TO SHOP FOR"
+    ws["L4"] = "DATE"
+    ws["M4"] = "REV"
+    ws["N4"] = "SUBMITTED TO FIELD FOR"
+    ws["O4"] = "DATE"
+    drawing = _drawing(shop_ifc_rev="C", shop_purpose="Purchasing Only", field_ifc_rev="B", field_purpose="IFI")
+    fill_project_sheet(ws, "2026-Tanzim", [drawing])
+    item = next(row for row in range(1, ws.max_row + 1) if ws.cell(row, 1).value == "2026-Tanzim-1-1")
+    assert ws.cell(item, 10).value == "C"
+    assert ws.cell(item, 11).value == "Purchasing Only"
+    assert ws.cell(item, 13).value == "B"
+    assert ws.cell(item, 14).value == "IFI"
+    assert ws.max_column <= 16
+    wb.close()
 
 
 def test_copy_out_uses_unique_name_when_pdf_locked(tmp_path: Path, monkeypatch) -> None:

@@ -118,7 +118,7 @@ SHOP_LAYOUT = BookLayout(
     hide_page3="63:88",
     reset_hide="33:88",
     reset_cells=("I6",),
-    statuses=("CONSTRUCTION", "INFORMATION", "PURCHASING ONLY"),
+    statuses=("IFC", "IFI", "IFU", "PURCHASING ONLY"),
 )
 
 FIELD_LAYOUT = BookLayout(
@@ -148,7 +148,7 @@ FIELD_LAYOUT = BookLayout(
     hide_page3="63:85",
     reset_hide="33:85",
     reset_cells=("I8",),
-    statuses=("CONSTRUCTION", "INFORMATION"),
+    statuses=("IFC", "IFI"),
 )
 
 LAYOUTS = {

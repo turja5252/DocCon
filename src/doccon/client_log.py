@@ -119,7 +119,7 @@ def lines_from_rows(rows: list[MatchedRow], kind: str = CLIENT) -> list[LogLine]
                 document_no=drawing.drawing_id or drawing.key,
                 rev=rev,
                 description=drawing.title or "",
-                status=line_status(drawing.purpose, kind),
+                status=line_status(_purpose_for_kind(drawing, kind), kind),
             )
         )
     return lines
@@ -149,28 +149,37 @@ def pages_needed(line_count: int, layout: BookLayout | None = None) -> int:
         raise LogError(str(exc)) from exc
 
 
+def _purpose_for_kind(drawing: object, kind: str) -> str:
+    """Client letter reads Submitted to Client For. Shop and Field read their own list."""
+    if kind == SHOP:
+        return str(getattr(drawing, "shop_purpose", "") or "")
+    if kind == FIELD:
+        return str(getattr(drawing, "field_purpose", "") or "")
+    return str(getattr(drawing, "purpose", "") or "")
+
+
 def shop_status_from_jira(purpose: str, *, statuses: tuple[str, ...] = ()) -> str:
     token = (purpose or "").strip().casefold().replace("_", " ")
-    allowed = statuses or layout_for(CLIENT).statuses
+    allowed = statuses or layout_for(SHOP).statuses
     mapping = {
-        "approval": "CONSTRUCTION",
-        "info": "INFORMATION",
-        "information": "INFORMATION",
-        "planned": "INFORMATION",
-        "na": "PURCHASING ONLY",
-        "n/a": "PURCHASING ONLY",
-        "construction": "CONSTRUCTION",
+        "ifc": "IFC",
+        "ifi": "IFI",
+        "ifu": "IFU",
         "purchasing": "PURCHASING ONLY",
         "purchasing only": "PURCHASING ONLY",
-        "review": "INFORMATION",
-        "as-built": "CONSTRUCTION",
-        "as built": "CONSTRUCTION",
+        "construction": "IFC",
+        "info": "IFI",
+        "information": "IFI",
+        "approval": "IFC",
     }
-    mapped = mapping.get(token, "CONSTRUCTION")
+    mapped = mapping.get(token, "")
+    if not mapped:
+        for option in allowed:
+            if option.casefold() == token:
+                return option
+        return allowed[0] if allowed else "IFC"
     if mapped not in allowed:
-        if mapped == "PURCHASING ONLY" and "INFORMATION" in allowed:
-            return "INFORMATION"
-        return allowed[0]
+        return allowed[0] if allowed else mapped
     return mapped
 
 

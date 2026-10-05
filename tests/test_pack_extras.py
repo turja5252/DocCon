@@ -33,8 +33,8 @@ def test_extra_from_filename_rev_and_client_status(tmp_path: Path) -> None:
 
 
 def test_letter_status_falls_back_when_kind_changes() -> None:
-    assert letter_status(SHOP, "APPROVAL") == "INFORMATION"
-    assert letter_status(FIELD, "INFORMATION") == "INFORMATION"
+    assert letter_status(SHOP, "APPROVAL") == "IFC"
+    assert letter_status(FIELD, "INFORMATION") == "IFC"
     assert letter_status(SHOP, "PURCHASING ONLY") == "PURCHASING ONLY"
 
 

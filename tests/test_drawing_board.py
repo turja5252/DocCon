@@ -906,6 +906,36 @@ def _board_root():
     return root
 
 
+def test_scroll_builds_locate_on_rows_below_the_first_screen() -> None:
+    root = _board_root()
+    try:
+        root.geometry("900x400")
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.pack(fill="both", expand=True)
+        rows = [_row(key=f"P2024-{n}", drawing_id=f"2026-Tanzim-1-{n}") for n in range(1, 28)]
+        board.start_rows(rows)
+        for _ in range(400):
+            if not board._paint_queue:
+                break
+            root.update()
+        root.update_idletasks()
+        shells = [block for block in board._blocks.values() if not block.mounted]
+        assert shells
+        target = max(shells, key=lambda block: block.drawing_label.winfo_y())
+        assert target.locate_btn is None
+        total = max(int(board._inner.winfo_reqheight()), 1)
+        y = int(target.drawing_label.winfo_y())
+        board._canvas.yview_moveto(min(y / total, 1))
+        board._mount_visible()
+        fresh = board._blocks[target.key]
+        assert fresh.mounted
+        assert fresh.locate_btn is not None
+        assert fresh.open_btn is not None
+        assert fresh.preview_btn is not None
+    finally:
+        root.destroy()
+
+
 def test_bump_packed_revs_from_now_leaves_unpacked() -> None:
     root = _board_root()
     try:
@@ -921,7 +951,7 @@ def test_bump_packed_revs_from_now_leaves_unpacked() -> None:
         board._blocks["P2024-4"].include.set(False)
         board._blocks["P2024-1"].nexts["outgoing_rev"].set("Z")
         assert str(board._packed_only_btn.cget("text")) == "Packed only"
-        assert str(board._bump_packed_btn.cget("text")) == "Bump packed"
+        assert not hasattr(board, "_bump_packed_btn")
         assert "OFA" in board._pack_status.cget("values")
         assert "readonly" in str(board._pack_status.cget("state"))
         count = board.bump_packed_revs()
@@ -1084,6 +1114,38 @@ def test_submitted_to_client_for_stamps_packed_rows() -> None:
         root.destroy()
 
 
+def test_filter_purpose_follows_transmittal_kind() -> None:
+    root = _board_root()
+    try:
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.set_rows([_row(key="P2024-1", drawing_id="2026-Tanzim-1-1")])
+        board.set_pack(False)
+        board.set_pack_purpose("Approval", stamp=False)
+        board._blocks["P2024-1"].include.set(True)
+        root.update_idletasks()
+        assert board._blocks["P2024-1"].nexts["purpose"].get() == "Approval"
+        board.set_transmittal_kind("shop")
+        assert board._pack_purpose_label.cget("text") == "Submitted to Shop For"
+        assert "IFC" in board._pack_purpose.cget("values")
+        assert "Purchasing Only" in board._pack_purpose.cget("values")
+        assert board.pack_purpose() == ""
+        assert board._blocks["P2024-1"].nexts["purpose"].get() == "Approval"
+        board.set_pack_purpose("IFU")
+        assert board._blocks["P2024-1"].nexts["shop_purpose"].get() == "IFU"
+        assert board._blocks["P2024-1"].nexts["purpose"].get() == "Approval"
+        board.set_transmittal_kind("field")
+        assert board._pack_purpose_label.cget("text") == "Submitted to Field For"
+        assert "IFI" in board._pack_purpose.cget("values")
+        assert board._blocks["P2024-1"].nexts["shop_purpose"].get() == "IFU"
+        board.set_pack_purpose("IFI")
+        assert board._blocks["P2024-1"].nexts["field_purpose"].get() == "IFI"
+        board.set_transmittal_kind("client")
+        assert board._pack_purpose_label.cget("text") == "Submitted to Client For"
+        assert "Approval" in board._pack_purpose.cget("values")
+    finally:
+        root.destroy()
+
+
 def test_bump_and_set_packed_zero_packed_does_not_crash() -> None:
     root = _board_root()
     try:
@@ -1099,7 +1161,6 @@ def test_bump_and_set_packed_zero_packed_does_not_crash() -> None:
         assert board.bump_packed_revs() == 0
         assert board.set_packed_rev("0") == 0
         assert board.set_packed_status("OFA") == 0
-        board._bump_packed()
         board.set_pack_status("OFA")
         assert board._blocks["P2024-1"].nexts["outgoing_rev"].get() == "A"
         assert board._blocks["P2024-2"].nexts["outgoing_rev"].get() == "0"
@@ -1888,6 +1949,8 @@ def test_pick_only_next_fields_are_readonly() -> None:
         assert field_is_pick_only("status")
         assert {
             "purpose",
+            "shop_purpose",
+            "field_purpose",
             "approval",
             "shop_ifc_rev",
             "field_ifc_rev",
@@ -1898,7 +1961,15 @@ def test_pick_only_next_fields_are_readonly() -> None:
         with contextlib.suppress(tk.TclError):
             block.status_next.insert("end", "typed")
         assert block.status_next.get() == before_status
-        for field in ("purpose", "approval", "shop_ifc_rev", "field_ifc_rev", "eddi_status"):
+        for field in (
+            "purpose",
+            "shop_purpose",
+            "field_purpose",
+            "approval",
+            "shop_ifc_rev",
+            "field_ifc_rev",
+            "eddi_status",
+        ):
             box = block.nexts[field]
             assert isinstance(box, ttk.Combobox)
             assert str(box.cget("state")) == "readonly"

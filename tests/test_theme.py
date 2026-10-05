@@ -12,6 +12,8 @@ from doccon.theme import (
     BORDER,
     FOCUS_BG,
     FOCUS_RULE,
+    SELECT_BG,
+    SELECT_RULE,
     FOLDER,
     JIRA,
     NAVY,
@@ -71,11 +73,12 @@ def test_apply_theme_and_match_styles() -> None:
 
 
 def test_focused_row_band_is_palette_and_never_the_pending_amber() -> None:
-    # Pale teal wash + ACCENT rules. Never the gray BORDER fill, never the dirty-Next amber.
-    assert FOCUS_BG != BORDER
+    # Selected row is a darker orange. Dirty Next stays the pale yellow.
+    assert SELECT_BG != BORDER
+    assert SELECT_BG != PENDING_BG
+    assert SELECT_RULE != ACCENT
+    assert FOCUS_BG not in {BG, SURFACE, PENDING_BG, BORDER, SELECT_BG}
     assert FOCUS_RULE == ACCENT
-    assert FOCUS_BG not in {BG, SURFACE, PENDING_BG, BORDER}
-    assert FOCUS_RULE != PENDING_BG
     try:
         root = tk.Tk()
     except tk.TclError:
@@ -84,7 +87,7 @@ def test_focused_row_band_is_palette_and_never_the_pending_amber() -> None:
     try:
         style = apply_theme(root)
         for name in ("Focus.TLabel", "FocusOk.TLabel", "FocusBad.TLabel"):
-            assert style.lookup(name, "background") == FOCUS_BG
+            assert style.lookup(name, "background") == SELECT_BG
         assert style.lookup("Focus.TLabel", "background") != style.lookup("Board.TLabel", "background")
         assert style.lookup("FocusOk.TLabel", "foreground") == style.lookup("Ok.TLabel", "foreground")
         assert style.lookup("FocusBad.TLabel", "foreground") == style.lookup("Bad.TLabel", "foreground")

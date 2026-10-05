@@ -279,6 +279,16 @@ def fill_eddi_form_and_export_pdf(workbook: Path, dest_pdf: Path, payload: dict)
         "merge_headers": [int(row) for row in (payload.get("merge_headers") or [])],
         "merge_ranges": [str(ref) for ref in (payload.get("merge_ranges") or [])],
         "drop_breaks": [int(row) for row in (payload.get("drop_breaks") or [])],
+        "column_inserts": [int(col) for col in (payload.get("column_inserts") or [])],
+        "header_cells": list(payload.get("header_cells") or []),
+        "item_cols": int(payload.get("item_cols") or 15),
+        "group_last_rows": [int(row) for row in (payload.get("group_last_rows") or [])],
+        "shop_validation": str(payload.get("shop_validation") or ""),
+        "field_validation": str(payload.get("field_validation") or ""),
+        "shop_list": str(payload.get("shop_list") or "IFC,IFI,IFU,Purchasing Only"),
+        "field_list": str(payload.get("field_list") or "IFC,IFI"),
+        "shop_purpose_col": int(payload.get("shop_purpose_col") or 11),
+        "field_purpose_col": int(payload.get("field_purpose_col") or 14),
     }
     log_runtime()
     log("INFO", "eddi", f"begin sheet={body['sheet']} {describe_path(source)}")
@@ -384,6 +394,9 @@ def _write_eddi_script(
             "  $ws = $wb.Worksheets.Item([string]$p.sheet)\n"
             "  Unlock-Sheet $ws $p.lock\n"
             "  if ($p.stamp) { $ws.Range('A2').Value = [string]$p.stamp }\n"
+            "  $lastCol = [int]$p.item_cols\n"
+            "  if ($lastCol -lt 1) { $lastCol = 15 }\n"
+            "  $endCol = [string]([char](64 + $lastCol))\n"
             "  foreach ($ins in @($p.inserts | Where-Object { $_ })) {\n"
             "    $count = [int]$ins.count\n"
             "    $at = [int]$ins.at\n"
@@ -398,11 +411,11 @@ def _write_eddi_script(
             "    } catch {}\n"
             "  }\n"
             "  foreach ($row in @($p.clear_rows | Where-Object { $_ })) {\n"
-            "    $ws.Range(('A{0}:M{0}' -f [int]$row)).ClearContents() | Out-Null\n"
+            "    $ws.Range(('A{0}:{1}{0}' -f [int]$row, $endCol)).ClearContents() | Out-Null\n"
             "  }\n"
             "  foreach ($fill in @($p.fills | Where-Object { $_ })) {\n"
             "    $vals = @($fill.values)\n"
-            "    for ($c = 1; $c -le 13; $c++) {\n"
+            "    for ($c = 1; $c -le $lastCol; $c++) {\n"
             "      $raw = if ($c -le $vals.Count) { $vals[$c - 1] } else { '' }\n"
             "      Set-DocConCell $ws ([int]$fill.row) $c $raw\n"
             "    }\n"
@@ -416,10 +429,40 @@ def _write_eddi_script(
             "  foreach ($row in @($p.unhide | Where-Object { $_ })) {\n"
             "    $ws.Rows([int]$row).Hidden = $false\n"
             "  }\n"
+            "  foreach ($fill in @($p.fills | Where-Object { $_ })) {\n"
+            "    $vals = @($fill.values)\n"
+            "    $shopCol = [int]$p.shop_purpose_col\n"
+            "    $fieldCol = [int]$p.field_purpose_col\n"
+            "    $shopText = if ($shopCol -gt 0 -and $vals.Count -ge $shopCol) { [string]$vals[$shopCol - 1] } else { '' }\n"
+            "    $fieldText = if ($fieldCol -gt 0 -and $vals.Count -ge $fieldCol) { [string]$vals[$fieldCol - 1] } else { '' }\n"
+            "    if ($shopText.Length -le 12 -and $fieldText.Length -le 12) { continue }\n"
+            "    $r = [int]$fill.row\n"
+            "    if ($shopCol -gt 0) { $ws.Cells.Item($r, $shopCol).WrapText = $true }\n"
+            "    if ($fieldCol -gt 0) { $ws.Cells.Item($r, $fieldCol).WrapText = $true }\n"
+            "    if ($ws.Rows.Item($r).RowHeight -lt 30) { $ws.Rows.Item($r).RowHeight = 30 }\n"
+            "  }\n"
+            "  foreach ($row in @($p.group_last_rows | Where-Object { $_ })) {\n"
+            "    $r = [int]$row\n"
+            "    for ($c = 1; $c -le $lastCol; $c++) {\n"
+            "      $edge = $ws.Cells.Item($r, $c).Borders.Item(9)\n"
+            "      $edge.LineStyle = 1\n"
+            "      $edge.Weight = 2\n"
+            "    }\n"
+            "  }\n"
+            "  function Add-DocConList($sheet, $sqref, $formula) {\n"
+            "    $addr = ([string]$sqref).Trim()\n"
+            "    if (-not $addr -or -not $formula) { return }\n"
+            "    $addr = $addr -replace '\\s+', ','\n"
+            "    $rng = $sheet.Range($addr)\n"
+            "    try { $rng.Validation.Delete() } catch {}\n"
+            "    $rng.Validation.Add(3, 1, 1, [string]$formula) | Out-Null\n"
+            "  }\n"
+            "  Add-DocConList $ws ([string]$p.shop_validation) ([string]$p.shop_list)\n"
+            "  Add-DocConList $ws ([string]$p.field_validation) ([string]$p.field_list)\n"
             "  foreach ($row in @($p.merge_headers | Where-Object { $_ })) {\n"
             "    $r = [int]$row\n"
             "    if ($r -le 0) { continue }\n"
-            "    $addr = ('A{0}:M{0}' -f $r)\n"
+            "    $addr = ('A{0}:{1}{0}' -f $r, $endCol)\n"
             "    $color = $null\n"
             "    try { $color = $ws.Range(('A{0}' -f $r)).Interior.Color } catch {}\n"
             "    Ensure-DocConMerge $ws $addr\n"
@@ -440,7 +483,7 @@ def _write_eddi_script(
             "  try { $ws.PageSetup.PaperSize = 1 } catch {}\n"
             "  $last = [int]$p.print_last\n"
             "  if ($last -lt 1) { $last = 1 }\n"
-            "  try { $ws.PageSetup.PrintArea = ('A1:M{0}' -f $last) } catch {}\n"
+            "  try { $ws.PageSetup.PrintArea = ('A1:{0}{1}' -f $endCol, $last) } catch {}\n"
             "  Write-DocConHop 'INFO' 'save' 'Workbook.Save'\n"
             "  $wb.Save()\n"
             "  $saved = $true\n"

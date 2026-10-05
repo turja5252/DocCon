@@ -1121,6 +1121,7 @@ class DocConApp(tk.Tk):
             self.board.set_pack_extras(
                 self._current_extras(), statuses=layout_for(self.kind.get()).statuses
             )
+        self.board.set_transmittal_kind(self.kind.get())
         self._refresh_shop_place()
         self._refresh_cover_hint()
 

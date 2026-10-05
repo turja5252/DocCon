@@ -2,6 +2,10 @@
 
 Newest first. Append a dated entry when a decision is locked, a test runs, or the next step changes.
 
+## 2026-10-05 — Shop and Field purpose, renamed IFC columns (1.96)
+
+Jira kept the same field ids and renamed them: **Shop Rev** (`customfield_10285`), **Shop Issue Date** (`customfield_10286`), **Field Rev** (`customfield_10287`), **Field Issue Date** (`customfield_10288`). **Submitted to Shop For** (`customfield_10626`: IFC, IFI, IFU, Purchasing Only) sits between Return Date and Shop Rev. **Submitted to Field For** (`customfield_10625`: IFC, IFI) sits between Shop Issue Date and Field Rev. The letter status column reads Submitted to Client For, Submitted to Shop For, or Submitted to Field For, matching the transmittal. Client still prints APPROVAL, INFORMATION, REVIEW, or CONSTRUCTION. A shop letter prints IFC, IFI, IFU, or PURCHASING ONLY. A field letter prints IFC or IFI. On the Filter row, **Set packed to** stays Jira Status. The dropdown beside it follows the transmittal: Submitted to Client For, Submitted to Shop For, or Submitted to Field For. Switching transmittal clears that pick and does not undo a stamp already on the rows. Create transmittal writes them. Source and **Elite DocCon.exe** are **1.96**.
+
 ## 2026-10-02 — Email wording is shared (1.95)
 
 Settings **Email wording…** edits Client, Shop, and Field subject and body. The markers `{cover}`, `{job}`, `{project}`, and `{documents}` stay on the window. A blank box keeps today's wording. The file is `mail-formats.json` next to Elite DocCon in Dropbox, not on each PC. Source and **Elite DocCon.exe** are **1.95**.

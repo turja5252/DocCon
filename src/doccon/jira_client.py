@@ -20,6 +20,7 @@ from doccon.register import (
     EDDI_FIELD,
     FIELD_IFC_DATE_FIELD,
     FIELD_IFC_FIELD,
+    FIELD_PURPOSE_FIELD,
     INCOMING_REV_FIELD,
     JOB_NUMBER_FIELD,
     OUTGOING_REV_FIELD,
@@ -29,6 +30,7 @@ from doccon.register import (
     RETURN_REQUEST_DATE_FIELD,
     SHOP_IFC_DATE_FIELD,
     SHOP_IFC_FIELD,
+    SHOP_PURPOSE_FIELD,
     SUBMISSION_DATE_FIELD,
     SUBTASK_ISSUE_TYPE_ID,
     DrawingRow,
@@ -76,6 +78,8 @@ DRAWING_FIELDS = [
     JOB_NUMBER_FIELD,
     OUTGOING_REV_FIELD,
     PURPOSE_FIELD,
+    SHOP_PURPOSE_FIELD,
+    FIELD_PURPOSE_FIELD,
     APPROVAL_FIELD,
     INCOMING_REV_FIELD,
     SHOP_IFC_FIELD,
@@ -812,8 +816,8 @@ DATE_ATTRS = (
     ("submission_date", "Submission Date"),
     ("return_request_date", "Return Request Date"),
     ("return_date", "Return Date"),
-    ("shop_ifc_date", "Shop IFC Date"),
-    ("field_ifc_date", "Field IFC Date"),
+    ("shop_ifc_date", "Shop Issue Date"),
+    ("field_ifc_date", "Field Issue Date"),
 )
 
 

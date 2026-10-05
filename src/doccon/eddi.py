@@ -8,7 +8,9 @@ Jira stays the register. The live ``EDDI-{job}.xlsm`` is the form and is not
 overwritten. DocCon copies it to ``EDDI-{job}-{date}.xlsm``, fills groups 1–9
 from console Next values (listed items with a paired PDF, not only Pack), and prints
 ``EDDI-{job}-{date}.pdf`` in ``3.0 Doc Con``. On that dated copy, printed
-group titles are merged A:M and centered; empty 1–9 groups are hidden.
+group titles are merged A:O and centered; empty 1–9 groups are hidden.
+Submitted to Shop For is inserted before Shop Rev, and Submitted to Field For
+before Field Rev, on the dated copy only.
 Not attached to Outlook.
 """
 from __future__ import annotations
@@ -24,7 +26,8 @@ from pathlib import Path
 
 from openpyxl import load_workbook
 from openpyxl.cell.cell import MergedCell
-from openpyxl.styles import Alignment
+from openpyxl.styles import Alignment, Border, Font, Side
+from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.utils import get_column_letter, range_boundaries
 from openpyxl.workbook.workbook import Workbook
 from openpyxl.worksheet.pagebreak import Break
@@ -37,17 +40,30 @@ from doccon.register import DrawingRow, eddi_group_rank, eddi_group_title, is_ge
 
 DOC_CON_DIR = Path("3.0 Doc Con")
 PROJECT_SHEET = "Project"
-ITEM_COLS = 13
+ITEM_COLS = 15
 PAPERSIZE_LETTER = 1
+# Shop purpose is inserted at J, then Field purpose at M, on the dated copy.
+PURPOSE_COLUMN_INSERTS = (10, 13)
 CATEGORY_HEADER_MERGES = (
     "A3:A4",
     "B3:B4",
     "C3:C4",
     "D3:F3",
     "G3:I3",
-    "J3:K3",
-    "L3:M3",
+    "J3:L3",
+    "M3:O3",
 )
+PURPOSE_HEADERS = (
+    (3, 10, "SHOP"),
+    (4, 10, "SUBMITTED TO SHOP FOR"),
+    (3, 13, "FIELD"),
+    (4, 13, "SUBMITTED TO FIELD FOR"),
+)
+SHOP_PURPOSE_COL = 10
+FIELD_PURPOSE_COL = 13
+SHOP_PURPOSE_LIST = "IFC,IFI,IFU,Purchasing Only"
+FIELD_PURPOSE_LIST = "IFC,IFI"
+PURPOSE_COL_WIDTH = 14
 _HEADER_RE = re.compile(r"^\s*(\d+)\.\s+")
 _ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _DATED_LIVE = re.compile(r"^EDDI-(.+)-(\d{4}-\d{2}-\d{2})\.(xlsx|xlsm)$", re.IGNORECASE)
@@ -98,6 +114,13 @@ class FillPlan:
     merge_ranges: list[str] = field(default_factory=list)
     drop_breaks: list[int] = field(default_factory=list)
     row_breaks: list[int] = field(default_factory=list)
+    column_inserts: list[int] = field(default_factory=list)
+    header_cells: list[tuple[int, int, str]] = field(default_factory=list)
+    group_last_rows: list[int] = field(default_factory=list)
+    shop_validation: str = ""
+    field_validation: str = ""
+    shop_purpose_col: int = 11
+    field_purpose_col: int = 14
 
 
 def row_has_eddi_pdf(row: MatchedRow) -> bool:
@@ -227,11 +250,13 @@ def build_fill_plan(ws: Worksheet, job_number: str, drawings: list[DrawingRow]) 
         finalized.append(group)
     finalized.sort(key=lambda group: group.header_row)
 
+    cols = _purpose_cols(ws)
     fills: list[tuple[int, list[str]]] = []
     hide: list[int] = []
     unhide: list[int] = []
     clear_rows: list[int] = []
     merge_headers: list[int] = []
+    group_last_rows: list[int] = []
     count = 0
     last_row = 4
     for group in finalized:
@@ -250,8 +275,9 @@ def build_fill_plan(ws: Worksheet, job_number: str, drawings: list[DrawingRow]) 
             clear_rows.extend(range(group.first_item, group.last_item + 1))
         for offset, drawing in enumerate(items):
             row = group.first_item + offset
-            fills.append((row, item_values(drawing)))
+            fills.append((row, item_values(drawing, cols)))
             unhide.append(row)
+        group_last_rows.append(group.first_item + len(items) - 1)
         unused_start = group.first_item + len(items)
         if unused_start <= group.last_item:
             hide.extend(range(unused_start, group.last_item + 1))
@@ -262,6 +288,14 @@ def build_fill_plan(ws: Worksheet, job_number: str, drawings: list[DrawingRow]) 
     hidden = set(hide) - set(unhide)
     keep_breaks = [row for row in breaks if not _is_stranded_break(row, hidden, last_row)]
     drop_breaks = [row for row in breaks if row not in set(keep_breaks)]
+    add_columns = cols[1] == 0
+    shop_letter = get_column_letter(cols[1]) if cols[1] else ""
+    field_letter = get_column_letter(cols[4]) if cols[4] else ""
+    filled_rows = sorted({row for row, _values in fills})
+    if add_columns:
+        for bounds in tables:
+            if bounds[3] >= PURPOSE_COLUMN_INSERTS[0]:
+                bounds[3] += len(PURPOSE_COLUMN_INSERTS)
     return FillPlan(
         stamp=f"EDDI-{job}",
         inserts=inserts,
@@ -276,14 +310,30 @@ def build_fill_plan(ws: Worksheet, job_number: str, drawings: list[DrawingRow]) 
             for name, min_col, min_row, max_col, max_row in tables
         ],
         merge_headers=merge_headers,
-        merge_ranges=list(CATEGORY_HEADER_MERGES),
+        merge_ranges=_snapshot_merges(add_columns),
         drop_breaks=drop_breaks,
         row_breaks=keep_breaks,
+        column_inserts=list(PURPOSE_COLUMN_INSERTS) if add_columns else [],
+        header_cells=list(PURPOSE_HEADERS) if add_columns else [],
+        group_last_rows=group_last_rows,
+        shop_validation=(
+            ""
+            if not shop_letter or _column_has_list(ws, shop_letter)
+            else _retarget_validation(ws, shop_letter) or _ranges_for_rows(filled_rows, shop_letter)
+        ),
+        field_validation=(
+            ""
+            if not field_letter or _column_has_list(ws, field_letter)
+            else _retarget_validation(ws, field_letter) or _ranges_for_rows(filled_rows, field_letter)
+        ),
+        shop_purpose_col=cols[1] or SHOP_PURPOSE_COL,
+        field_purpose_col=cols[4] or FIELD_PURPOSE_COL,
     )
 
 
 def fill_project_sheet(ws: Worksheet, job_number: str, drawings: list[DrawingRow]) -> int:
     """Fill sheet Project in-memory (tests / plain xlsx). Returns item count."""
+    expand_purpose_columns(ws)
     plan = build_fill_plan(ws, job_number, drawings)
     apply_fill_plan(ws, plan)
     return plan.item_count
@@ -316,6 +366,7 @@ def apply_fill_plan(ws: Worksheet, plan: FillPlan) -> None:
     for row in plan.unhide:
         ws.row_dimensions[row].hidden = False
     _layout_snapshot_sheet(ws, plan)
+    _style_purpose_columns(ws, plan)
     ws.print_area = f"A1:{get_column_letter(ITEM_COLS)}{plan.print_last_row}"
     ws.page_setup.fitToWidth = 1
     ws.page_setup.fitToHeight = 0
@@ -338,11 +389,40 @@ def plan_payload(plan: FillPlan) -> dict:
         "merge_headers": list(plan.merge_headers),
         "merge_ranges": list(plan.merge_ranges),
         "drop_breaks": list(plan.drop_breaks),
+        "column_inserts": list(plan.column_inserts),
+        "header_cells": [
+            {"row": row, "col": col, "value": text} for row, col, text in plan.header_cells
+        ],
+        "item_cols": ITEM_COLS,
+        "group_last_rows": list(plan.group_last_rows),
+        "shop_validation": plan.shop_validation,
+        "field_validation": plan.field_validation,
+        "shop_list": SHOP_PURPOSE_LIST,
+        "field_list": FIELD_PURPOSE_LIST,
+        "shop_purpose_col": plan.shop_purpose_col,
+        "field_purpose_col": plan.field_purpose_col,
     }
 
 
-def item_values(drawing: DrawingRow) -> list[str]:
-    return [
+def _purpose_cols(ws: Worksheet) -> tuple[int, int, int, int, int, int]:
+    """Shop rev, shop purpose, shop date, field rev, field purpose, field date.
+
+    The Tanzim template is Rev, Submitted to, Date. An older insert put Submitted to first.
+    A 13-column form has no purpose columns.
+    """
+    labels = {col: _cell_text(ws, 4, col).casefold() for col in range(10, 16)}
+    if "submitted to shop" in labels.get(11, ""):
+        return (10, 11, 12, 13, 14, 15)
+    if "submitted to shop" in labels.get(10, ""):
+        return (11, 10, 12, 14, 13, 15)
+    return (10, 0, 11, 12, 0, 13)
+
+
+def item_values(drawing: DrawingRow, cols: tuple[int, int, int, int, int, int] | None = None) -> list[str]:
+    layout = cols or (11, 10, 12, 14, 13, 15)
+    width = 15 if layout[1] else 13
+    values = [""] * width
+    head = [
         (drawing.drawing_id or drawing.key).strip(),
         (drawing.client_document_number or "").strip(),
         (drawing.title or "").strip(),
@@ -352,11 +432,155 @@ def item_values(drawing: DrawingRow) -> list[str]:
         (drawing.incoming_rev or "").strip(),
         (drawing.approval or "").strip(),
         _short_date(drawing.return_date),
-        (drawing.shop_ifc_rev or "").strip(),
-        _short_date(drawing.shop_ifc_date),
-        (drawing.field_ifc_rev or "").strip(),
-        _short_date(drawing.field_ifc_date),
     ]
+    for index, token in enumerate(head):
+        values[index] = token
+    placed = {
+        layout[0]: (drawing.shop_ifc_rev or "").strip(),
+        layout[1]: (drawing.shop_purpose or "").strip(),
+        layout[2]: _short_date(drawing.shop_ifc_date),
+        layout[3]: (drawing.field_ifc_rev or "").strip(),
+        layout[4]: (drawing.field_purpose or "").strip(),
+        layout[5]: _short_date(drawing.field_ifc_date),
+    }
+    for col, token in placed.items():
+        if col:
+            values[col - 1] = token
+    return values
+
+
+def _retarget_validation(ws: Worksheet, letter: str) -> str:
+    """Same item rows as Submitted to Client For, on column J or M."""
+    for dv in ws.data_validations.dataValidation:
+        sqref = str(dv.sqref or "")
+        if re.search(r"\bE\d+", sqref):
+            return re.sub(r"E(?=\d)", letter, sqref)
+    return ""
+
+
+def _ranges_for_rows(rows: list[int], letter: str) -> str:
+    if not rows:
+        return ""
+    parts: list[str] = []
+    start = prev = rows[0]
+    for row in rows[1:]:
+        if row == prev + 1:
+            prev = row
+            continue
+        parts.append(f"{letter}{start}:{letter}{prev}" if start != prev else f"{letter}{start}")
+        start = prev = row
+    parts.append(f"{letter}{start}:{letter}{prev}" if start != prev else f"{letter}{start}")
+    return " ".join(parts)
+
+
+def expand_purpose_columns(ws: Worksheet) -> None:
+    """Insert Shop and Field purpose columns without redrawing the rest of the grid.
+
+    Only merges that cross the insert are opened. New cells copy the border of the
+    rev column beside them, so item rows stay vertical lines, not a new box.
+    """
+    if not _purpose_columns_missing(ws):
+        return
+    for col in PURPOSE_COLUMN_INSERTS:
+        for merged in list(ws.merged_cells.ranges):
+            if merged.min_col <= col <= merged.max_col:
+                ws.unmerge_cells(str(merged))
+        ws.insert_cols(col)
+    last_row = int(ws.max_row or 1)
+    for row in range(5, last_row + 1):
+        _copy_border(ws.cell(row, SHOP_PURPOSE_COL + 1), ws.cell(row, SHOP_PURPOSE_COL))
+        _copy_border(ws.cell(row, FIELD_PURPOSE_COL + 1), ws.cell(row, FIELD_PURPOSE_COL))
+    for row, col, text in PURPOSE_HEADERS:
+        cell = ws.cell(row, col)
+        if isinstance(cell, MergedCell):
+            continue
+        cell.value = text
+    for col in (SHOP_PURPOSE_COL, FIELD_PURPOSE_COL):
+        head = ws.cell(3, col)
+        if isinstance(head, MergedCell):
+            continue
+        head.font = Font(name="Calibri", size=11, bold=True)
+        head.alignment = Alignment(horizontal="center", vertical="center")
+    for col in (SHOP_PURPOSE_COL + 1, FIELD_PURPOSE_COL + 1):
+        leftover = ws.cell(3, col)
+        if isinstance(leftover, MergedCell):
+            continue
+        token = str(leftover.value or "").casefold()
+        if token.startswith("shop") or token.startswith("field"):
+            leftover.value = None
+    ws.column_dimensions["J"].width = PURPOSE_COL_WIDTH
+    ws.column_dimensions["M"].width = PURPOSE_COL_WIDTH
+    last = get_column_letter(ITEM_COLS)
+    for ref in (f"A1:{last}1", f"A2:{last}2", *CATEGORY_HEADER_MERGES):
+        _ensure_merge(ws, ref)
+
+
+def _copy_border(src, dest) -> None:
+    border = src.border
+    if any(side is not None and side.style for side in (border.left, border.right, border.top, border.bottom)):
+        dest.border = Border(left=border.left, right=border.right, top=border.top, bottom=border.bottom)
+        return
+    thin = Side(style="thin")
+    dest.border = Border(left=thin, right=thin)
+
+
+def _style_purpose_columns(ws: Worksheet, plan: FillPlan) -> None:
+    """Wrap a long purpose such as Purchasing Only, and close the last visible row."""
+    thin = Side(style="thin")
+    wrap = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    watched = (
+        (plan.shop_purpose_col, plan.shop_purpose_col),
+        (plan.field_purpose_col, plan.field_purpose_col),
+    )
+    for row, values in plan.fills:
+        for col, _same in watched:
+            raw = values[col - 1] if col and len(values) >= col else ""
+            text = (raw or "").strip()
+            if len(text) <= 12:
+                continue
+            cell = ws.cell(row, col)
+            if isinstance(cell, MergedCell):
+                continue
+            cell.alignment = wrap
+            current = ws.row_dimensions[row].height or 15
+            ws.row_dimensions[row].height = max(float(current), 30)
+    for row in plan.group_last_rows:
+        for col in range(1, ITEM_COLS + 1):
+            cell = ws.cell(row, col)
+            if isinstance(cell, MergedCell):
+                continue
+            border = cell.border
+            cell.border = Border(left=border.left, right=border.right, top=border.top, bottom=thin)
+    _add_list_validation(ws, plan.shop_validation, SHOP_PURPOSE_LIST)
+    _add_list_validation(ws, plan.field_validation, FIELD_PURPOSE_LIST)
+
+
+def _add_list_validation(ws: Worksheet, sqref: str, formula: str) -> None:
+    areas = [part for part in (sqref or "").replace(",", " ").split() if part]
+    if not areas:
+        return
+    dv = DataValidation(type="list", formula1=f'"{formula}"', allow_blank=True)
+    for area in areas:
+        dv.add(area)
+    ws.add_data_validation(dv)
+
+
+def _column_has_list(ws: Worksheet, letter: str) -> bool:
+    return any(re.search(rf"\b{letter}\d+", str(dv.sqref or "")) for dv in ws.data_validations.dataValidation)
+
+
+def _purpose_columns_missing(ws: Worksheet) -> bool:
+    """True when row 4 has no Submitted to Shop For column yet."""
+    return _purpose_cols(ws)[1] == 0
+
+
+def _snapshot_merges(add_columns: bool) -> list[str]:
+    """Category headers, plus the title rows once the dated copy grows to column O."""
+    merges = list(CATEGORY_HEADER_MERGES)
+    if not add_columns:
+        return merges
+    last = get_column_letter(ITEM_COLS)
+    return [f"A1:{last}1", f"A2:{last}2", *merges]
 
 
 def snapshot_eddi(
@@ -418,7 +642,13 @@ def _snapshot_with_excel(
         log("INFO", "eddi", f"copy {describe_path(live)} -> {describe_path(local_book)}")
         shutil.copy2(live, local_book)
         _unblock(local_book)
-        wb = load_workbook(live, data_only=False, keep_vba=False)
+        prepared = load_workbook(local_book, data_only=False, keep_vba=local_book.suffix.casefold() == ".xlsm")
+        try:
+            expand_purpose_columns(_project_sheet(prepared))
+            prepared.save(local_book)
+        finally:
+            prepared.close()
+        wb = load_workbook(local_book, data_only=False, keep_vba=False)
         try:
             plan = build_fill_plan(_project_sheet(wb), job, drawings)
         finally:

@@ -292,6 +292,8 @@ def test_drawing_from_issue_maps_custom_fields() -> None:
             "customfield_10300": "2026-Tanzim",
             "customfield_10280": {"value": "A"},
             "customfield_10281": {"value": "Info"},
+            "customfield_10626": {"value": "Construction"},
+            "customfield_10625": {"value": "Planned"},
             "customfield_10283": {"value": "0"},
             "customfield_10284": {"value": "Approved"},
             "customfield_10285": {"value": "0"},
@@ -313,6 +315,8 @@ def test_drawing_from_issue_maps_custom_fields() -> None:
     assert row.job_number == "2026-Tanzim"
     assert row.outgoing_rev == "A"
     assert row.purpose == "Info"
+    assert row.shop_purpose == "Construction"
+    assert row.field_purpose == "Planned"
     assert row.incoming_rev == "0"
     assert row.approval == "Approved"
     assert row.shop_ifc_rev == "0"
@@ -329,7 +333,14 @@ def test_drawing_from_issue_maps_custom_fields() -> None:
 
 
 def test_drawing_fields_payload_skips_blanks() -> None:
-    from doccon.register import CLIENT_DOC_FIELD, DUE_DATE_FIELD, EDDI_FIELD, PURPOSE_FIELD
+    from doccon.register import (
+        CLIENT_DOC_FIELD,
+        DUE_DATE_FIELD,
+        EDDI_FIELD,
+        FIELD_PURPOSE_FIELD,
+        PURPOSE_FIELD,
+        SHOP_PURPOSE_FIELD,
+    )
 
     row = drawing_from_issue(
         {
@@ -338,6 +349,8 @@ def test_drawing_fields_payload_skips_blanks() -> None:
                 "summary": "2026-Tanzim-1-1 Drawing-1",
                 "customfield_10280": {"value": "A"},
                 "customfield_10281": {"value": "Approval"},
+                "customfield_10626": {"value": "Info"},
+                "customfield_10625": {"value": "Construction"},
                 "customfield_10279": "  CNRL-T-101  ",
                 "duedate": "2026-09-15",
                 "customfield_10289": [{"value": "1 - Fabrication Drawings - EDDI"}],
@@ -346,6 +359,8 @@ def test_drawing_fields_payload_skips_blanks() -> None:
     )
     payload = drawing_fields_payload(row)
     assert payload[PURPOSE_FIELD] == {"value": "Approval"}
+    assert payload[SHOP_PURPOSE_FIELD] == {"value": "Info"}
+    assert payload[FIELD_PURPOSE_FIELD] == {"value": "Construction"}
     assert payload[CLIENT_DOC_FIELD] == "CNRL-T-101"
     assert payload[DUE_DATE_FIELD] == "2026-09-15"
     assert payload[EDDI_FIELD] == [{"value": "1 - Fabrication Drawings - EDDI"}]

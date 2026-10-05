@@ -26,10 +26,12 @@ FOLDER = "#2DD4BF"
 IDENTITY_MISSING = "#FCA5A5"
 PENDING_BG = "#FEF3C7"
 PENDING_BORDER = "#E8B86D"
-# Focused row (the drawing a paste lands on). Pale teal wash + ACCENT rules. Never amber —
-# PENDING_BG stays the only yellow, so a dirty Next and email dropped still read as edits.
+# Keyboard focus inside a text cell stays teal. The selected row is a darker orange.
+# PENDING_BG stays the pale yellow, so a dirty Next still reads as an edit.
 FOCUS_BG = "#D5EFEB"
 FOCUS_RULE = ACCENT
+SELECT_BG = "#E07A2F"
+SELECT_RULE = "#9A3412"
 # Scrollbar: pale thumb on a slate trough so the slider is findable on navy and board BG.
 SCROLL_TROUGH = "#486581"
 SCROLL_THUMB = "#D9E2EC"
@@ -85,9 +87,9 @@ def apply_theme(root: tk.Misc) -> ttk.Style:
     style.configure("Pending.TLabel", background=PENDING_BG, foreground=TEXT, font=FONT)
     style.configure("Ok.TLabel", background=BG, foreground=OK, font=FONT_BOLD)
     style.configure("Bad.TLabel", background=BG, foreground=BAD, font=FONT_BOLD)
-    style.configure("Focus.TLabel", background=FOCUS_BG, foreground=TEXT, font=FONT)
-    style.configure("FocusOk.TLabel", background=FOCUS_BG, foreground=OK, font=FONT_BOLD)
-    style.configure("FocusBad.TLabel", background=FOCUS_BG, foreground=BAD, font=FONT_BOLD)
+    style.configure("Focus.TLabel", background=SELECT_BG, foreground=TEXT, font=FONT)
+    style.configure("FocusOk.TLabel", background=SELECT_BG, foreground=OK, font=FONT_BOLD)
+    style.configure("FocusBad.TLabel", background=SELECT_BG, foreground=BAD, font=FONT_BOLD)
 
     style.configure(
         "TLabelframe",

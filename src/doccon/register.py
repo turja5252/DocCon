@@ -11,6 +11,8 @@ from datetime import date
 JOB_NUMBER_FIELD = "customfield_10300"
 OUTGOING_REV_FIELD = "customfield_10280"
 PURPOSE_FIELD = "customfield_10281"
+SHOP_PURPOSE_FIELD = "customfield_10626"
+FIELD_PURPOSE_FIELD = "customfield_10625"
 INCOMING_REV_FIELD = "customfield_10283"
 APPROVAL_FIELD = "customfield_10284"
 SHOP_IFC_FIELD = "customfield_10285"
@@ -115,6 +117,8 @@ class DrawingRow:
     return_date: str = ""
     shop_ifc_date: str = ""
     field_ifc_date: str = ""
+    shop_purpose: str = ""
+    field_purpose: str = ""
     eddi_status: str = ""
     issue_type: str = ""
 
@@ -501,6 +505,8 @@ def drawing_from_issue(issue: dict) -> DrawingRow:
         return_date=date_value(fields.get(RETURN_DATE_FIELD)),
         shop_ifc_date=date_value(fields.get(SHOP_IFC_DATE_FIELD)),
         field_ifc_date=date_value(fields.get(FIELD_IFC_DATE_FIELD)),
+        shop_purpose=option_value(fields.get(SHOP_PURPOSE_FIELD)),
+        field_purpose=option_value(fields.get(FIELD_PURPOSE_FIELD)),
         eddi_status=eddi_value(fields.get(EDDI_FIELD)),
         issue_type=option_value(fields.get("issuetype")),
     )
@@ -532,6 +538,8 @@ def drawing_fields_payload(drawing: DrawingRow, eddi_options: tuple[FieldOption,
     options = {
         OUTGOING_REV_FIELD: drawing.outgoing_rev,
         PURPOSE_FIELD: drawing.purpose,
+        SHOP_PURPOSE_FIELD: drawing.shop_purpose,
+        FIELD_PURPOSE_FIELD: drawing.field_purpose,
         INCOMING_REV_FIELD: drawing.incoming_rev,
         APPROVAL_FIELD: drawing.approval,
         SHOP_IFC_FIELD: drawing.shop_ifc_rev,
