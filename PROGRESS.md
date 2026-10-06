@@ -2,6 +2,10 @@
 
 Newest first. Append a dated entry when a decision is locked, a test runs, or the next step changes.
 
+## 2026-10-06 — Elite DocCon 1.99
+
+Source and **Elite DocCon.exe** are **1.99**. **Apply** stays at the top of Columns…. Pack and JIRA ID stay first and cannot be moved.
+
 ## 2026-10-06 — Elite DocCon 1.98
 
 Source and **Elite DocCon.exe** are **1.98**. Column layout stays on this PC. Create EDDI keeps one workbook and one dated PDF. Messages open on the console’s screen. **Pack all** is back, and Update Jira confirms when the write finished.

@@ -1422,8 +1422,25 @@ class DrawingBoard(ttk.Frame):
         ).pack(anchor="w", padx=12, pady=(12, 4))
         frozen_titles = {HEADER_TITLES[index][0] for index in range(FROZEN_COLS)}
         entries: list[dict[str, object]] = []
-        body = ttk.Frame(dialog)
-        body.pack(fill="both", expand=True, padx=8)
+        buttons = ttk.Frame(dialog)
+        buttons.pack(fill="x", padx=12, pady=(4, 8))
+        list_host = ttk.Frame(dialog)
+        list_host.pack(fill="both", expand=True, padx=8, pady=(0, 12))
+        scroller = tk.Canvas(list_host, height=360, highlightthickness=0, bd=0)
+        scroll = ttk.Scrollbar(list_host, orient="vertical", command=scroller.yview)
+        scroller.configure(yscrollcommand=scroll.set)
+        scroll.pack(side="right", fill="y")
+        scroller.pack(side="left", fill="both", expand=True)
+        body = ttk.Frame(scroller)
+        body_window = scroller.create_window((0, 0), window=body, anchor="nw")
+
+        def _fit_list(_event: object | None = None) -> None:
+            scroller.configure(scrollregion=scroller.bbox("all") or (0, 0, 0, 0))
+            scroller.itemconfigure(body_window, width=max(scroller.winfo_width(), 1))
+
+        body.bind("<Configure>", _fit_list)
+        scroller.bind("<Configure>", _fit_list)
+        scroller.bind("<MouseWheel>", lambda event: scroller.yview_scroll(int(-event.delta / 120), "units"))
 
         def pack_rows() -> None:
             for entry in entries:
@@ -1483,10 +1500,10 @@ class DrawingBoard(ttk.Frame):
             self._apply_col_sizes()
             dialog.destroy()
 
-        buttons = ttk.Frame(dialog)
-        buttons.pack(fill="x", padx=12, pady=12)
         ttk.Button(buttons, text="Select all", command=select_all).pack(side="left")
-        ttk.Button(buttons, text="Show these", command=apply_choice).pack(side="right")
+        ttk.Button(buttons, text="Apply", command=apply_choice).pack(side="right")
+        dialog.bind("<Return>", lambda _event: apply_choice())
+        dialog.bind("<Escape>", lambda _event: dialog.destroy())
         reveal_on_parent(dialog)
         dialog.grab_set()
         dialog.focus_set()
