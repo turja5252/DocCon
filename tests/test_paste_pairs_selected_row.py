@@ -2,7 +2,7 @@
 # Copyright (c) 2026 Tanzim Nasir.
 # Built for Elite Integrity Services.
 # Unauthorized use by other companies is prohibited.
-"""Paste PDF pairs straight onto the selected row. No second Assign step."""
+"""Paste PDF waits in New PDFs. Assign pairs a drawing. Include with pack is Non Jira."""
 from __future__ import annotations
 
 import tkinter as tk
@@ -81,9 +81,8 @@ def _paste_many(app, monkeypatch, paths: list[Path], infos: list[str]) -> None:
     app.update()
 
 
-def test_selected_row_gets_the_paste_with_no_assign_step(tmp_path: Path, monkeypatch) -> None:
-    """The 1.53 bug: paste staged into the watched inbox, so the watcher handed
-    the operator's own file straight back to the New PDFs strip ~1.5s later."""
+def test_paste_waits_in_new_pdfs_even_when_a_row_is_selected(tmp_path: Path, monkeypatch) -> None:
+    """A selected row must not catch a single paste. Assign does that."""
     from doccon.watch_inbox import InboxWatcher
 
     rows = [
@@ -100,38 +99,35 @@ def test_selected_row_gets_the_paste_with_no_assign_step(tmp_path: Path, monkeyp
         infos: list[str] = []
         _paste(app, monkeypatch, _clipboard_pdf(tmp_path, "scan0042.pdf"), infos)
 
-        paired = app._matches["P2024-2"]
-        assert paired.pdf is not None, "selected row should have been paired by the paste"
         assert app._matches["P2024-1"].pdf is None
-        assert app._new_pdfs == [], "nothing should land in the New PDFs strip"
+        assert app._matches["P2024-2"].pdf is None
+        assert [path.name for path in app._new_pdfs] == ["scan0042.pdf"]
         assert infos == []
-        assert paired.pdf.email_dropped is True
-        address = pdf_address_text(paired)
-        assert EMAIL_DROPPED_LABEL in address
-        assert address.startswith("scan0042.pdf"), "the operator must be able to see which file paired"
-        # No REV in that Outlook name: leave Jira Now Outgoing Rev alone.
-        assert app.board._blocks["P2024-2"].nexts["outgoing_rev"].get() == "A"
+        assert "New PDFs" in app.status.cget("text")
 
         # The watcher must not re-report what the paste just staged.
         app._poll_watch()
-        assert app._new_pdfs == [], "paste staging came back as a watched-folder arrival"
+        assert [path.name for path in app._new_pdfs] == ["scan0042.pdf"]
 
         # A genuine arrival in the same folder still fires.
         stray = inbox / "walk-in.pdf"
         stray.write_bytes(b"%PDF-1.4\nstub\n")
         app._poll_watch()
-        assert [path.name for path in app._new_pdfs] == ["walk-in.pdf"]
+        assert [path.name for path in app._new_pdfs] == ["scan0042.pdf", "walk-in.pdf"]
     finally:
         app.destroy()
 
 
-def test_paste_stamps_outgoing_rev_from_the_filename(tmp_path: Path, monkeypatch) -> None:
+def test_assign_stamps_outgoing_rev_from_the_filename(tmp_path: Path, monkeypatch) -> None:
     rows = [_row(key="P2024-1", drawing_id="2026-Tanzim-1-1")]
     app = _app_with_rows(tmp_path, monkeypatch, rows)
     try:
         app.board.focus_key("P2024-1")
         infos: list[str] = []
         _paste(app, monkeypatch, _clipboard_pdf(tmp_path, "2026-Tanzim-1-1 REV 0.pdf"), infos)
+        assert app._matches["P2024-1"].pdf is None
+        app._new_pdf_list.selection_set(0)
+        app._assign_new_pdf()
         box = app.board._blocks["P2024-1"].nexts["outgoing_rev"]
         assert box.get() == "0"
         assert box.cget("style") == "Pending.TCombobox"
@@ -142,8 +138,7 @@ def test_paste_stamps_outgoing_rev_from_the_filename(tmp_path: Path, monkeypatch
         app.destroy()
 
 
-def test_selected_row_beats_a_filename_that_matches_another_row(tmp_path: Path, monkeypatch) -> None:
-    """Explicit selection always wins over the filename guess."""
+def test_paste_does_not_pair_even_when_the_filename_matches_a_row(tmp_path: Path, monkeypatch) -> None:
     rows = [
         _row(key="P2024-1", drawing_id="2026-Tanzim-1-1"),
         _row(key="P2024-2", drawing_id="2026-Tanzim-1-2"),
@@ -152,12 +147,11 @@ def test_selected_row_beats_a_filename_that_matches_another_row(tmp_path: Path, 
     try:
         app.board.focus_key("P2024-2")
         infos: list[str] = []
-        # This filename matches row 1, but row 2 is the one the operator selected.
         _paste(app, monkeypatch, _clipboard_pdf(tmp_path, "2026-Tanzim-1-1 REV A.pdf"), infos)
 
-        assert app._matches["P2024-2"].pdf is not None
+        assert app._matches["P2024-2"].pdf is None
         assert app._matches["P2024-1"].pdf is None
-        assert app._new_pdfs == []
+        assert [path.name for path in app._new_pdfs] == ["2026-Tanzim-1-1 REV A.pdf"]
     finally:
         app.destroy()
 
@@ -172,9 +166,9 @@ def test_no_selection_falls_back_to_the_filename_match(tmp_path: Path, monkeypat
         infos: list[str] = []
         _paste(app, monkeypatch, _clipboard_pdf(tmp_path, "2026-Tanzim-1-2 REV A.pdf"), infos)
 
-        assert app._matches["P2024-2"].pdf is not None
+        assert app._matches["P2024-2"].pdf is None
         assert app._matches["P2024-1"].pdf is None
-        assert app._new_pdfs == []
+        assert [path.name for path in app._new_pdfs] == ["2026-Tanzim-1-2 REV A.pdf"]
     finally:
         app.destroy()
 
@@ -215,9 +209,9 @@ def test_a_single_pack_tick_counts_as_the_selection(tmp_path: Path, monkeypatch)
         infos: list[str] = []
         _paste(app, monkeypatch, _clipboard_pdf(tmp_path, "scan0042.pdf"), infos)
 
-        assert app._matches["P2024-2"].pdf is not None
+        assert app._matches["P2024-2"].pdf is None
         assert app._matches["P2024-1"].pdf is None
-        assert app._new_pdfs == []
+        assert [path.name for path in app._new_pdfs] == ["scan0042.pdf"]
     finally:
         app.destroy()
 
@@ -232,8 +226,8 @@ def test_no_selection_and_no_match_parks_it_and_says_select_a_row(tmp_path: Path
         assert app._matches["P2024-1"].pdf is None
         assert len(app._new_pdfs) == 1
         assert app._new_pdfs[0].name == "some-invoice.pdf"
-        assert infos, "operator should be told to select a row first"
-        assert "select" in infos[0].casefold()
+        assert infos == []
+        assert "New PDFs" in app.status.cget("text")
         assert "some-invoice.pdf" in app.status.cget("text")
     finally:
         app.destroy()
@@ -248,8 +242,9 @@ def test_status_names_the_jira_id_and_the_filename(tmp_path: Path, monkeypatch) 
         _paste(app, monkeypatch, _clipboard_pdf(tmp_path, "scan0042.pdf"), infos)
 
         status = app.status.cget("text")
-        assert "2026-Tanzim-1-7" in status, f"JIRA ID missing from status: {status!r}"
         assert "scan0042.pdf" in status, f"filename missing from status: {status!r}"
+        assert "New PDFs" in status
+        assert app._matches["P2024-7"].pdf is None
     finally:
         app.destroy()
 
@@ -357,6 +352,8 @@ def test_rename_email_dropped_pdf_not_a_locate_file(tmp_path: Path, monkeypatch)
         app.board.focus_key("P2024-1")
         infos: list[str] = []
         _paste(app, monkeypatch, _clipboard_pdf(tmp_path, "scan0042.pdf"), infos)
+        app._new_pdf_list.selection_set(0)
+        app._assign_new_pdf()
         paired = app._matches["P2024-1"]
         assert paired.pdf is not None
         old = paired.pdf.path

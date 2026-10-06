@@ -99,6 +99,8 @@ from doccon.pack_state import (
     ClientPack,
     PackExtra,
     cover_recipients,
+    blank_extra,
+    document_no_for_file,
     extra_from_path,
     load_client_pack,
     save_client_pack,
@@ -173,8 +175,8 @@ CREATE_TRANSMITTAL_BTN = "Create transmittal"
 CREATE_EDDI_BTN = "Create EDDI"
 SELECT_ROW_FIRST = (
     "That PDF does not match any drawing on this job by filename.\n\n"
-    "Click the drawing row you want, then Paste PDF — the selected row always wins. "
-    "Several files wait in New PDFs: Assign to a drawing, or Include with pack when there is no Jira issue."
+    "It is in New PDFs. Click a drawing, then Assign. "
+    "Include with pack when there is no Jira issue."
 )
 
 
@@ -1047,10 +1049,16 @@ class DocConApp(tk.Tk):
         ).pack(side="left", padx=(8, 8), pady=2)
         ttk.Button(
             self._pack_extra_bar,
+            text="Add row",
+            style="Brand.TButton",
+            command=self._add_blank_extra,
+        ).pack(side="left", padx=8)
+        ttk.Button(
+            self._pack_extra_bar,
             text="Add PDF…",
             style="Add.TButton",
             command=self._add_pack_extra,
-        ).pack(side="left", padx=8)
+        ).pack(side="left", padx=(0, 8))
         ttk.Button(
             self._pack_extra_bar,
             text="Remove",
@@ -2707,7 +2715,11 @@ class DocConApp(tk.Tk):
             return
         missing_extra = next((item for item in pack_extras if not Path(item.path).is_file()), None)
         if missing_extra is not None:
-            messagebox.showerror(label, f"Missing {Path(missing_extra.path).name}.")
+            who = (missing_extra.document_no or "").strip() or "A Non Jira row"
+            messagebox.showerror(
+                label,
+                f"{who} has no PDF. Locate one, or Assign it from New PDFs.",
+            )
             return
         try:
             book = prepare_book(folder, job, kind)
@@ -2954,12 +2966,9 @@ class DocConApp(tk.Tk):
             messagebox.showinfo("Paste PDF", NO_PDF_ON_CLIPBOARD)
 
     def _ingest_pasted_pdfs(self, paths: list[Path]) -> None:
-        """One file still pairs the selected row. Two or more wait in New PDFs for Assign."""
+        """One file or several: all wait in New PDFs. Assign pairs a drawing."""
         self._claim_inbox_paths(paths)
-        if len(paths) > 1:
-            self._park_pasted_batch(paths)
-            return
-        self._apply_drop(sources_from_paths(paths), -1, -1, strip_leftovers=True)
+        self._park_pasted_batch(paths)
 
     def _park_pasted_batch(self, paths: list[Path]) -> None:
         """Multi Copy: stage every PDF, then Assign one by one. Do not pair the focused row."""
@@ -2979,9 +2988,11 @@ class DocConApp(tk.Tk):
         self._show_new_pdfs()
         names = ", ".join(path.name for path in staged[:4])
         more = "…" if len(staged) > 4 else ""
-        log("INFO", "paste", f"parked batch={len(staged)} in New PDFs: {names}")
+        count = len(staged)
+        noun = "PDF" if count == 1 else "PDFs"
+        log("INFO", "paste", f"parked batch={count} in New PDFs: {names}")
         self._set_status(
-            f"{len(staged)} PDF(s) waiting in New PDFs: {names}{more} — click a row, then Assign.{extra}"
+            f"{count} {noun} in New PDFs: {names}{more} — Assign to a drawing, or Include with pack.{extra}"
         )
 
     def _claim_inbox_paths(self, paths: list[Path]) -> None:
@@ -3100,10 +3111,24 @@ class DocConApp(tk.Tk):
         if index < 0:
             messagebox.showinfo("New PDFs", "Pick a PDF in the New PDFs list first.")
             return
+        focus = self.board.explicit_focus_key()
+        extra = self._extra_item(focus)
+        if extra is not None:
+            path = self._new_pdfs[index]
+            if not path.is_file():
+                messagebox.showinfo("New PDFs", f"Missing {path.name}.")
+                return
+            self._new_pdfs.pop(index)
+            self._show_new_pdfs()
+            self._replace_extra_file(extra, path)
+            return
         key = self._paste_target_key()
         row = self._matches.get(key) if key else None
         if row is None:
-            messagebox.showinfo("New PDFs", "Click the drawing row you want this PDF on first.")
+            messagebox.showinfo(
+                "New PDFs",
+                "Click the drawing or Non Jira row you want this PDF on first.",
+            )
             return
         if self._job_folder is None:
             messagebox.showinfo("New PDFs", NEED_FOLDER)
@@ -3171,10 +3196,27 @@ class DocConApp(tk.Tk):
             return
         item = extra_from_path(path, kind=self.kind.get())
         self._remember_pdf_folder(path)
+        self._show_extra(item)
+        self._set_status(f"{item.document_no} is under Non Jira. No Jira issue.")
+
+    def _add_blank_extra(self) -> None:
+        if not self._job_number:
+            messagebox.showinfo("Non Jira", "Enter a Job Number and click Load first.")
+            return
+        if self._job_folder is None:
+            messagebox.showinfo("Non Jira", NEED_FOLDER)
+            return
+        item = blank_extra(kind=self.kind.get())
+        self._show_extra(item)
+        self._set_status(
+            f"{item.document_no} is under Non Jira. Locate a PDF, or Assign one from New PDFs."
+        )
+
+    def _show_extra(self, item: PackExtra) -> None:
         self._paint_extras([*self._current_extras(), item])
         self.board.focus_key(item.id)
+        self.board.reveal_key(item.id)
         self._save_pack(quiet=True)
-        self._set_status(f"{item.document_no} is under Non Jira. No Jira issue.")
 
     def _include_new_pdf(self) -> None:
         index = self._selected_new_pdf()
@@ -3194,9 +3236,11 @@ class DocConApp(tk.Tk):
         item = extra_from_path(path, kind=self.kind.get())
         self._new_pdfs.pop(index)
         self._show_new_pdfs()
-        self._paint_extras([*self._current_extras(), item])
-        self.board.focus_key(item.id)
-        self._save_pack(quiet=True)
+        waiting = self._extra_item(self.board.explicit_focus_key())
+        if waiting is not None and not (waiting.path or "").strip():
+            self._replace_extra_file(waiting, path)
+            return
+        self._show_extra(item)
         self._set_status(f"{item.document_no} is under Non Jira. No Jira issue.")
 
     def _remove_pack_extra(self) -> None:
@@ -3559,10 +3603,16 @@ class DocConApp(tk.Tk):
         if not path.is_file():
             messagebox.showerror("Locate PDF", "That file is not available.")
             return
+        updated = self._replace_extra_file(current, path)
+        self._remember_pdf_folder(path)
+        self._set_status(f"Located {path.name} for {updated.document_no}.")
+
+    def _replace_extra_file(self, current: PackExtra, path: Path) -> PackExtra:
+        """Put a PDF on an existing Non Jira row. Locate and Assign both use this."""
         rev = outgoing_rev_from_filename(path.name) or current.rev
         updated = PackExtra(
             path=str(path),
-            document_no=current.document_no,
+            document_no=document_no_for_file(current.document_no, path),
             rev=rev,
             description=current.description,
             status=current.status,
@@ -3570,11 +3620,14 @@ class DocConApp(tk.Tk):
             id=current.id,
             packed=current.packed,
         )
-        self._remember_pdf_folder(path)
-        self._paint_extras([updated if item.id == key else item for item in self._current_extras()])
-        self.board.focus_key(key)
+        self._paint_extras(
+            [updated if item.id == current.id else item for item in self._current_extras()]
+        )
+        self.board.focus_key(current.id)
+        self.board.reveal_key(current.id)
         self._save_pack(quiet=True)
-        self._set_status(f"Located {path.name} for {updated.document_no}.")
+        self._set_status(f"{path.name} is on {updated.document_no}.")
+        return updated
 
     def _preview_pdf_key(self, key: str) -> None:
         extra = self._extra_item(key)

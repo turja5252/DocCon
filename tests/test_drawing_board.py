@@ -2627,6 +2627,7 @@ def test_clicking_a_row_bands_it_and_clears_the_one_it_left() -> None:
         second = board._blocks["P2024-2"]
         assert board.explicit_focus_key() == ""
         assert not first.focused and not second.focused
+        root.update()
 
         _click(first.drawing_label)
         root.update_idletasks()
@@ -2644,6 +2645,15 @@ def test_clicking_a_row_bands_it_and_clears_the_one_it_left() -> None:
         assert str(first.drawing_label.cget("style")) == "Board.TLabel"
         assert str(first.title_label.cget("style")) == "Board.TLabel"
         assert all(str(line.cget("background")) == BORDER for line in first.rules)
+
+        _click(second.title_label)
+        root.update()
+        cleared: list[str] = []
+        root.after(400, lambda: cleared.append(board.explicit_focus_key()))
+        while not cleared:
+            root.update()
+        assert cleared[0] == ""
+        assert not second.focused
     finally:
         root.destroy()
 

@@ -54,10 +54,36 @@ def letter_status(kind: str, status: str) -> str:
     return default_extra_status(kind)
 
 
+BLANK_EXTRA_NAME = "New document"
+
+
 def suggest_extra_identity(path: Path) -> tuple[str, str]:
     """Document number and rev from a PDF name. Description stays blank for the operator."""
     document_no, rev = parse_pdf_stem(Path(path).stem)
     return (document_no or Path(path).stem), rev
+
+
+def document_no_for_file(current: str, path: Path) -> str:
+    """Use the PDF name while the row is still the blank New document line."""
+    suggested, _rev = suggest_extra_identity(path)
+    kept = (current or "").strip()
+    if not kept or kept.casefold() == BLANK_EXTRA_NAME.casefold():
+        return suggested
+    return kept
+
+
+def blank_extra(*, kind: str) -> PackExtra:
+    """A Non Jira row with no file yet. Locate or Assign adds the PDF later."""
+    return PackExtra(
+        path="",
+        document_no=BLANK_EXTRA_NAME,
+        rev="",
+        description="",
+        status=letter_status(kind, ""),
+        email_dropped=False,
+        id=f"x:{uuid.uuid4().hex[:12]}",
+        packed=True,
+    )
 
 
 def extra_from_path(path: Path, *, kind: str, description: str = "", status: str = "") -> PackExtra:

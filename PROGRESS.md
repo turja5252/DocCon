@@ -2,6 +2,18 @@
 
 Newest first. Append a dated entry when a decision is locked, a test runs, or the next step changes.
 
+## 2026-10-06 — Elite DocCon 2.00
+
+Source and **Elite DocCon.exe** are **2.00**. Paste waits in New PDFs. Add row starts a Non Jira line with no file, and Locate or Assign names it from the PDF. Load shows the step and the percent. The list paints faster.
+
+## 2026-10-06 — A Non Jira row can start without a PDF
+
+**Add row** creates the line with no file. Locate, or Assign from New PDFs, puts the PDF on it. The new row scrolls into view. Remove sees a clicked Non Jira row.
+
+## 2026-10-06 — Paste always waits in New PDFs
+
+One email PDF waits in New PDFs the same way several do. Assign pairs it to a drawing. Include with pack makes the Non Jira row. Click the banded row again, or press Escape, to clear the selection.
+
 ## 2026-10-06 — The drawing list paints with plain labels
 
 The Now line on each drawing was a themed label. On a long job that theme work was most of the Load wait. Those cells are now plain labels in the same colors, and the shell rows are built in larger slices. Dropdowns and the header stay themed.

@@ -13,6 +13,8 @@ from doccon.pack_mail import attach_pdfs
 from doccon.pack_state import (
     ClientPack,
     PackExtra,
+    blank_extra,
+    document_no_for_file,
     extra_from_path,
     letter_status,
     load_client_pack,
@@ -117,5 +119,40 @@ def test_non_jira_row_is_its_own_group() -> None:
         assert board._blocks[painted[0].id].group == NON_JIRA_GROUP
         assert str(board._blocks[painted[0].id].nexts["client_document_number"].cget("state")) == "disabled"
         assert board.pending_rows() == []
+        board.focus_key(painted[0].id)
+        assert board.explicit_focus_key() == painted[0].id
+    finally:
+        root.destroy()
+
+
+def test_new_document_takes_the_pdf_name() -> None:
+    assert document_no_for_file("New document", Path("scan0042.pdf")) == "scan0042"
+    assert document_no_for_file("New document", Path("2026-Tanzim-1-9 REV 2.pdf")) == "2026-Tanzim-1-9"
+    assert document_no_for_file("Cover letter", Path("scan0042.pdf")) == "Cover letter"
+
+
+def test_blank_non_jira_row_has_no_pdf_until_one_is_added() -> None:
+    tk = pytest.importorskip("tkinter")
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("Tk is not available")
+    root.withdraw()
+    try:
+        from doccon.drawing_board import DrawingBoard
+        from doccon.log_layout import CLIENT_LAYOUT
+
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.set_rows([])
+        item = blank_extra(kind="client")
+        board.set_pack_extras([item], statuses=CLIENT_LAYOUT.statuses)
+        board.focus_key(item.id)
+        board.reveal_key(item.id)
+        root.update()
+        painted = board.pack_extras()
+        assert painted[0].path == ""
+        assert painted[0].document_no == "New document"
+        assert board.explicit_focus_key() == item.id
+        assert str(board._blocks[item.id].pdf_label.cget("text")) == "No PDF"
     finally:
         root.destroy()

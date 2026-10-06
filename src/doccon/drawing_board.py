@@ -194,6 +194,8 @@ def field_is_typeable_combo(field: str) -> bool:
 # long job can take a bigger slice without the window going quiet.
 PAINT_BATCH = 2
 SHELL_PAINT_BATCH = 32
+# A second click on the banded row clears it, after this pause so a double-click can still edit.
+UNSELECT_MS = 280
 PAINT_SLICE_MS = 1
 # Full Next editors for the first screen. The rest stay a short line until scrolled into view.
 VISIBLE_EDITORS = 12
@@ -661,6 +663,7 @@ class DrawingBoard(ttk.Frame):
         self._packed_only_btn: ttk.Button
         self._tip: tk.Toplevel | None = None
         self._tip_after = ""
+        self._unselect_after = ""
         self._paint_after = ""
         self._paint_queue: deque[MatchedRow] = deque()
         self._paint_grid = 0
@@ -1202,6 +1205,51 @@ class DrawingBoard(ttk.Frame):
             self._pin_frozen()
         finally:
             self._syncing = False
+
+    def _fit_canvas_windows(self) -> None:
+        """Keep the scrolling list as tall as the rows. A short window clips Non Jira at the bottom."""
+        try:
+            req = max(int(self._inner.winfo_reqheight()), int(self._freeze_inner.winfo_reqheight()), 1)
+            raw = self._canvas.itemcget(self._window, "height")
+            current = int(float(raw)) if str(raw).strip() else 0
+        except (tk.TclError, TypeError, ValueError):
+            return
+        if req <= current:
+            return
+        with contextlib.suppress(tk.TclError):
+            self._canvas.itemconfigure(self._window, height=req)
+            self._canvas.itemconfigure(self._freeze_window, height=req)
+
+    def reveal_key(self, key: str) -> None:
+        """Scroll so this row is on screen. Used when a Non Jira line is added at the bottom."""
+        token = (key or "").strip()
+        if not token:
+            return
+
+        def show() -> None:
+            with contextlib.suppress(tk.TclError):
+                self.update_idletasks()
+            self._fit_canvas_windows()
+            self._sync_scroll()
+            block = self._blocks.get(token)
+            try:
+                if block is None:
+                    self._canvas.yview_moveto(1.0)
+                    return
+                y = int(block.drawing_label.winfo_y())
+                bottom = y + max(int(block.drawing_label.winfo_height()), 28) + 56
+                region = self._canvas.bbox("all") or (0, 0, 1, bottom)
+                total = max(int(region[3]) - int(region[1]), 1)
+                view = max(int(self._canvas.winfo_height()), 1)
+                top = max(0, bottom - view - int(region[1]))
+                self._canvas.yview_moveto(max(0.0, min(1.0, top / total)))
+            except tk.TclError:
+                return
+
+        try:
+            self.after_idle(show)
+        except tk.TclError:
+            show()
 
     def _sync_header_span(self, canvas_width: int | None = None) -> None:
         """Resize the heading strip without measuring the drawing grid."""
@@ -1902,6 +1950,7 @@ class DrawingBoard(ttk.Frame):
         return None
 
     def _on_next_double1(self, event: tk.Event, box: NextWidget | None = None) -> str:
+        self._cancel_unselect()
         target = box if box is not None else self._board_next_from(getattr(event, "widget", None))
         if target is None and isinstance(getattr(event, "widget", None), NextEntry):
             target = event.widget  # type: ignore[assignment]
@@ -2263,6 +2312,7 @@ class DrawingBoard(ttk.Frame):
             with contextlib.suppress(tk.TclError):
                 self.after_cancel(self._paint_after)
             self._paint_after = ""
+        self._cancel_unselect()
         if self._frozen_row_after:
             with contextlib.suppress(tk.TclError):
                 self.after_cancel(self._frozen_row_after)
@@ -2639,7 +2689,32 @@ class DrawingBoard(ttk.Frame):
 
     def _focus_and_mount(self, key: str) -> None:
         self._mount_key(key)
-        self._set_focus(key)
+        token = (key or "").strip()
+        if token and token == self._focus_key:
+            self._arm_unselect(token)
+            return
+        self._cancel_unselect()
+        self._set_focus(token)
+
+    def _arm_unselect(self, key: str) -> None:
+        """Second click clears the band, unless a double-click arrives to edit."""
+        self._cancel_unselect()
+        try:
+            self._unselect_after = self.after(UNSELECT_MS, lambda: self._unselect_if(key))
+        except tk.TclError:
+            self._unselect_after = ""
+
+    def _unselect_if(self, key: str) -> None:
+        self._unselect_after = ""
+        if self._focus_key == key and self._active_next is None:
+            self._set_focus("")
+
+    def _cancel_unselect(self) -> None:
+        if not self._unselect_after:
+            return
+        with contextlib.suppress(tk.TclError):
+            self.after_cancel(self._unselect_after)
+        self._unselect_after = ""
 
     def _mount_key(self, key: str) -> None:
         block = self._blocks.get(key)
@@ -3093,7 +3168,7 @@ class DrawingBoard(ttk.Frame):
         )
         match_label = self._clip_label(NON_JIRA_GROUP)
         self._place(match_label, now_row, MATCH_COL_INDEX)
-        pdf_name = Path(item.path).name
+        pdf_name = Path(item.path).name if (item.path or "").strip() else "No PDF"
         pdf_cell, pdf_label = self._pdf_address_cell_text(pdf_name)
         self._place(pdf_cell, now_row, PDF_COL_INDEX)
         pdf_label.bind("<Double-1>", lambda _event, extra_key=key: self._on_open_pdf(extra_key))
@@ -4004,11 +4079,10 @@ class DrawingBoard(ttk.Frame):
     def explicit_focus_key(self) -> str:
         """The row the operator actually clicked. A Pack tick is not a cursor.
 
-        `focused_row` falls back to the first packed row, which is fine for a
-        positional drop but must never decide where an explicit paste lands.
+        Includes a Non Jira row. A Pack tick still is not a click.
         """
         key = (self._focus_key or "").strip()
-        return key if key and key in self._matches else ""
+        return key if key and key in self._blocks else ""
 
     def focused_row(self) -> MatchedRow | None:
         if self._focus_key:
@@ -4403,10 +4477,14 @@ class DrawingBoard(ttk.Frame):
             return None
         box = self._active_next
         widget = getattr(event, "widget", None)
-        if box is None or not self._event_is_for_active_next(widget):
-            return None
-        self._restore_and_leave(box)
-        return "break"
+        if box is not None and self._event_is_for_active_next(widget):
+            self._restore_and_leave(box)
+            return "break"
+        if self._focus_key and self._active_next is None:
+            self._cancel_unselect()
+            self._set_focus("")
+            return "break"
+        return None
 
     def _watch_next(self, block: _Block) -> None:
         def ping(_event: object = None) -> None:
