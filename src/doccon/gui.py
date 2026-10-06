@@ -8,6 +8,7 @@ import contextlib
 import os
 import sys
 import threading
+import time
 import tkinter as tk
 from dataclasses import replace
 from datetime import date
@@ -67,7 +68,7 @@ from doccon.jira_client import (
     update_eddi_status,
 )
 from doccon.jobs import job_folder_identity, resolve_job_folder
-from doccon.kinds import CLIENT, FIELD, LABELS, PREFIX, SHOP
+from doccon.kinds import CLIENT, FIELD, INCOMING, LABELS, PREFIX, SHOP
 from doccon.log_layout import layout_for
 from doccon.match import (
     LocatedPdf,
@@ -149,9 +150,12 @@ from doccon.theme import (
     FONT_TITLE,
     IDENTITY_MISSING,
     JIRA,
+    LOAD_STEPS,
     NAVY,
+    LoadButton,
     ThemeProgress,
     apply_theme,
+    paint_load_percent,
     style_text,
 )
 from doccon.transmittal_books import adopt_transmittal_books
@@ -162,6 +166,7 @@ _install_popups()
 
 NO_ROW_PDF = "No PDF for this row — use Locate…"
 PACK_SAVE_MS = 1000
+LOAD_CREEP_S = 0.45
 CREATE_CREATED_MS = 700
 CREATE_ISSUE_BTN = "Create new Jira Issue"
 CREATE_TRANSMITTAL_BTN = "Create transmittal"
@@ -793,6 +798,11 @@ class DocConApp(tk.Tk):
         self._work = ""
         self._load_gen = 0
         self._load_note: tuple[int, str] | None = None
+        self._load_mark: tuple[int, int, int, str] | None = None
+        self._load_shown = 0
+        self._load_cap = 0
+        self._load_caption = ""
+        self._load_creep = 0.0
         self._pending_rows: tuple | None = None
         self._pending_files: tuple | None = None
         self._book_covers: dict[str, BookCover] = {}
@@ -849,11 +859,12 @@ class DocConApp(tk.Tk):
         self.job = ttk.Entry(bar, width=16)
         self.job.pack(side="left", padx=(6, 4))
         self.job.bind("<Return>", lambda _event: self._load())
-        ttk.Button(bar, text="Load", style="Brand.TButton", command=self._load).pack(side="left")
+        self.load_btn = LoadButton(bar, self._load)
+        self.load_btn.pack(side="left")
 
         kinds = tk.Frame(bar, bg=NAVY)
         kinds.pack(side="left", padx=(10, 0))
-        for value in (CLIENT, SHOP, FIELD):
+        for value in (CLIENT, SHOP, FIELD, INCOMING):
             ttk.Radiobutton(
                 kinds,
                 text=LABELS[value],
@@ -1106,6 +1117,14 @@ class DocConApp(tk.Tk):
 
     def _kind_changed(self) -> None:
         self.send_btn.configure(text=CREATE_TRANSMITTAL_BTN, state="normal")
+        if self.kind.get() == INCOMING:
+            self.cover_hint.configure(
+                text="Incoming stamps Return Date, Incoming Rev, and Client Approval Status on packed rows. Date issued is not written. Use Update Jira."
+            )
+            self.board.set_transmittal_kind(INCOMING)
+            self._refresh_shop_place()
+            self._refresh_cover_hint()
+            return
         if self.kind.get() == CLIENT:
             self.cover_hint.configure(
                 text="TO and CC are email addresses only. Add more with a semicolon."
@@ -1676,6 +1695,7 @@ class DocConApp(tk.Tk):
             messagebox.showinfo("Settings", "Open Settings and save your Jira email and API token first.")
             self._settings()
             return
+        self.board.set_packed_only(False, refresh=False)
         skip_prior_save = self._reloading_after_eddi_fix
         self._reloading_after_eddi_fix = False
         wait_key = (self._create_wait_key or "").strip()
@@ -1701,7 +1721,14 @@ class DocConApp(tk.Tk):
         self._pack_extras = []
         self._show_pack_extras()
         kind_now = self.kind.get()
+        self._load_shown = 0
+        self._load_cap = 0
+        self._load_caption = ""
+        self._load_mark = None
+        self._load_creep = time.monotonic()
+        self.load_btn.start("Fetching Jira")
         self._start_progress("Fetching from Jira…" if wait_key else f"Loading {job}…")
+        self._mark_load(4, 22, "Fetching Jira")
         self._set_job_identity(None, None, loading=True)
         with contextlib.suppress(tk.TclError):
             self.update_idletasks()
@@ -1715,6 +1742,11 @@ class DocConApp(tk.Tk):
             folder: Path | None = None
             folder_label = ""
 
+            def on_jira_step(name: str) -> None:
+                step = LOAD_STEPS.get(name)
+                if step is not None:
+                    self._post_load(gen, step[0], step[1], step[2])
+
             def jira_work() -> None:
                 nonlocal error, rows, project, rev_options, eddi_contexts
                 try:
@@ -1727,19 +1759,27 @@ class DocConApp(tk.Tk):
                             job,
                             settings.project_key,
                             wait_key,
+                            on_step=on_jira_step,
                         )
                     else:
                         self._post_status(gen, f"Fetching Jira for {job}…")
                         rows, project = fetch_job_pack(
-                            settings.site, settings.email, token, job, settings.project_key
+                            settings.site,
+                            settings.email,
+                            token,
+                            job,
+                            settings.project_key,
+                            on_step=on_jira_step,
                         )
                     if rows:
+                        self._post_load(gen, *LOAD_STEPS["options"])
                         try:
                             rev_options = fetch_rev_option_lists(
                                 settings.site, settings.email, token, rows[0].key
                             )
                         except (JiraError, OSError, ValueError, TypeError):
                             rev_options = {}
+                        self._post_load(gen, *LOAD_STEPS["eddi"])
                         try:
                             eddi_contexts = fetch_eddi_contexts(
                                 settings.site, settings.email, token, rows
@@ -1835,6 +1875,7 @@ class DocConApp(tk.Tk):
     ) -> None:
         matched: list = []
         if error is None:
+            self._post_load(gen, *LOAD_STEPS["match"])
             self._post_status(gen, f"Matching PDFs for {job}…")
             matched, _extra = match_pdf_hits(rows, [], job)
             with contextlib.suppress(OSError, ValueError, TypeError):
@@ -2025,6 +2066,39 @@ class DocConApp(tk.Tk):
         """Worker threads only store text. The main-thread pump paints it."""
         self._load_note = (gen, text)
 
+    def _post_load(self, gen: int, pct: int, cap: int, caption: str) -> None:
+        """Worker threads store a Load step. The pump moves the button."""
+        self._load_mark = (gen, int(pct), int(cap), caption)
+
+    def _mark_load(self, pct: int, cap: int, caption: str) -> None:
+        """Move the Load button forward. A later step never pulls the percent back."""
+        pct = max(0, min(100, int(pct)))
+        cap = max(0, min(100, int(cap)))
+        if pct >= self._load_shown:
+            self._load_shown = pct
+            if caption:
+                self._load_caption = caption
+        if cap > self._load_cap:
+            self._load_cap = cap
+        if self._load_cap < self._load_shown:
+            self._load_cap = self._load_shown
+        self.load_btn.set_progress(self._load_shown, self._load_caption)
+        if self._load_meter.winfo_manager():
+            self._progress.set_determinate(self._load_shown, 100)
+
+    def _creep_load(self) -> None:
+        """Nudge the bar while a step has no finer count, so a long Jira call still moves."""
+        if self._work != "load" or self._load_shown >= self._load_cap:
+            return
+        now = time.monotonic()
+        if now - self._load_creep < LOAD_CREEP_S:
+            return
+        self._load_creep = now
+        self._load_shown += 1
+        self.load_btn.set_progress(self._load_shown, self._load_caption)
+        if self._load_meter.winfo_manager():
+            self._progress.set_determinate(self._load_shown, 100)
+
     def _pump_load_ui(self) -> None:
         self._load_pump = ""
         note = self._load_note
@@ -2032,6 +2106,14 @@ class DocConApp(tk.Tk):
             gen, text = note
             if gen == self._load_gen:
                 self._set_status(text)
+        mark = self._load_mark
+        if mark is not None:
+            gen, pct, cap, caption = mark
+            if self._load_mark is mark:
+                self._load_mark = None
+            if gen == self._load_gen:
+                self._mark_load(pct, cap, caption)
+        self._creep_load()
         pending = self._pending_rows
         if pending is not None:
             self._pending_rows = None
@@ -2051,6 +2133,13 @@ class DocConApp(tk.Tk):
             self.update_idletasks()
 
     def _paint_progress(self, done: int, total: int) -> None:
+        if self.load_btn.busy():
+            count = max(int(total), 0)
+            painted = max(0, min(int(done), count)) if count else 0
+            caption = f"Painting {painted} of {count}" if count else "Painting the list"
+            pct = paint_load_percent(painted, count)
+            self._mark_load(pct, pct, caption)
+            return
         self._progress.set_determinate(done, total)
 
     def _stop_progress(self) -> None:
@@ -2062,6 +2151,12 @@ class DocConApp(tk.Tk):
         self._load_meter.pack_forget()
         if hasattr(self, "_load_status"):
             self._load_status.configure(text="")
+        if hasattr(self, "load_btn"):
+            self.load_btn.finish()
+        self._load_shown = 0
+        self._load_cap = 0
+        self._load_caption = ""
+        self._load_mark = None
 
     def _show_rows(
         self,
@@ -2139,8 +2234,7 @@ class DocConApp(tk.Tk):
             return
         self._busy = False
         self._work = ""
-        painted = max(len(matched), 1)
-        self._paint_progress(painted, painted)
+        self._mark_load(*LOAD_STEPS["cover"])
         self._set_status(f"{job}: cover dates N/A, Pack off…")
         self.after(1, lambda: self._finish_cover(gen, job, matched, missing, folder_label, extra))
 
@@ -2587,6 +2681,14 @@ class DocConApp(tk.Tk):
             return
         kind = self.kind.get()
         label = LABELS.get(kind, LABELS[CLIENT])
+        if kind == INCOMING:
+            messagebox.showinfo(
+                label,
+                "Incoming does not file a transmittal letter.\n"
+                "Tick Pack, set Return Date, Incoming Rev, and Client Approval Status on the row under the filter, "
+                "then Update Jira.",
+            )
+            return
         job = self._current_job()
         folder = self._ensure_job_folder(job) if job else None
         if not job:

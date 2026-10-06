@@ -418,6 +418,152 @@ def match_style(confidence: str, *, focused: bool = False) -> str:
     return "Focus.TLabel" if focused else "Board.TLabel"
 
 
+# Load spends most of its wait on Jira, then paints the list. Each step has a
+# floor (jump here when the step starts) and a cap (the bar may creep this far
+# while that step is still running, so a long fetch does not sit at 0).
+LOAD_STEPS: dict[str, tuple[int, int, str]] = {
+    "drawings": (8, 38, "Fetching drawings"),
+    "children": (40, 52, "Fetching related issues"),
+    "options": (54, 60, "Reading field lists"),
+    "eddi": (62, 68, "Reading EDDI groups"),
+    "match": (70, 72, "Matching PDFs"),
+    "cover": (96, 99, "Restoring the pack"),
+}
+PAINT_LOAD_START = 74
+PAINT_LOAD_END = 94
+
+
+def paint_load_percent(done: int, total: int) -> int:
+    """Map painted rows into the band after Jira and before the pack restore."""
+    if total <= 0:
+        return PAINT_LOAD_END
+    done = max(0, min(int(done), int(total)))
+    span = PAINT_LOAD_END - PAINT_LOAD_START
+    return PAINT_LOAD_START + (span * done) // int(total)
+
+
+class LoadButton:
+    """Load control that fills left to right and names the step and percent."""
+
+    def __init__(self, parent: tk.Misc, command) -> None:
+        self._command = command
+        self._busy = False
+        self._pct = 0
+        self._caption = ""
+        self._idle_fill = NAVY_MID
+        self._idle_edge = "#7DD3FC"
+        self._hover_fill = "#334E68"
+        self._busy_bg = "#0B1F33"
+        self._bar_fill = FOLDER
+        self._caption_fill = "#D9E2EC"
+        height = 44
+        self.shell = tk.Frame(parent, bg=self._idle_edge, cursor="hand2", highlightthickness=0)
+        self._canvas = tk.Canvas(
+            self.shell,
+            highlightthickness=0,
+            bd=0,
+            bg=self._idle_fill,
+            height=height,
+            width=210,
+            cursor="hand2",
+        )
+        self._canvas.pack(fill="both", expand=True, padx=1, pady=1)
+        self._bar = self._canvas.create_rectangle(0, 0, 0, height, fill=self._bar_fill, outline="", tags="bar")
+        self._title = self._canvas.create_text(
+            105,
+            height // 2,
+            text="Load",
+            fill="#FFFFFF",
+            font=FONT_BOLD,
+            anchor="center",
+        )
+        self._cap = self._canvas.create_text(
+            105,
+            height - 6,
+            text="",
+            fill=self._caption_fill,
+            font=FONT_SMALL,
+            anchor="s",
+        )
+        self._canvas.bind("<Configure>", lambda _event: self._layout())
+        for widget in (self.shell, self._canvas):
+            widget.bind("<Button-1>", self._on_click)
+            widget.bind("<Enter>", self._on_enter)
+            widget.bind("<Leave>", self._on_leave)
+
+    def pack(self, **kwargs: object) -> None:
+        self.shell.pack(**kwargs)
+
+    def busy(self) -> bool:
+        return self._busy
+
+    def percent(self) -> int:
+        return self._pct
+
+    def caption(self) -> str:
+        return self._caption
+
+    def start(self, caption: str = "") -> None:
+        self._busy = True
+        self._pct = 0
+        self._caption = caption
+        self.shell.configure(bg=self._idle_edge)
+        self._canvas.configure(bg=self._busy_bg)
+        self._layout()
+
+    def set_progress(self, pct: int, caption: str = "") -> None:
+        if not self._busy:
+            self.start(caption)
+        self._pct = max(0, min(100, int(pct)))
+        if caption:
+            self._caption = caption
+        self._layout()
+
+    def finish(self) -> None:
+        self._busy = False
+        self._pct = 0
+        self._caption = ""
+        self.shell.configure(cursor="hand2", bg=self._idle_edge)
+        self._canvas.configure(cursor="hand2", bg=self._idle_fill)
+        self._layout()
+
+    def _layout(self) -> None:
+        width = max(int(self._canvas.winfo_width() or 0), 8)
+        height = max(int(self._canvas.winfo_height() or 0), 8)
+        bar_w = int(width * (self._pct / 100.0)) if self._busy else 0
+        self._canvas.coords(self._bar, 0, 0, bar_w, height)
+        self._canvas.itemconfigure(self._bar, fill=self._bar_fill if self._busy else self._idle_fill)
+        if self._busy:
+            title = f"Load  {self._pct}%"
+            title_y = height * 0.38
+            caption = self._caption
+        else:
+            title = "Load"
+            title_y = height / 2
+            caption = ""
+        self._canvas.itemconfigure(self._title, text=title)
+        self._canvas.coords(self._title, width / 2, title_y)
+        self._canvas.itemconfigure(self._cap, text=caption)
+        self._canvas.coords(self._cap, width / 2, height - 5)
+        self._canvas.tag_raise(self._title)
+        self._canvas.tag_raise(self._cap)
+
+    def _on_click(self, _event: object | None = None) -> None:
+        self._command()
+
+    def _on_enter(self, _event: object | None = None) -> None:
+        if self._busy:
+            return
+        self.shell.configure(bg="#E0F2FE")
+        self._canvas.configure(bg=self._hover_fill)
+
+    def _on_leave(self, _event: object | None = None) -> None:
+        if self._busy:
+            return
+        self.shell.configure(bg=self._idle_edge)
+        self._canvas.configure(bg=self._idle_fill)
+
+
 class ThemeProgress(tk.Canvas):
     """Load meter on navy chrome. Slate trough + teal fill so it is findable (not a 4px hairline)."""
 

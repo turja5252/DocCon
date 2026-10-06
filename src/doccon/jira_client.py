@@ -422,13 +422,22 @@ def _row_from_issue(issue: dict) -> DrawingRow | None:
 
 
 def fetch_job_pack(
-    site: str, email: str, token: str, job_number: str, project_key: str
+    site: str,
+    email: str,
+    token: str,
+    job_number: str,
+    project_key: str,
+    on_step: Callable[[str], None] | None = None,
 ) -> tuple[list[DrawingRow], JobProject | None]:
     job = (job_number or "").strip()
     if not JOB_PATTERN.fullmatch(job):
         raise JiraError("Job Number can only contain letters, numbers, dot, underscore, and hyphen.")
     key = project_key.strip() or "P2024"
     seen: dict[str, DrawingRow] = {}
+
+    def step(name: str) -> None:
+        if on_step is not None:
+            on_step(name)
 
     def add_issues(issues: list[dict]) -> list[str]:
         keys: list[str] = []
@@ -441,6 +450,7 @@ def fetch_job_pack(
             keys.append(row.key)
         return keys
 
+    step("drawings")
     pack_issues, project_issues = _search_many(
         site,
         email,
@@ -459,6 +469,7 @@ def fetch_job_pack(
         if str(issue.get("key") or "").strip()
     ]
     if job_keys:
+        step("children")
         child_keys = add_issues(_search_issues(site, email, token, children_of_jql(job_keys, key)))
         if child_keys:
             add_issues(_search_issues(site, email, token, children_of_jql(child_keys, key)))
@@ -525,6 +536,7 @@ def fetch_job_pack_including(
     attempts: int = CREATE_READ_ATTEMPTS,
     delay_s: float = CREATE_READ_DELAY_S,
     sleep: Callable[[float], None] = time.sleep,
+    on_step: Callable[[str], None] | None = None,
 ) -> tuple[list[DrawingRow], JobProject | None]:
     """Load the job pack and keep the just-created issue even if JQL search is late."""
     created: DrawingRow | None = None
@@ -539,7 +551,7 @@ def fetch_job_pack_including(
             delay_s=delay_s,
             sleep=sleep,
         )
-    rows, project = fetch_job_pack(site, email, token, job_number, project_key)
+    rows, project = fetch_job_pack(site, email, token, job_number, project_key, on_step=on_step)
     return merge_issue_into_pack(rows, created), project
 
 

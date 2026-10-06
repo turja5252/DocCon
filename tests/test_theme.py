@@ -21,9 +21,12 @@ from doccon.theme import (
     SCROLL_THUMB,
     SCROLL_TROUGH,
     SURFACE,
+    LOAD_STEPS,
+    LoadButton,
     ThemeProgress,
     apply_theme,
     match_style,
+    paint_load_percent,
 )
 
 
@@ -68,6 +71,24 @@ def test_apply_theme_and_match_styles() -> None:
         bar.stop()
         assert bar.mode() == "idle"
         assert not bar.winfo_ismapped()
+        assert paint_load_percent(0, 10) == 74
+        assert paint_load_percent(5, 10) == 84
+        assert paint_load_percent(10, 10) == 94
+        assert paint_load_percent(1, 0) == 94
+        assert LOAD_STEPS["drawings"][0] < LOAD_STEPS["children"][0] < LOAD_STEPS["cover"][0]
+        clicks: list[int] = []
+        button = LoadButton(root, lambda: clicks.append(1))
+        button.start("Fetching Jira")
+        button.set_progress(36, "Fetching drawings")
+        assert button.busy()
+        assert button.percent() == 36
+        assert button.caption() == "Fetching drawings"
+        button._on_click()
+        assert clicks == [1]
+        button.finish()
+        assert not button.busy()
+        assert button.percent() == 0
+        assert button.caption() == ""
     finally:
         root.destroy()
 

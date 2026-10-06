@@ -15,7 +15,7 @@ from pathlib import Path
 from tkinter import messagebox, ttk
 
 from doccon.date_picker import CalendarPopup, attach_calendar
-from doccon.kinds import CLIENT, FIELD, SHOP
+from doccon.kinds import CLIENT, FIELD, INCOMING, SHOP
 from doccon.drop_pdfs import dropped_pdf_filename
 from doccon.match import (
     MatchedRow,
@@ -50,15 +50,19 @@ from doccon.settings import (
 )
 from doccon.theme import (
     ACCENT,
+    BAD,
     BG,
     BORDER,
-    SELECT_BG,
-    SELECT_RULE,
+    FONT,
+    FONT_BOLD,
     FONT_SMALL,
     NAVY_MID,
     OK,
     PENDING_BG,
+    SELECT_BG,
+    SELECT_RULE,
     SURFACE,
+    TEXT,
     apply_theme,
     match_style,
 )
@@ -89,6 +93,8 @@ PACK_PURPOSE = {
     SHOP: ("shop_purpose", "Submitted to Shop For", SHOP_PURPOSE_VALUES),
     FIELD: ("field_purpose", "Submitted to Field For", FIELD_PURPOSE_VALUES),
 }
+# Incoming does not stamp Date issued. The batch writes these three Next fields.
+INCOMING_BATCH_FIELDS = ("return_date", "approval", "incoming_rev")
 # Blank Now Outgoing Rev bumps to 0 (Elite IFC / numeric jobs such as 2026-075), not A.
 BLANK_OUTGOING_REV = "0"
 
@@ -184,10 +190,10 @@ def field_is_typeable_combo(field: str) -> bool:
     """Outgoing / Incoming Rev: ▼ picks; typing only after double-click."""
     return field in TYPEABLE_REV_FIELDS
 
-# Two full rows, then back to the message loop. A long job then paints light
-# shells in larger slices so the list is usable before every cell exists.
+# Two full rows, then back to the message loop. Shells are plain labels, so a
+# long job can take a bigger slice without the window going quiet.
 PAINT_BATCH = 2
-SHELL_PAINT_BATCH = 8
+SHELL_PAINT_BATCH = 32
 PAINT_SLICE_MS = 1
 # Full Next editors for the first screen. The rest stay a short line until scrolled into view.
 VISIBLE_EDITORS = 12
@@ -474,6 +480,73 @@ class _Held:
         return 0
 
 
+# Row text uses tk labels. ttk labels on every cell were most of the Load wait.
+_row_font: tuple = FONT
+_row_bold: tuple = FONT_BOLD
+_BOLD_LOOKS = frozenset({"Ok.TLabel", "Bad.TLabel", "FocusOk.TLabel", "FocusBad.TLabel"})
+_LABEL_COLORS = {
+    "Board.TLabel": (BG, TEXT),
+    "Ok.TLabel": (BG, OK),
+    "Bad.TLabel": (BG, BAD),
+    "Focus.TLabel": (SELECT_BG, TEXT),
+    "FocusOk.TLabel": (SELECT_BG, OK),
+    "FocusBad.TLabel": (SELECT_BG, BAD),
+    "Pending.TLabel": (PENDING_BG, TEXT),
+}
+
+
+def _label_look(style: str) -> tuple[str, str, tuple]:
+    bg, fg = _LABEL_COLORS.get(style, (BG, TEXT))
+    font = _row_bold if style in _BOLD_LOOKS else _row_font
+    return bg, fg, font
+
+
+class BoardLabel(tk.Label):
+    """Now-line text. Same colors as the ttk styles, without the ttk layout cost."""
+
+    def __init__(self, master: tk.Misc, text: str = "", style: str = "Board.TLabel", **kw: object) -> None:
+        self._style = style
+        bg, fg, font = _label_look(style)
+        anchor = kw.pop("anchor", "w")
+        justify = kw.pop("justify", "left")
+        wraplength = kw.pop("wraplength", 0)
+        super().__init__(
+            master,
+            text=text,
+            bg=bg,
+            fg=fg,
+            font=font,
+            anchor=anchor,
+            justify=justify,
+            wraplength=wraplength,
+            width=1,
+            highlightthickness=0,
+            bd=0,
+            padx=2,
+            pady=0,
+        )
+
+    def cget(self, key: str) -> str:
+        if key == "style":
+            return self._style
+        return str(super().cget(key))
+
+    def configure(self, cnf: dict | None = None, **kw: object) -> None:
+        if cnf:
+            kw = {**cnf, **kw}
+        style = kw.pop("style", None)
+        if style is not None:
+            self._style = str(style)
+            bg, fg, font = _label_look(self._style)
+            kw["bg"] = bg
+            kw["fg"] = fg
+            kw["font"] = font
+        if kw:
+            super().configure(**kw)
+
+    config = configure
+
+
 class PackMark(tk.Label):
     """Pack select: empty box, teal tick when included. clam Checkbutton looks like a cross."""
 
@@ -668,6 +741,8 @@ class DrawingBoard(ttk.Frame):
         self._quiet_dropdown(self._pack_status)
         self._pack_purpose_kind = CLIENT
         self._pack_purpose_field = "purpose"
+        self._stamp_submission = True
+        self._batch_visible: set[str] = set()
         self._pack_purpose_label = ttk.Label(self._find_bar, text="Submitted to Client For")
         self._pack_purpose_label.pack(side="left")
         self._pack_purpose = ttk.Combobox(
@@ -678,6 +753,37 @@ class DrawingBoard(ttk.Frame):
         self._quiet_dropdown(self._pack_purpose)
         self._batch_toggle = ttk.Button(self._find_bar, text="Batch Next…", command=self._toggle_batch)
         self._batch_toggle.pack(side="left")
+        self._incoming_row = ttk.Frame(self)
+        self._incoming_loading = False
+        self._incoming_armed = {"return_date": "", "incoming_rev": "", "approval": ""}
+        ttk.Label(self._incoming_row, text="Return Date").pack(side="left")
+        self._incoming_return = NextEntry(self._incoming_row, width=12)
+        self._incoming_return.pack(side="left", padx=(4, 0))
+        attach_calendar(self._incoming_return, parent=self, on_change=self._on_incoming_return)
+        self._incoming_return.bind(
+            "<FocusIn>", lambda _event: self._arm_incoming("return_date", self._incoming_return)
+        )
+        self._incoming_return.bind("<FocusOut>", lambda _event: self._on_incoming_return())
+        self._incoming_return.bind("<Return>", lambda _event: self._on_incoming_return())
+        ttk.Label(self._incoming_row, text="Incoming Rev").pack(side="left", padx=(12, 0))
+        self._incoming_rev = ttk.Combobox(self._incoming_row, width=8, values=REV_VALUES)
+        self._incoming_rev.pack(side="left", padx=(4, 0))
+        self._quiet_dropdown(self._incoming_rev)
+        self._incoming_rev.bind(
+            "<FocusIn>", lambda _event: self._arm_incoming("incoming_rev", self._incoming_rev)
+        )
+        self._incoming_rev.bind("<<ComboboxSelected>>", lambda _event: self._on_incoming_rev())
+        self._incoming_rev.bind("<FocusOut>", lambda _event: self._on_incoming_rev())
+        self._incoming_rev.bind("<Return>", lambda _event: self._on_incoming_rev())
+        ttk.Label(self._incoming_row, text="Client Approval Status").pack(side="left", padx=(12, 0))
+        self._incoming_approval = ttk.Combobox(
+            self._incoming_row, width=22, values=APPROVAL_VALUES, state="readonly"
+        )
+        self._incoming_approval.pack(side="left", padx=(4, 0))
+        self._quiet_dropdown(self._incoming_approval)
+        self._incoming_approval.bind(
+            "<<ComboboxSelected>>", lambda _event: self._on_incoming_approval()
+        )
         self._zoom_readout = ttk.Label(self._find_bar, text="100%", width=5)
         self._zoom_readout.pack(side="right")
         self._zoom_scale = ttk.Scale(
@@ -722,8 +828,11 @@ class DrawingBoard(ttk.Frame):
         batch_canvas.pack(fill="x", expand=True)
         batch_h.pack(fill="x")
         self._batch_fields = {}
+        self._batch_labels: dict[str, ttk.Label] = {}
         for field, title, values, width, kind in FIELD_KEYS:
-            ttk.Label(batch_inner, text=title).pack(side="left")
+            label = ttk.Label(batch_inner, text=title)
+            label.pack(side="left")
+            self._batch_labels[field] = label
             box_width = max(8, width - 2)
             if kind in {"text", "date"}:
                 box: NextWidget = NextEntry(batch_inner, width=box_width)
@@ -738,6 +847,7 @@ class DrawingBoard(ttk.Frame):
                 box.pack(side="left", padx=(2, 8))
                 self._quiet_dropdown(box)
             self._batch_fields[field] = box
+            self._batch_visible.add(field)
 
         def _batch_sync(_event=None) -> None:
             batch_canvas.configure(scrollregion=batch_canvas.bbox("all"))
@@ -1277,6 +1387,10 @@ class DrawingBoard(ttk.Frame):
         ):
             style.configure(name, font=font)
         style.configure("Group.TLabel", font=bold)
+        global _row_font, _row_bold
+        _row_font = font
+        _row_bold = bold
+        self._refresh_row_fonts()
         for block in self._blocks.values():
             with contextlib.suppress(tk.TclError, AttributeError):
                 block.pack_mark.configure(font=bold)
@@ -1284,6 +1398,18 @@ class DrawingBoard(ttk.Frame):
             self._zoom_readout.configure(text=f"{pct}%")
         self._col_px = [max(MIN_COL_PX, int(round(px * pct / 100))) for px in self._base_col_px]
         self._apply_col_sizes()
+
+    def _refresh_row_fonts(self) -> None:
+        """Zoom changes the shared font. Plain row labels do not follow ttk styles."""
+
+        def walk(widget: tk.Misc) -> None:
+            if isinstance(widget, BoardLabel):
+                widget.configure(style=widget._style)
+            for child in widget.winfo_children():
+                walk(child)
+
+        walk(self._inner)
+        walk(self._freeze_inner)
 
     def header_titles(self) -> list[str]:
         return [str(label.cget("text")) for label in self._header_labels]
@@ -1845,17 +1971,16 @@ class DrawingBoard(ttk.Frame):
         *,
         wrap_col: int | None = None,
         parent: tk.Misc | None = None,
-    ) -> ttk.Label:
+    ) -> BoardLabel:
         host = parent or self._inner
         if wrap_col is None:
-            return ttk.Label(host, text=text, style=style, anchor="w", width=1)
-        return ttk.Label(
+            return BoardLabel(host, text=text, style=style, anchor="w")
+        return BoardLabel(
             host,
             text=text,
             style=style,
             anchor="nw",
             justify="left",
-            width=1,
             wraplength=self._wrap_px(wrap_col),
         )
 
@@ -1878,13 +2003,14 @@ class DrawingBoard(ttk.Frame):
     def packed_only(self) -> bool:
         return bool(self._packed_only.get())
 
-    def set_packed_only(self, on: bool) -> None:
+    def set_packed_only(self, on: bool, *, refresh: bool = True) -> None:
         """Show packed rows only when on. Combines with the text filter (packed ∩ match)."""
         wanted = bool(on)
         if bool(self._packed_only.get()) != wanted:
             self._packed_only.set(wanted)
         self._style_packed_only()
-        self._refresh_filter()
+        if refresh:
+            self._refresh_filter()
 
     def _toggle_packed_only(self) -> None:
         self.set_packed_only(not bool(self._packed_only.get()))
@@ -1966,7 +2092,10 @@ class DrawingBoard(ttk.Frame):
             return
         self.stamp_cover_dates_on_keys((key,))
         self.stamp_status_on_keys(self.pack_status(), (key,))
-        self.stamp_purpose_on_keys(self.pack_purpose(), (key,), field=self._pack_purpose_field)
+        if self._pack_purpose_field:
+            self.stamp_purpose_on_keys(self.pack_purpose(), (key,), field=self._pack_purpose_field)
+        if not self._stamp_submission:
+            self._stamp_incoming_picks((key,))
 
     def _run_pack_filter(self) -> None:
         self._pack_filter_after = ""
@@ -2408,7 +2537,7 @@ class DrawingBoard(ttk.Frame):
         match_label = self._clip_label(row.confidence, match_style(row.confidence))
         self._place(match_label, now_row, MATCH_COL_INDEX)
         pdf_cell = tk.Frame(self._inner, bg=BG, highlightthickness=0, bd=0)
-        pdf_label = ttk.Label(pdf_cell, text=pdf_address_text(row), style="Board.TLabel", anchor="w")
+        pdf_label = BoardLabel(pdf_cell, text=pdf_address_text(row), style="Board.TLabel", anchor="w")
         pdf_label.pack(fill="both", expand=True, padx=2, pady=1)
         self._place(pdf_cell, now_row, PDF_COL_INDEX)
         # Field Now labels wait until the row is on screen. A long job should not
@@ -3076,7 +3205,7 @@ class DrawingBoard(ttk.Frame):
 
     def _pdf_address_cell_text(self, text: str) -> tuple[tk.Frame, ttk.Label]:
         cell = tk.Frame(self._inner, bg=SURFACE, highlightthickness=0, bd=0)
-        label = ttk.Label(cell, text=text, style="Board.TLabel", anchor="w")
+        label = BoardLabel(cell, text=text, style="Board.TLabel", anchor="w")
         label.pack(fill="both", expand=True, padx=4, pady=2)
         return cell, label
 
@@ -3178,6 +3307,8 @@ class DrawingBoard(ttk.Frame):
         """Copy each cover date getter onto those packed rows. Blank getters skip that field."""
         stamped = 0
         for field in self._cover_stamps:
+            if field == "submission_date" and not self._stamp_submission:
+                continue
             stamped += self.stamp_date_on_keys(field, self._cover_field_date(field), keys)
         return stamped
 
@@ -3203,6 +3334,8 @@ class DrawingBoard(ttk.Frame):
         changing: N/A is a right-click-undo of that date field on packed rows only.
         Does not write Jira.
         """
+        if field == "submission_date" and not self._stamp_submission:
+            return 0
         value = (date or "").strip()
         if not value or value.casefold() == "n/a":
             return self.restore_packed_next_field(field)
@@ -3342,8 +3475,29 @@ class DrawingBoard(ttk.Frame):
             self._batch_note.configure(text="Packed Status restored to Now.")
 
     def set_transmittal_kind(self, kind: str) -> None:
-        """Point the filter dropdown at Client, Shop, or Field. Does not stamp or restore Next."""
-        spec = PACK_PURPOSE.get((kind or "").strip(), PACK_PURPOSE[CLIENT])
+        """Point the filter dropdown at Client, Shop, or Field. Incoming uses the return batch."""
+        token = (kind or "").strip()
+        incoming = token == INCOMING
+        was_incoming = not self._stamp_submission
+        self._stamp_submission = not incoming
+        self._show_pack_purpose(not incoming)
+        self._show_batch_fields(None)
+        self._show_incoming_row(incoming)
+        if incoming:
+            self.restore_packed_next_field("submission_date")
+            self._pack_purpose_kind = INCOMING
+            self._pack_purpose_field = ""
+            self._pack_purpose_loading = True
+            try:
+                self._pack_purpose.set("")
+            finally:
+                self._pack_purpose_loading = False
+            return
+        if was_incoming:
+            self.apply_cover_date_change(
+                "submission_date", self._cover_field_date("submission_date")
+            )
+        spec = PACK_PURPOSE.get(token, PACK_PURPOSE[CLIENT])
         field, title, values = spec
         if field == self._pack_purpose_field and kind == self._pack_purpose_kind:
             return
@@ -3356,6 +3510,138 @@ class DrawingBoard(ttk.Frame):
             self._pack_purpose.set("")
         finally:
             self._pack_purpose_loading = False
+
+    def _batch_anchor(self) -> tk.Misc:
+        if self._incoming_row.winfo_manager():
+            return self._incoming_row
+        return self._find_bar
+
+    def _show_incoming_row(self, show: bool) -> None:
+        """Filter-row stamps for an incoming pack. Blank does not write."""
+        if show:
+            if not self._incoming_row.winfo_manager():
+                self._incoming_row.pack(fill="x", padx=8, pady=(0, 4), after=self._find_bar)
+            if self._batch_frame.winfo_manager():
+                self._batch_frame.pack(fill="x", padx=8, pady=(0, 4), after=self._incoming_row)
+            return
+        self._incoming_loading = True
+        try:
+            self._incoming_return.set("")
+            self._incoming_rev.set("")
+            self._incoming_approval.set("")
+        finally:
+            self._incoming_loading = False
+        if self._incoming_row.winfo_manager():
+            self._incoming_row.pack_forget()
+
+    def _stamp_field_on_packed(self, field: str, value: str) -> int:
+        """Stamp one Next field on packed rows. A blank pick puts Now back."""
+        text = (value or "").strip()
+        if not text:
+            count = 0
+            for key, block in self._blocks.items():
+                if not block.include.get() or block.extra:
+                    continue
+                if self.restore_next_field(key, field):
+                    count += 1
+            return count
+        return self.apply_next_to_pack(fields={field: text})
+
+    def _note_incoming_stamp(self, title: str, value: str, count: int) -> None:
+        if value and count:
+            self._batch_note.configure(
+                text=f"Set {title} to {value} on {count} packed drawing(s). Jira was not written."
+            )
+            return
+        if value:
+            self._batch_note.configure(text=f"Tick Pack — {title} will stamp onto packed drawings.")
+            return
+        if count:
+            self._batch_note.configure(text=f"Packed {title} restored to Now.")
+
+    def _arm_incoming(self, field: str, widget: tk.Misc) -> None:
+        try:
+            self._incoming_armed[field] = (widget.get() or "").strip()
+        except tk.TclError:
+            return
+
+    def _commit_incoming(self, field: str, title: str, widget: tk.Misc) -> None:
+        """Stamp packed rows only when this batch box changed.
+
+        A later edit on one drawing stays until the batch value itself changes.
+        """
+        if self._incoming_loading:
+            return
+        try:
+            value = (widget.get() or "").strip()
+        except tk.TclError:
+            return
+        if value == self._incoming_armed.get(field, value):
+            return
+        self._incoming_armed[field] = value
+        count = self._stamp_field_on_packed(field, value)
+        self._note_incoming_stamp(title, value, count)
+
+    def _on_incoming_return(self) -> None:
+        self._commit_incoming("return_date", "Return Date", self._incoming_return)
+
+    def _on_incoming_rev(self) -> None:
+        self._commit_incoming("incoming_rev", "Incoming Rev", self._incoming_rev)
+
+    def _on_incoming_approval(self) -> None:
+        self._commit_incoming("approval", "Client Approval Status", self._incoming_approval)
+
+    def _stamp_incoming_picks(self, keys: tuple[str, ...]) -> None:
+        """A Pack tick copies the incoming picks. A blank pick does not wipe a typed Next."""
+        picks = (
+            ("return_date", self._incoming_return.get()),
+            ("incoming_rev", self._incoming_rev.get()),
+            ("approval", self._incoming_approval.get()),
+        )
+        for field, raw in picks:
+            value = (raw or "").strip()
+            if not value:
+                continue
+            for key in keys:
+                block = self._blocks.get(key)
+                if block is None or not block.include.get() or block.extra:
+                    continue
+                self._apply_next_to_block(block, fields={field: value})
+
+    def _show_pack_purpose(self, show: bool) -> None:
+        if show:
+            if not self._pack_purpose_label.winfo_manager():
+                self._pack_purpose_label.pack(side="left", before=self._batch_toggle)
+            if not self._pack_purpose.winfo_manager():
+                self._pack_purpose.pack(side="left", padx=(4, 8), before=self._batch_toggle)
+            return
+        if self._pack_purpose_label.winfo_manager():
+            self._pack_purpose_label.pack_forget()
+        if self._pack_purpose.winfo_manager():
+            self._pack_purpose.pack_forget()
+
+    def _show_batch_fields(self, only: tuple[str, ...] | None) -> None:
+        """Show every Batch Next field, or only the incoming return fields."""
+        wanted = set(self._batch_fields) if only is None else set(only)
+        self._batch_visible = wanted
+        for field, _title, _values, _width, kind in FIELD_KEYS:
+            label = self._batch_labels.get(field)
+            box = self._batch_fields.get(field)
+            if label is None or box is None:
+                continue
+            calendar = getattr(box, "_doccon_calendar", None)
+            if label.winfo_manager():
+                label.pack_forget()
+            if box.winfo_manager():
+                box.pack_forget()
+            if calendar is not None and calendar.winfo_manager():
+                calendar.pack_forget()
+            if field not in wanted:
+                continue
+            label.pack(side="left")
+            box.pack(side="left", padx=(2, 0) if kind == "date" else (2, 8))
+            if calendar is not None:
+                calendar.pack(side="left", after=box, padx=(2, 8))
 
     def pack_purpose_field(self) -> str:
         return self._pack_purpose_field
@@ -3541,14 +3827,18 @@ class DrawingBoard(ttk.Frame):
         self._batch_open = bool(shown)
         if self._batch_open:
             if not self._batch_frame.winfo_manager():
-                self._batch_frame.pack(fill="x", padx=8, pady=(0, 4), after=self._find_bar)
+                self._batch_frame.pack(fill="x", padx=8, pady=(0, 4), after=self._batch_anchor())
             self._batch_toggle.configure(text="Hide batch")
         else:
             self._batch_frame.pack_forget()
             self._batch_toggle.configure(text="Batch Next…")
 
     def _apply_batch(self) -> None:
-        fields = {field: box.get() for field, box in self._batch_fields.items()}
+        fields = {
+            field: box.get()
+            for field, box in self._batch_fields.items()
+            if field in self._batch_visible
+        }
         count = self.apply_next_to_pack(status=self._batch_status.get(), fields=fields)
         if count:
             self._batch_note.configure(text=f"Applied to {count} packed drawing(s).")
@@ -3772,12 +4062,11 @@ class DrawingBoard(ttk.Frame):
         dropped = pdf_is_email_dropped(row)
         fill = PENDING_BG if dropped else BG
         cell = tk.Frame(self._inner, bg=fill, highlightthickness=0, bd=0)
-        label = ttk.Label(
+        label = BoardLabel(
             cell,
             text=pdf_address_text(row),
             style="Pending.TLabel" if dropped else "Board.TLabel",
             anchor="w",
-            width=1,
         )
         label.pack(fill="both", expand=True, padx=2, pady=1)
         return cell, label

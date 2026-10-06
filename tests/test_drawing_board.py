@@ -665,6 +665,41 @@ def test_opening_the_edit_row_keeps_columns_under_the_headings() -> None:
         root.destroy()
 
 
+def test_incoming_batch_is_return_fields_and_skips_date_issued() -> None:
+    root = _board_root()
+    try:
+        from doccon.kinds import INCOMING
+
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.set_rows([_row()])
+        board.set_pack(True)
+        board.stamp_packed_date("submission_date", "2026-10-06")
+        assert board._blocks["P2024-1"].nexts["submission_date"].get() == "2026-10-06"
+        board.set_transmittal_kind(INCOMING)
+        assert board._blocks["P2024-1"].nexts["submission_date"].get() == ""
+        assert str(board._incoming_row.winfo_manager()) == "pack"
+        assert board._incoming_return.winfo_manager() == "pack"
+        assert board._incoming_rev.winfo_manager() == "pack"
+        assert board._incoming_approval.winfo_manager() == "pack"
+        assert board._pack_purpose_label.winfo_manager() == ""
+        board._incoming_return.set("2026-10-06")
+        board._on_incoming_return()
+        assert board._blocks["P2024-1"].nexts["return_date"].get() == "2026-10-06"
+        board._blocks["P2024-1"].nexts["return_date"].set("2026-11-01")
+        board._on_incoming_return()
+        assert board._blocks["P2024-1"].nexts["return_date"].get() == "2026-11-01"
+        board._incoming_return.set("2026-12-01")
+        board._on_incoming_return()
+        assert board._blocks["P2024-1"].nexts["return_date"].get() == "2026-12-01"
+        assert board.apply_cover_date_change("submission_date", "2026-10-06") == 0
+        assert board._blocks["P2024-1"].nexts["submission_date"].get() != "2026-10-06"
+        board.set_transmittal_kind("client")
+        assert board._incoming_row.winfo_manager() == ""
+        assert board._pack_purpose_label.winfo_manager() == "pack"
+    finally:
+        root.destroy()
+
+
 def test_column_order_moves_status_ahead_of_description() -> None:
     root = _board_root()
     try:

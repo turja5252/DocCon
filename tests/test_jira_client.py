@@ -203,7 +203,12 @@ def test_fetch_drawings_includes_job_tree(monkeypatch) -> None:
     assert [row.key for row in rows] == ["P2024-15578", "P2024-ITP1", "P2024-QC"]
     from doccon.jira_client import fetch_job_pack
 
-    _rows, project = fetch_job_pack("https://example.atlassian.net", "a@b.c", "token", "2026-Tanzim", "P2024")
+    steps: list[str] = []
+    _rows, project = fetch_job_pack(
+        "https://example.atlassian.net", "a@b.c", "token", "2026-Tanzim", "P2024", on_step=steps.append
+    )
+    assert steps[0] == "drawings"
+    assert "children" in steps
     assert project is not None
     assert project.key == "P2024-15553"
     assert project.summary == "2026-Tanzim"

@@ -510,10 +510,22 @@ def test_load_shows_progress_before_rows(tmp_path: Path, monkeypatch) -> None:
         app.job.insert(0, "2026-Tanzim")
         app.update_idletasks()
         assert app.job.get().strip() == "2026-Tanzim"
+        app.load_btn.start("Fetching related issues")
+        app._load_shown = 40
+        app._load_cap = 52
+        app._load_caption = "Fetching related issues"
+        app._mark_load(8, 38, "Fetching drawings")
+        assert app.load_btn.percent() == 40
+        assert app.load_btn.caption() == "Fetching related issues"
+        app.load_btn.finish()
         app._load()
         assert infos == []
         assert app._work == "load"
-        assert app._progress.mode() == "indeterminate"
+        assert app.load_btn.busy()
+        assert app.load_btn.percent() >= 4
+        assert "Jira" in app.load_btn.caption() or "Fetch" in app.load_btn.caption()
+        assert app._progress.mode() == "determinate"
+        assert app._progress.fraction() > 0
         assert app._load_meter.winfo_manager() == "pack"
         for _ in range(80):
             app.update()
@@ -536,6 +548,8 @@ def test_load_shows_progress_before_rows(tmp_path: Path, monkeypatch) -> None:
         assert app.board.selected_keys() == ()
         assert app._progress.mode() == "idle"
         assert app._load_meter.winfo_manager() == ""
+        assert not app.load_btn.busy()
+        assert app.load_btn.percent() == 0
     finally:
         release.set()
         app.destroy()

@@ -2,6 +2,18 @@
 
 Newest first. Append a dated entry when a decision is locked, a test runs, or the next step changes.
 
+## 2026-10-06 — The drawing list paints with plain labels
+
+The Now line on each drawing was a themed label. On a long job that theme work was most of the Load wait. Those cells are now plain labels in the same colors, and the shell rows are built in larger slices. Dropdowns and the header stay themed.
+
+## 2026-10-06 — Load button shows the step and the percent
+
+Load fills the Load button the way Databook fills a long job. The caption names the step (Fetching drawings, Reading field lists, Painting 12 of 80, Restoring the pack) and the fill is that percent of the whole load. A step with no finer count still creeps forward so a long Jira call does not sit still. Changing one drawing after a batch stamp is unchanged.
+
+## 2026-10-06 — Incoming batch, and Load drops Packed only
+
+**Incoming** sits with Client, Shop, and Field. It does not stamp Date issued. Batch Next shows Return Date, Client Approval Status, and Incoming Rev. Create transmittal does not file a letter; Update Jira writes those fields. Load turns Packed only off without repainting the old list, so the next job does not hang on a hidden pack.
+
 ## 2026-10-06 — Elite DocCon 1.99
 
 Source and **Elite DocCon.exe** are **1.99**. **Apply** stays at the top of Columns…. Pack and JIRA ID stay first and cannot be moved.
