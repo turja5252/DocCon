@@ -200,6 +200,8 @@ PAINT_SLICE_MS = 1
 # Full Next editors for the first screen. The rest stay a short line until scrolled into view.
 VISIBLE_EDITORS = 12
 SHELL_ROW_PX = 56
+# Extra room under the last row. The scroll area was stopping one or two items short.
+SCROLL_TAIL_PX = SHELL_ROW_PX * 2
 FROZEN_SYNC_MAX = 4
 PACK_COL_INDEX = 0
 DRAWING_COL_INDEX = 1
@@ -1196,29 +1198,30 @@ class DrawingBoard(ttk.Frame):
             self._header_canvas.itemconfigure(self._header_window, height=header_h)
             self._header_canvas.itemconfigure(self._freeze_header_window, height=header_h)
             self._header_canvas.configure(height=header_h, scrollregion=(0, 0, span, header_h))
-            body = self._canvas.bbox("all")
-            if body is None:
-                self._canvas.configure(scrollregion=(0, 0, span, 1))
-            else:
-                self._canvas.configure(scrollregion=body)
+            body_h = self._list_body_height()
+            with contextlib.suppress(tk.TclError):
+                self._canvas.itemconfigure(self._window, height=body_h)
+                self._canvas.itemconfigure(self._freeze_window, height=body_h)
+            self._canvas.configure(scrollregion=(0, 0, span, body_h))
             self._size_frozen()
             self._pin_frozen()
         finally:
             self._syncing = False
 
-    def _fit_canvas_windows(self) -> None:
-        """Keep the scrolling list as tall as the rows. A short window clips Non Jira at the bottom."""
-        try:
-            req = max(int(self._inner.winfo_reqheight()), int(self._freeze_inner.winfo_reqheight()), 1)
-            raw = self._canvas.itemcget(self._window, "height")
-            current = int(float(raw)) if str(raw).strip() else 0
-        except (tk.TclError, TypeError, ValueError):
-            return
-        if req <= current:
-            return
-        with contextlib.suppress(tk.TclError):
-            self._canvas.itemconfigure(self._window, height=req)
-            self._canvas.itemconfigure(self._freeze_window, height=req)
+    def _list_body_height(self) -> int:
+        """Full list height, including the last row and a little room under it."""
+        best = 1
+        for frame in (self._inner, self._freeze_inner):
+            try:
+                best = max(best, int(frame.winfo_reqheight()))
+                cols, rows = frame.grid_size()
+                if cols > 0 and rows > 0:
+                    box = frame.grid_bbox(0, 0, cols - 1, rows - 1)
+                    if box:
+                        best = max(best, int(box[1]) + int(box[3]))
+            except tk.TclError:
+                continue
+        return best + SCROLL_TAIL_PX
 
     def reveal_key(self, key: str) -> None:
         """Scroll so this row is on screen. Used when a Non Jira line is added at the bottom."""
@@ -1229,7 +1232,6 @@ class DrawingBoard(ttk.Frame):
         def show() -> None:
             with contextlib.suppress(tk.TclError):
                 self.update_idletasks()
-            self._fit_canvas_windows()
             self._sync_scroll()
             block = self._blocks.get(token)
             try:

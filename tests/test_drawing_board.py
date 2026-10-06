@@ -31,6 +31,7 @@ from doccon.drawing_board import (
     PDF_COL_PX,
     PICK_ONLY_FIELDS,
     REV_VALUES,
+    SHELL_ROW_PX,
     DrawingBoard,
     NextEntry,
     default_col_px,
@@ -1057,6 +1058,30 @@ def test_scroll_builds_locate_on_rows_below_the_first_screen() -> None:
         assert fresh.locate_btn is not None
         assert fresh.open_btn is not None
         assert fresh.preview_btn is not None
+    finally:
+        root.destroy()
+
+
+def test_scrollregion_reaches_past_the_last_row() -> None:
+    root = _board_root()
+    try:
+        root.geometry("900x400")
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.pack(fill="both", expand=True)
+        board.set_rows(
+            [_row(key=f"P2024-{n}", drawing_id=f"2026-Tanzim-1-{n}") for n in range(1, 16)]
+        )
+        root.update()
+        board._sync_scroll()
+        cols, rows = board._inner.grid_size()
+        box = board._inner.grid_bbox(0, 0, max(cols - 1, 0), max(rows - 1, 0))
+        assert box is not None
+        content_bottom = int(box[1]) + int(box[3])
+        region = [int(float(part)) for part in str(board._canvas.cget("scrollregion")).split()]
+        assert region[3] >= content_bottom + SHELL_ROW_PX
+        board._canvas.yview_moveto(1.0)
+        _first, last = board._canvas.yview()
+        assert last >= 0.99
     finally:
         root.destroy()
 

@@ -38,7 +38,9 @@ The summary is an ID, then optional wording. Empty description is allowed.
 
 No extra Jira status or custom trigger field. Engineer emails Sarah the pack list; she runs DocCon.
 
-**Next:** Source and the frozen exe are **2.00**. Load `2026-Tanzim`. Do not Confirm 075.
+**Next:** Source and the frozen exe are **2.01**. Load `2026-Tanzim`. Do not Confirm 075.
+
+**2.01 The list scrolls past the last row.** The scroll area was stopping one or two items short. It now includes the full list and a little room under the last row. Drag is not back.
 
 **2.00 Paste waits in New PDFs, and a Non Jira row can start with no file.** One attachment or several all wait in New PDFs. Assign pairs a drawing. Include with pack, or Assign onto a blank Non Jira row, adds the file. Add row creates that line first. Locate or Assign renames New document from the PDF name. The new row scrolls into view. Click the banded row again, or press Escape, to clear it. Load shows the step and the percent on the button. Drag is not back.
 

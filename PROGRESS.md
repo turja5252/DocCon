@@ -2,6 +2,14 @@
 
 Newest first. Append a dated entry when a decision is locked, a test runs, or the next step changes.
 
+## 2026-10-06 — Elite DocCon 2.01
+
+Source and **Elite DocCon.exe** are **2.01**. The list scrolls past the last row.
+
+## 2026-10-06 — The list scrolls past the last row
+
+The scroll area stopped one or two items short, so the bottom of the list was cut off. It now includes the full grid and a little room under the last row.
+
 ## 2026-10-06 — Elite DocCon 2.00
 
 Source and **Elite DocCon.exe** are **2.00**. Paste waits in New PDFs. Add row starts a Non Jira line with no file, and Locate or Assign names it from the PDF. Load shows the step and the percent. The list paints faster.
