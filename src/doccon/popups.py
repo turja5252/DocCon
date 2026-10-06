@@ -9,6 +9,13 @@ import contextlib
 import tkinter as tk
 
 _INSTALLED = False
+_CONSOLE: tk.Misc | None = None
+
+
+def bind_console(window: tk.Misc) -> None:
+    """Remember the DocCon window so a message with no parent still uses its screen."""
+    global _CONSOLE
+    _CONSOLE = window
 
 
 def fit_on_monitor(
@@ -83,21 +90,25 @@ def center_origin(
     )
 
 
-def _host(parent: tk.Misc | None) -> tk.Misc | None:
-    if parent is not None:
-        try:
-            return parent.winfo_toplevel()
-        except tk.TclError:
-            return None
-    root = getattr(tk, "_default_root", None)
-    if root is None:
+def _alive(window: tk.Misc | None) -> tk.Misc | None:
+    if window is None:
         return None
     try:
-        if int(root.winfo_exists()):
-            return root
+        if int(window.winfo_exists()):
+            return window.winfo_toplevel()
     except tk.TclError:
         return None
     return None
+
+
+def _host(parent: tk.Misc | None) -> tk.Misc | None:
+    found = _alive(parent)
+    if found is not None:
+        return found
+    found = _alive(_CONSOLE)
+    if found is not None:
+        return found
+    return _alive(getattr(tk, "_default_root", None))
 
 
 def _child_size(window: tk.Misc) -> tuple[int, int]:
@@ -155,7 +166,11 @@ def reveal_on_parent(window: tk.Toplevel) -> None:
 
 
 def _pin(parent: tk.Misc | None) -> tk.Toplevel | None:
-    """A 1px owner on the console so Windows centers its own dialogs there."""
+    """A mapped 1px owner on the console's monitor.
+
+    Windows centers a message on its owner. An unmapped or see-through owner
+    still counts as the primary screen, so the pin is placed and drawn first.
+    """
     host = _host(parent)
     if host is None:
         return None
@@ -164,12 +179,10 @@ def _pin(parent: tk.Misc | None) -> tk.Toplevel | None:
         pin = tk.Toplevel(host)
         pin.overrideredirect(True)
         pin.transient(host)
-        with contextlib.suppress(tk.TclError):
-            pin.attributes("-alpha", 0.0)
         x = int(host.winfo_rootx()) + max(int(host.winfo_width()), 1) // 2
         y = int(host.winfo_rooty()) + max(int(host.winfo_height()), 1) // 2
         pin.geometry(f"1x1+{x}+{y}")
-        pin.update_idletasks()
+        pin.update()
         return pin
     except tk.TclError:
         return None

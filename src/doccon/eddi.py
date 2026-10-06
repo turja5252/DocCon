@@ -2,16 +2,16 @@
 # Copyright (c) 2026 Tanzim Nasir.
 # Built for Elite Integrity Services.
 # Unauthorized use by other companies is prohibited.
-"""Dated EDDI snapshot: fill a copy of the job's EDDI form (sheet Project).
+"""EDDI snapshot: one workbook and one PDF in the job.
 
-Jira stays the register. The live ``EDDI-{job}.xlsm`` is the form and is not
-overwritten. DocCon copies it to ``EDDI-{job}-{date}.xlsm``, fills groups 1–9
-from console Next values (listed items with a paired PDF, not only Pack), and prints
-``EDDI-{job}-{date}.pdf`` in ``3.0 Doc Con``. On that dated copy, printed
-group titles are merged A:O and centered; empty 1–9 groups are hidden.
-Submitted to Shop For is inserted before Shop Rev, and Submitted to Field For
-before Field Rev, on the dated copy only.
-Not attached to Outlook.
+Jira stays the register. The form is ``templates/EDDI-template.xlsm`` next to
+Elite DocCon. The job keeps a single ``EDDI-{job}.xlsm`` in ``3.0 Doc Con``.
+Each Create EDDI copies sheet Project onto a new tab named with the date,
+fills that tab from console Next values (listed items with a paired PDF, not
+only Pack), and replaces the one PDF, named ``EDDI-{job}-{date}.pdf``. The
+date is also written on that sheet, so the PDF shows it. Sheet Project stays the blank
+form. A second run the same day adds ``{date}-2``. Empty 1–9 groups are
+hidden on the new tab. Not attached to Outlook.
 """
 from __future__ import annotations
 
@@ -35,6 +35,7 @@ from openpyxl.worksheet.worksheet import Worksheet
 
 from doccon.client_log import LogError
 from doccon.jobs import job_folder_keys
+from doccon.paths import eddi_template_path
 from doccon.match import MatchedRow
 from doccon.register import DrawingRow, eddi_group_rank, eddi_group_title, is_generic_eddi, pack_sort_key
 
@@ -74,11 +75,13 @@ class EddiSnapshot:
     book: Path
     pdf: Path
     updated_rows: int
+    sheet: str = ""
     warning: str = ""
 
     @property
     def note(self) -> str:
-        base = f"EDDI: {self.pdf.name} ({self.updated_rows} item(s))"
+        tab = f" tab {self.sheet}" if self.sheet else ""
+        base = f"EDDI: {self.pdf.name}{tab} ({self.updated_rows} item(s))"
         if self.warning:
             return f"{base}\n{self.warning}"
         return base
@@ -224,7 +227,13 @@ def parse_form_groups(ws: Worksheet) -> list[FormGroup]:
     return groups
 
 
-def build_fill_plan(ws: Worksheet, job_number: str, drawings: list[DrawingRow]) -> FillPlan:
+def build_fill_plan(
+    ws: Worksheet,
+    job_number: str,
+    drawings: list[DrawingRow],
+    *,
+    stamp: str = "",
+) -> FillPlan:
     job = job_number.strip()
     groups = [group for group in parse_form_groups(ws) if 1 <= group.number <= 9]
     if not groups:
@@ -297,7 +306,7 @@ def build_fill_plan(ws: Worksheet, job_number: str, drawings: list[DrawingRow]) 
             if bounds[3] >= PURPOSE_COLUMN_INSERTS[0]:
                 bounds[3] += len(PURPOSE_COLUMN_INSERTS)
     return FillPlan(
-        stamp=f"EDDI-{job}",
+        stamp=stamp or f"EDDI-{job}",
         inserts=inserts,
         fills=fills,
         hide=hide,
@@ -331,10 +340,40 @@ def build_fill_plan(ws: Worksheet, job_number: str, drawings: list[DrawingRow]) 
     )
 
 
-def fill_project_sheet(ws: Worksheet, job_number: str, drawings: list[DrawingRow]) -> int:
-    """Fill sheet Project in-memory (tests / plain xlsx). Returns item count."""
+def eddi_stamp(job: str, sheet: str) -> str:
+    """Line printed on the snapshot. The date is the tab name."""
+    return f"EDDI-{job.strip()} {sheet}".strip()
+
+
+def eddi_pdf_name(job: str, sheet: str) -> str:
+    return f"EDDI-{job.strip()}-{sheet}.pdf"
+
+
+def _keep_one_pdf(folder: Path, job: str, keep: Path) -> None:
+    """Leave only this snapshot PDF. Older dated PDFs for the same job go away."""
+    if not keep.is_file():
+        return
+    pattern = re.compile(
+        rf"^EDDI-{re.escape(job.strip())}(?:-\d{{4}}-\d{{2}}-\d{{2}}(?:-\d+)?)?\.pdf$",
+        re.IGNORECASE,
+    )
+    for path in folder.glob("*.pdf"):
+        if path.resolve() == keep.resolve() or not pattern.match(path.name):
+            continue
+        with contextlib.suppress(OSError):
+            path.unlink()
+
+
+def fill_project_sheet(
+    ws: Worksheet,
+    job_number: str,
+    drawings: list[DrawingRow],
+    *,
+    stamp: str = "",
+) -> int:
+    """Fill one EDDI sheet in-memory (tests / plain xlsx). Returns item count."""
     expand_purpose_columns(ws)
-    plan = build_fill_plan(ws, job_number, drawings)
+    plan = build_fill_plan(ws, job_number, drawings, stamp=stamp)
     apply_fill_plan(ws, plan)
     return plan.item_count
 
@@ -375,9 +414,43 @@ def apply_fill_plan(ws: Worksheet, plan: FillPlan) -> None:
     ws.sheet_properties.pageSetUpPr.fitToPage = True
 
 
-def plan_payload(plan: FillPlan) -> dict:
+def _existing_sheet_names(path: Path) -> set[str]:
+    if not path.is_file():
+        return set()
+    wb = _open_book(path)
+    try:
+        return set(wb.sheetnames)
+    finally:
+        wb.close()
+
+
+def dated_sheet_name(existing: set[str], issued: date) -> str:
+    """Tab name for this snapshot. A second run the same day is ``{date}-2``."""
+    taken = {name.casefold() for name in existing}
+    base = issued.isoformat()
+    if base.casefold() not in taken:
+        return base
+    number = 2
+    while f"{base}-{number}".casefold() in taken:
+        number += 1
+    return f"{base}-{number}"
+
+
+def _add_dated_sheet(wb: Workbook, issued: date) -> str:
+    """Copy the blank Project form onto a new tab. Project itself stays blank."""
+    source = _project_sheet(wb)
+    name = dated_sheet_name(set(wb.sheetnames), issued)
+    copy = wb.copy_worksheet(source)
+    copy.title = name
+    # copy_worksheet leaves page breaks behind. The new tab needs the form's breaks.
+    for row in _row_break_ids(source):
+        copy.row_breaks.append(Break(id=row, man=True, max=ITEM_COLS))
+    return name
+
+
+def plan_payload(plan: FillPlan, *, sheet: str = PROJECT_SHEET) -> dict:
     return {
-        "sheet": PROJECT_SHEET,
+        "sheet": sheet,
         "stamp": plan.stamp,
         "inserts": [{"at": at, "count": count} for at, count in plan.inserts],
         "clear_rows": list(plan.clear_rows),
@@ -583,6 +656,27 @@ def _snapshot_merges(add_columns: bool) -> list[str]:
     return [f"A1:{last}1", f"A2:{last}2", *merges]
 
 
+def eddi_form_for(job_folder: Path, job_number: str) -> tuple[Path, str]:
+    """Form to copy, and the job code that goes on the dated file.
+
+    A workbook already in the job wins. Otherwise DocCon's own template is enough.
+    """
+    job = job_number.strip()
+    try:
+        live = find_live_eddi_book(job_folder, job)
+    except LogError:
+        live = None
+    if live is not None:
+        book_job = live.stem[5:] if live.stem.upper().startswith("EDDI-") else job
+        return live, book_job
+    form = eddi_template_path()
+    if not form.is_file():
+        raise LogError(
+            "DocCon has no EDDI form. Put EDDI-template.xlsm in the templates folder next to Elite DocCon."
+        )
+    return form, job
+
+
 def snapshot_eddi(
     job_folder: Path,
     job_number: str,
@@ -591,29 +685,29 @@ def snapshot_eddi(
     *,
     print_pdf: bool = True,
 ) -> EddiSnapshot:
-    """Copy the live EDDI form, fill Project groups 1–9, print a dated PDF."""
+    """Copy the EDDI form, fill Project groups 1–9, print a dated PDF."""
     job = job_number.strip()
     if not job:
         raise LogError("Job Number is required for the EDDI snapshot.")
-    live = find_live_eddi_book(job_folder, job)
-    book_job = live.stem[5:] if live.stem.upper().startswith("EDDI-") else job
+    live, book_job = eddi_form_for(job_folder, job)
     folder = Path(job_folder) / DOC_CON_DIR
     folder.mkdir(parents=True, exist_ok=True)
-    stem = f"EDDI-{book_job}-{issued.isoformat()}"
-    dest_book = folder / f"{stem}{live.suffix}"
-    dest_pdf = folder / f"{stem}.pdf"
+    dest_book = folder / f"EDDI-{book_job}{live.suffix}"
+    if not dest_book.is_file():
+        shutil.copy2(live, dest_book)
     if print_pdf:
-        return _snapshot_with_excel(live, dest_book, dest_pdf, book_job, drawings)
-    shutil.copy2(live, dest_book)
+        return _snapshot_with_excel(dest_book, book_job, drawings, issued)
     wb = _open_book(dest_book)
     try:
-        count = fill_project_sheet(_project_sheet(wb), book_job, drawings)
+        sheet = _add_dated_sheet(wb, issued)
+        count = fill_project_sheet(wb[sheet], book_job, drawings, stamp=eddi_stamp(book_job, sheet))
         wb.save(dest_book)
     except OSError as exc:
         raise LogError(f"Could not write {dest_book.name}. Close it if it is open in Excel.\n{exc}") from exc
     finally:
         wb.close()
-    return EddiSnapshot(book=dest_book, pdf=dest_pdf, updated_rows=count)
+    dest_pdf = folder / eddi_pdf_name(book_job, sheet)
+    return EddiSnapshot(book=dest_book, pdf=dest_pdf, updated_rows=count, sheet=sheet)
 
 
 def is_dated_eddi_name(name: str, job_number: str) -> bool:
@@ -624,11 +718,10 @@ def is_dated_eddi_name(name: str, job_number: str) -> bool:
 
 
 def _snapshot_with_excel(
-    live: Path,
     dest_book: Path,
-    dest_pdf: Path,
     job: str,
     drawings: list[DrawingRow],
+    issued: date,
 ) -> EddiSnapshot:
     if os.name != "nt":
         raise LogError("EDDI snapshot needs Excel on Windows.")
@@ -637,26 +730,31 @@ def _snapshot_with_excel(
 
     tmp_dir = doccon_temp_dir("eddi-form-")
     local_book = tmp_dir / dest_book.name
-    local_pdf = tmp_dir / dest_pdf.name
+    local_pdf = tmp_dir / "eddi.pdf"
+    dest_pdf = dest_book.parent / "eddi.pdf"
     try:
-        log("INFO", "eddi", f"copy {describe_path(live)} -> {describe_path(local_book)}")
-        shutil.copy2(live, local_book)
+        log("INFO", "eddi", f"copy {describe_path(dest_book)} -> {describe_path(local_book)}")
+        shutil.copy2(dest_book, local_book)
         _unblock(local_book)
         prepared = load_workbook(local_book, data_only=False, keep_vba=local_book.suffix.casefold() == ".xlsm")
         try:
-            expand_purpose_columns(_project_sheet(prepared))
+            sheet = _add_dated_sheet(prepared, issued)
+            dest_pdf = dest_book.parent / eddi_pdf_name(job, sheet)
+            local_pdf = tmp_dir / dest_pdf.name
+            expand_purpose_columns(prepared[sheet])
             prepared.save(local_book)
         finally:
             prepared.close()
         wb = load_workbook(local_book, data_only=False, keep_vba=False)
         try:
-            plan = build_fill_plan(_project_sheet(wb), job, drawings)
+            plan = build_fill_plan(wb[sheet], job, drawings, stamp=eddi_stamp(job, sheet))
         finally:
             wb.close()
+        payload = plan_payload(plan, sheet=sheet)
         printed: Path | None = None
         print_error = ""
         try:
-            printed = fill_eddi_form_and_export_pdf(local_book, local_pdf, plan_payload(plan))
+            printed = fill_eddi_form_and_export_pdf(local_book, local_pdf, payload)
         except ExcelPrintError as exc:
             print_error = str(exc)
         except LogError as exc:
@@ -664,8 +762,13 @@ def _snapshot_with_excel(
                 book = _copy_out(local_book, dest_book)
                 pdf, warn = _copy_pdf_out(local_pdf, dest_pdf)
                 warning = warn or str(exc)
+                _keep_one_pdf(dest_pdf.parent, job, pdf)
                 return EddiSnapshot(
-                    book=book, pdf=pdf, updated_rows=plan.item_count, warning=warning
+                    book=book,
+                    pdf=pdf,
+                    updated_rows=plan.item_count,
+                    sheet=sheet,
+                    warning=warning,
                 )
             raise
         book = _copy_out(local_book, dest_book)
@@ -677,8 +780,9 @@ def _snapshot_with_excel(
                 f"Wrote {book.name}, but could not print the EDDI PDF. "
                 "Close that PDF if it is open in a reader, then try Create EDDI again."
             )
+        _keep_one_pdf(dest_pdf.parent, job, pdf)
         return EddiSnapshot(
-            book=book, pdf=pdf, updated_rows=plan.item_count, warning=warning
+            book=book, pdf=pdf, updated_rows=plan.item_count, sheet=sheet, warning=warning
         )
     except LogError:
         raise

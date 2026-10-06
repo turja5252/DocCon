@@ -17,6 +17,7 @@ from doccon.drawing_board import (
     DESC_COL_INDEX,
     DESC_COL_PX,
     DRAWING_COL_INDEX,
+    FIELD_COL_START,
     FROZEN_COLS,
     FROZEN_SYNC_MAX,
     HEADER_TITLES,
@@ -640,6 +641,79 @@ def test_start_rows_paints_one_by_one() -> None:
         root.destroy()
 
 
+def test_opening_the_edit_row_keeps_columns_under_the_headings() -> None:
+    root = _board_root()
+    try:
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.set_rows([_row(title="SPIRAL STAIRWAY HANDRAIL DETAIL")], checked=set())
+        root.update_idletasks()
+        board._blocks["P2024-1"].include.set(True)
+        for _ in range(4):
+            root.update()
+
+        def column_width(frame: tk.Misc, col: int, row: int) -> int:
+            box = frame.grid_bbox(col, row)
+            assert box is not None
+            return int(box[2])
+
+        now_row = int(board._blocks["P2024-1"].title_label.grid_info()["row"])
+        for col in (DESC_COL_INDEX, PDF_COL_INDEX, FIELD_COL_START):
+            assert column_width(board._inner, col, now_row) == column_width(board._header, col, 0)
+        assert any(str(line.winfo_manager()) == "place" for line in board._vlines)
+        assert any(str(line.winfo_manager()) == "place" for line in board._freeze_vlines)
+    finally:
+        root.destroy()
+
+
+def test_column_order_moves_status_ahead_of_description() -> None:
+    root = _board_root()
+    try:
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.set_rows([_row()])
+        board._col_order = ["Status", "Description"]
+        board._apply_col_sizes()
+        root.update_idletasks()
+        block = board._blocks["P2024-1"]
+        status_col = int(block.status_label.grid_info()["column"])
+        desc_col = int(block.title_label.grid_info()["column"])
+        assert status_col < desc_col
+        assert int(block.drawing_label.grid_info()["column"]) == 1
+        assert board._display_order()[:2] == [PACK_COL_INDEX, DRAWING_COL_INDEX]
+        board._col_order = ["JIRA ID", "Pack", "Status", "Description"]
+        assert board._display_order()[:2] == [PACK_COL_INDEX, DRAWING_COL_INDEX]
+    finally:
+        root.destroy()
+
+
+def test_hidden_column_drops_off_the_board_until_shown_again() -> None:
+    root = _board_root()
+    try:
+        from doccon import drawing_board as board_mod
+
+        saved: list[list[str]] = []
+        board_mod.hidden_column_names = lambda: set()
+        board_mod.remember_board_hidden = lambda names: saved.append(list(names))
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.set_rows([_row()])
+        board._hidden_titles = {"Description"}
+        board._apply_col_sizes()
+        root.update_idletasks()
+        assert int(board._inner.grid_columnconfigure(DESC_COL_INDEX)["minsize"] or 0) == 0
+        assert board._blocks["P2024-1"].title_label.winfo_manager() == ""
+        board._hidden_titles = set()
+        board._apply_col_sizes()
+        root.update_idletasks()
+        assert board._blocks["P2024-1"].title_label.winfo_manager() == "grid"
+        assert int(board._inner.grid_columnconfigure(DESC_COL_INDEX)["minsize"] or 0) > 0
+        board._hidden_titles = {"Match"}
+        remember = board_mod.remember_board_hidden
+        board._hidden_titles = {"Match"}
+        remember(["Match"])
+        assert saved[-1] == ["Match"]
+    finally:
+        root.destroy()
+
+
 def test_header_and_body_share_resizable_columns() -> None:
     try:
         root = tk.Tk()
@@ -659,8 +733,18 @@ def test_header_and_body_share_resizable_columns() -> None:
         assert len(header_px) == BOARD_COLUMNS
         purpose_col = next(i for i, (title, _) in enumerate(HEADER_TITLES) if title == "Submitted to Client For")
         assert default_col_px()[purpose_col] == heading_floor_px()[purpose_col]
-        assert default_col_px()[purpose_col] == len("Submitted to Client For") * 10 + header_pad_px(purpose_col)
+        assert default_col_px()[purpose_col] == len("Submitted to Client For") * CHAR_PX + header_pad_px(purpose_col)
         assert int(str(board._header_labels[purpose_col].cget("wraplength") or 0)) == 0
+        heading = board._header_labels[purpose_col]
+        assert int(heading.master.cget("height")) >= int(heading.winfo_reqheight())
+        board.resize_column(purpose_col, MIN_COL_PX)
+        root.update_idletasks()
+        assert board.column_minsizes()[purpose_col] == MIN_COL_PX
+        purpose_cell = board._header_labels[purpose_col].master
+        assert int(purpose_cell.cget("width")) == MIN_COL_PX
+        assert not bool(purpose_cell.pack_propagate())
+        box = board._header.grid_bbox(purpose_col, 0)
+        assert box is not None and int(box[2]) <= MIN_COL_PX + 1
         board.resize_column(purpose_col, 280)
         assert board.column_minsizes()[purpose_col] == 280
         assert int(board._inner.grid_columnconfigure(purpose_col)["minsize"]) == 280
@@ -817,6 +901,14 @@ def test_frozen_rows_follow_wrapped_description_height() -> None:
         inner_min = int(board._inner.grid_rowconfigure(now_row)["minsize"] or 0)
         freeze_min = int(board._freeze_inner.grid_rowconfigure(now_row)["minsize"] or 0)
         assert inner_min == freeze_min
+        board._zoom_pct = 125
+        board._apply_zoom()
+        for _ in range(6):
+            root.update()
+        inner_zoom = int(board._inner.grid_rowconfigure(now_row)["minsize"] or 0)
+        freeze_zoom = int(board._freeze_inner.grid_rowconfigure(now_row)["minsize"] or 0)
+        assert inner_zoom == freeze_zoom
+        assert "11" in str(board._blocks["P2024-1"].pack_mark.cget("font"))
         assert inner_min >= int(block.title_label.winfo_reqheight())
         assert abs(block.drawing_label.winfo_y() - block.title_label.winfo_y()) <= 2
         title_next = block.title_next
@@ -1513,11 +1605,11 @@ def test_default_column_widths_save_horizontal_space() -> None:
     old_pack = 94
     old_desc = 52 * CHAR_PX + 44
     old_id = 32 * CHAR_PX + 44
-    assert PACK_COL_PX == 48
-    assert DESC_COL_PX == 240
+    assert PACK_COL_PX == 40
+    assert DESC_COL_PX == 180
     assert DESC_COL_PX != 564
-    assert JIRA_ID_COL_PX == 180
-    assert PDF_COL_PX == 272
+    assert JIRA_ID_COL_PX == 156
+    assert PDF_COL_PX == 188
     assert defaults[PACK_COL_INDEX] == PACK_COL_PX
     assert old_pack > PACK_COL_PX
     assert defaults[DESC_COL_INDEX] == DESC_COL_PX
@@ -1544,6 +1636,20 @@ def test_default_column_widths_save_horizontal_space() -> None:
     assert merge_col_px(defaults) == defaults
 
 
+def test_saved_widths_stay_with_their_headings() -> None:
+    defaults = default_col_px()
+    names = [title for title, _chars in HEADER_TITLES]
+    saved = list(defaults)
+    saved[DESC_COL_INDEX] = 400
+    saved[PACK_COL_INDEX] = MIN_COL_PX
+    kept = merge_col_px(saved, 0, names)
+    assert kept[DESC_COL_INDEX] == 400
+    assert kept[PACK_COL_INDEX] == MIN_COL_PX
+    short = merge_col_px(saved[:-1], 0, names[:-1])
+    assert short[DESC_COL_INDEX] == 400
+    assert short[-1] == defaults[-1]
+
+
 def test_layout_revision_invalidates_stale_saved_widths() -> None:
     defaults = default_col_px()
     fat = list(defaults)
@@ -1555,7 +1661,7 @@ def test_layout_revision_invalidates_stale_saved_widths() -> None:
     kept = merge_col_px(fat, BOARD_LAYOUT_REV)
     assert kept[DESC_COL_INDEX] == 564
     assert kept[PACK_COL_INDEX] == 94
-    assert BOARD_LAYOUT_REV == 137
+    assert BOARD_LAYOUT_REV == 138
 
 
 def test_no_now_next_label_column() -> None:
@@ -2687,21 +2793,25 @@ def test_rename_button_only_for_email_dropped_in_dropped(tmp_path) -> None:
         root.update_idletasks()
         email_block = board._blocks["P2024-1"]
         locate_block = board._blocks["P2024-2"]
-        assert str(email_block.rename_btn.winfo_manager()) == "pack"
-        cluster = list(email_block.locate_btn.master.pack_slaves())
-        assert cluster == [
+        assert str(email_block.rename_btn.winfo_manager()) == "place"
+        shown = [
             email_block.locate_btn,
             email_block.rename_btn,
             email_block.open_btn,
             email_block.preview_btn,
         ]
-        assert str(locate_block.rename_btn.winfo_manager()) != "pack"
-        locate_cluster = list(locate_block.locate_btn.master.pack_slaves())
-        assert locate_cluster == [
+        ordered = sorted(shown, key=lambda widget: (int(widget.winfo_y()), int(widget.winfo_x())))
+        assert ordered == shown
+        assert str(locate_block.rename_btn.winfo_manager()) == ""
+        locate_shown = [
             locate_block.locate_btn,
             locate_block.open_btn,
             locate_block.preview_btn,
         ]
+        locate_ordered = sorted(
+            locate_shown, key=lambda widget: (int(widget.winfo_y()), int(widget.winfo_x()))
+        )
+        assert locate_ordered == locate_shown
         assert board.suggested_dropped_name("P2024-1") == "2026-Tanzim-1-1 REV A.pdf"
     finally:
         root.destroy()

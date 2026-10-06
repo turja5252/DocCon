@@ -33,3 +33,8 @@ def install_dir() -> Path:
 
 def mail_formats_path() -> Path:
     return install_dir() / "mail-formats.json"
+
+
+def eddi_template_path() -> Path:
+    """The EDDI form DocCon copies. It lives with the program, not in each job."""
+    return install_dir() / "templates" / "EDDI-template.xlsm"

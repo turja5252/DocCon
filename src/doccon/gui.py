@@ -105,6 +105,7 @@ from doccon.pack_state import (
 )
 from doccon.pdf_preview import close_pdf_preview, open_pdf_preview
 from doccon.pep import DOC_CONTROL_FROM, SALES_DIR, PepCover, PepError, email_line, find_pep, load_pep
+from doccon.popups import bind_console
 from doccon.popups import install as _install_popups
 from doccon.popups import reveal_on_parent
 from doccon.register import (
@@ -787,6 +788,7 @@ class DocConApp(tk.Tk):
         self.geometry("1680x820")
         self.minsize(1200, 640)
         apply_theme(self)
+        bind_console(self)
         self._busy = False
         self._work = ""
         self._load_gen = 0
@@ -2576,9 +2578,8 @@ class DocConApp(tk.Tk):
         self._refresh_cover_hint()
         self._set_status(f"Updated {len(rows)} item(s) in Jira.")
         messagebox.showinfo(
-            "Update Jira",
-            f"Wrote {len(rows)} item(s) to Jira. Now shows what was written.\n"
-            "No transmittal, EDDI, or Outlook.",
+            "Jira updated",
+            f"Jira has been updated.\n\nWrote {len(rows)} item(s). The list now shows what was written.",
         )
 
     def _issue_pack(self) -> None:

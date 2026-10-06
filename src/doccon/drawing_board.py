@@ -16,7 +16,6 @@ from tkinter import messagebox, ttk
 
 from doccon.date_picker import CalendarPopup, attach_calendar
 from doccon.kinds import CLIENT, FIELD, SHOP
-from doccon.dpi import pixel_scale
 from doccon.drop_pdfs import dropped_pdf_filename
 from doccon.match import (
     MatchedRow,
@@ -27,6 +26,7 @@ from doccon.match import (
 )
 from doccon.pack_state import PackExtra
 from doccon.popups import install as _install_popups
+from doccon.popups import reveal_on_parent
 from doccon.register import (
     APPROVAL_VALUES,
     DRAWING_STATUSES,
@@ -39,7 +39,15 @@ from doccon.register import (
     pack_sort_key,
     summary_from_parts,
 )
-from doccon.settings import BOARD_LAYOUT_REV, load_settings, remember_board_col_px
+from doccon.settings import (
+    BOARD_LAYOUT_REV,
+    column_order,
+    hidden_column_names,
+    load_settings,
+    remember_board_col_px,
+    remember_board_hidden,
+    remember_board_order,
+)
 from doccon.theme import (
     ACCENT,
     BG,
@@ -216,20 +224,20 @@ COMBO_HEADER_COLS = frozenset(
     }
 )
 
-CHAR_PX = 10
+CHAR_PX = 8
 HEADING_PAD_PX = 16
 COMBO_ARROW_PAD_PX = 22
 PACK_PAD_PX = 8
 SASH_PX = 4
-MIN_COL_PX = 36
+MIN_COL_PX = 28
 MAX_COL_PX = 720
 HEADER_BG = "#E4EBF2"
 WRAP_PAD_PX = 6 + SASH_PX + 4
 # 1.31 prescribed defaults. Saved board_col_px can override after BOARD_LAYOUT_REV.
-PACK_COL_PX = 48
-JIRA_ID_COL_PX = 180
-DESC_COL_PX = 240
-PDF_COL_PX = 272
+PACK_COL_PX = 40
+JIRA_ID_COL_PX = 156
+DESC_COL_PX = 180
+PDF_COL_PX = 188
 
 
 def no_return_status(status: str) -> bool:
@@ -385,25 +393,43 @@ def _as_layout_rev(value: object) -> int:
         return 0
 
 
-def merge_col_px(saved: object, layout_rev: object = None) -> list[int]:
-    """Apply saved sash widths only when they match this layout revision.
+def _clamp_col_px(raw: object, fallback: int) -> int:
+    try:
+        px = int(raw)
+    except (TypeError, ValueError):
+        px = fallback
+    return max(MIN_COL_PX, min(px, MAX_COL_PX))
 
-    Missing or older ``board_layout_rev`` drops pre-1.31 fat columns (Description 564).
+
+def merge_col_px(saved: object, layout_rev: object = None, names: object = None) -> list[int]:
+    """Restore this PC's sash widths.
+
+    Widths saved with column headings stay on those headings until she drags again,
+    even if a later build adds a column. A nameless save is used only when it matches
+    this layout revision and the same column count.
     """
     defaults = default_col_px()
+    titles = [title for title, _chars in HEADER_TITLES]
+    if (
+        isinstance(names, (list, tuple))
+        and isinstance(saved, (list, tuple))
+        and names
+        and len(names) == len(saved)
+    ):
+        by_name: dict[str, int] = {}
+        for name, raw in zip(names, saved):
+            title = str(name)
+            if title:
+                by_name[title] = _clamp_col_px(raw, defaults[0])
+        return [
+            by_name.get(title, defaults[index])
+            for index, title in enumerate(titles)
+        ]
     if _as_layout_rev(layout_rev) != BOARD_LAYOUT_REV:
         return defaults
-    floors = heading_floor_px()
     if not isinstance(saved, (list, tuple)) or len(saved) != len(defaults):
         return defaults
-    out: list[int] = []
-    for index, raw in enumerate(saved):
-        try:
-            px = int(raw)
-        except (TypeError, ValueError):
-            px = defaults[index]
-        out.append(max(floors[index], max(MIN_COL_PX, min(px, MAX_COL_PX))))
-    return out
+    return [_clamp_col_px(raw, defaults[index]) for index, raw in enumerate(saved)]
 
 
 def row_matches_filter(row: MatchedRow, needle: str, extra: str = "") -> bool:
@@ -512,6 +538,7 @@ class _Block:
     shop_folder: ttk.Combobox | None = None
     mounted: bool = True
     grid_top: int = 0
+    edit_ids: tuple[int, ...] = ()
 
 
 class DrawingBoard(ttk.Frame):
@@ -575,12 +602,21 @@ class DrawingBoard(ttk.Frame):
         self._paint_on_done = None
         self._suspend_layout = False
         saved = load_settings()
-        self._col_px = merge_col_px(saved.board_col_px, saved.board_layout_rev)
-        factor = pixel_scale(self)
-        if factor > 1.02:
-            self._col_px = [max(1, int(round(px * factor))) for px in self._col_px]
+        self._col_px = merge_col_px(
+            saved.board_col_px, saved.board_layout_rev, saved.board_col_names
+        )
+        # Tk scaling already sizes the text for this screen. Multiplying the
+        # saved pixel width by DPI again made every new build open huge.
+        self._zoom_pct = 100
+        self._base_col_px = list(self._col_px)
+        self._hidden_titles = hidden_column_names()
+        self._col_order = column_order()
+        self._zoom_after = ""
         self._header_labels: list[ttk.Label] = []
-        self._header_wraps: list[tuple[int, ttk.Label]] = []
+        self._header_cells: list[tuple[int, tk.Frame]] = []
+        self._width_locks: list[tuple[int, tk.Frame]] = []
+        self._vlines: list[tk.Frame] = []
+        self._freeze_vlines: list[tk.Frame] = []
         self._group_headers: list[tuple[str, ttk.Label]] = []
         self._group_frozen: list[ttk.Label] = []
         self._drag_col: int | None = None
@@ -611,8 +647,14 @@ class DrawingBoard(ttk.Frame):
         )
         self._packed_only_btn = ttk.Button(self._find_bar, text="Packed only", command=self._toggle_packed_only)
         self._packed_only_btn.pack(side="left", padx=(0, 8))
-        ttk.Button(self._find_bar, text="Pack none", command=lambda: self.set_pack(False)).pack(
+        ttk.Button(self._find_bar, text="Pack all", command=lambda: self.set_pack(True)).pack(
             side="left", padx=(4, 4)
+        )
+        ttk.Button(self._find_bar, text="Pack none", command=lambda: self.set_pack(False)).pack(
+            side="left", padx=(0, 4)
+        )
+        ttk.Button(self._find_bar, text="Columns…", command=self._choose_columns).pack(
+            side="left", padx=(0, 8)
         )
         ttk.Button(self._find_bar, text="Cancel Next", style="Danger.TButton", command=self._cancel_next).pack(
             side="left", padx=(0, 8)
@@ -636,6 +678,19 @@ class DrawingBoard(ttk.Frame):
         self._quiet_dropdown(self._pack_purpose)
         self._batch_toggle = ttk.Button(self._find_bar, text="Batch Next…", command=self._toggle_batch)
         self._batch_toggle.pack(side="left")
+        self._zoom_readout = ttk.Label(self._find_bar, text="100%", width=5)
+        self._zoom_readout.pack(side="right")
+        self._zoom_scale = ttk.Scale(
+            self._find_bar,
+            from_=75,
+            to=125,
+            orient="horizontal",
+            length=110,
+            command=self._on_zoom,
+        )
+        self._zoom_scale.set(100)
+        self._zoom_scale.pack(side="right", padx=(4, 0))
+        ttk.Label(self._find_bar, text="Zoom").pack(side="right", padx=(8, 0))
         self._filter_note = ttk.Label(self._find_bar, text="Type, then Find", style="Muted.TLabel")
         self._filter_note.pack(side="left", padx=(8, 0))
         self._batch_note = ttk.Label(self._find_bar, text="", style="Muted.TLabel")
@@ -729,6 +784,7 @@ class DrawingBoard(ttk.Frame):
         self.bind_all("<Escape>", self._on_global_escape, add="+")
         self._draw_header()
         self._apply_col_sizes()
+        self._apply_zoom()
 
     def drop_target_widgets(self) -> list[tk.Misc]:
         """Fixed board HWNDs for OLE (canvas + inner panes). Not per-row children."""
@@ -803,8 +859,52 @@ class DrawingBoard(ttk.Frame):
         self._header_canvas.xview_moveto(first)
         self._pin_frozen()
 
+    def _column_on(self, index: int) -> bool:
+        if index < 0 or index >= len(HEADER_TITLES):
+            return True
+        return HEADER_TITLES[index][0] not in self._hidden_titles
+
+    def _shown_px(self, index: int) -> int:
+        if not self._column_on(index):
+            return 0
+        if index < 0 or index >= len(self._col_px):
+            return 0
+        return self._col_px[index]
+
+    def _order_indices(self) -> list[int]:
+        by_title = {title: index for index, (title, _width) in enumerate(HEADER_TITLES)}
+        seen: set[int] = set()
+        ordered: list[int] = []
+        for title in self._col_order:
+            index = by_title.get(title)
+            if index is None or index in seen:
+                continue
+            seen.add(index)
+            ordered.append(index)
+        for index in range(len(HEADER_TITLES)):
+            if index not in seen:
+                ordered.append(index)
+        return ordered
+
+    def _display_order(self) -> list[int]:
+        """Left to right. Pack then JIRA ID stay fixed. The other headings follow the chosen order."""
+        ordered = self._order_indices()
+        rest = [index for index in ordered if index >= FROZEN_COLS]
+        return list(range(FROZEN_COLS)) + rest
+
+    def _visual_column(self, logical: int) -> int:
+        order = self._display_order()
+        try:
+            return order.index(logical)
+        except ValueError:
+            return logical
+
+    def _shown_span(self) -> int:
+        return max(sum(self._shown_px(index) for index in range(len(self._col_px))), 1)
+
     def _frozen_width(self) -> int:
-        return max(sum(self._col_px[:FROZEN_COLS]), 1)
+        order = self._display_order()
+        return max(sum(self._shown_px(logical) for logical in order[:FROZEN_COLS]), 1)
 
     def _size_frozen(self) -> None:
         width = self._frozen_width()
@@ -841,12 +941,19 @@ class DrawingBoard(ttk.Frame):
             return
         self._frozen_syncing = True
         self._frozen_passes += 1
+        changed = False
         try:
-            # Do not call update_idletasks: nested idle + Configure/OLE freeze Load.
-            self._sync_frozen_rows()
+            # Measuring during Load (update_idletasks) nested with Configure and froze the window.
+            if not self._paint_queue:
+                with contextlib.suppress(tk.TclError):
+                    self._freeze_inner.update_idletasks()
+                    self._inner.update_idletasks()
+            changed = self._sync_frozen_rows()
             self._sync_scroll()
         finally:
             self._frozen_syncing = False
+        if changed and self._frozen_passes < FROZEN_SYNC_MAX:
+            self._schedule_frozen_row_sync()
 
     def _filter_grid_ids(self) -> tuple[set[int], set[int]]:
         """Tracked grid slaves, and which of them the filter is currently showing."""
@@ -891,6 +998,36 @@ class DrawingBoard(ttk.Frame):
                 continue
         return height
 
+    def _rowspan_needs(
+        self,
+        frame: tk.Misc,
+        *,
+        tracked_ids: set[int],
+        shown_ids: set[int],
+    ) -> list[tuple[int, int, int]]:
+        """Widgets that span rows, so both panes reserve the same height for them."""
+        try:
+            children = frame.winfo_children()
+        except tk.TclError:
+            return []
+        needs: list[tuple[int, int, int]] = []
+        for child in children:
+            try:
+                if id(child) in tracked_ids and id(child) not in shown_ids:
+                    continue
+                info = child.grid_info()
+                if not info:
+                    continue
+                span = int(info.get("rowspan") or 1)
+                if span <= 1:
+                    continue
+                row = int(info.get("row") or 0)
+                need = int(child.winfo_reqheight()) + _grid_pad_y(info)
+            except (tk.TclError, TypeError, ValueError):
+                continue
+            needs.append((row, span, need))
+        return needs
+
     def _sync_frozen_rows(self) -> bool:
         if self._suspend_layout:
             return False
@@ -902,12 +1039,22 @@ class DrawingBoard(ttk.Frame):
             except tk.TclError:
                 continue
             rows.update(range(int(nrows)))
-        changed = False
+        heights: dict[int, int] = {}
         for row in rows:
-            height = max(
+            heights[row] = max(
                 self._row_needed_height(self._freeze_inner, row, tracked_ids=tracked_ids, shown_ids=shown_ids),
                 self._row_needed_height(self._inner, row, tracked_ids=tracked_ids, shown_ids=shown_ids),
             )
+        for frame in (self._freeze_inner, self._inner):
+            for row, span, need in self._rowspan_needs(frame, tracked_ids=tracked_ids, shown_ids=shown_ids):
+                have = sum(heights.get(row + offset, 0) for offset in range(span))
+                if need <= have or span <= 0:
+                    continue
+                share, remainder = divmod(need - have, span)
+                for offset in range(span):
+                    heights[row + offset] = heights.get(row + offset, 0) + share + (1 if offset < remainder else 0)
+        changed = False
+        for row, height in heights.items():
             for frame in (self._freeze_inner, self._inner):
                 try:
                     current = int(frame.grid_rowconfigure(row).get("minsize") or 0)
@@ -929,10 +1076,12 @@ class DrawingBoard(ttk.Frame):
             width = canvas_width if canvas_width is not None else self._canvas.winfo_width()
             if width <= 1:
                 width = self._header_canvas.winfo_width()
-            span = max(width, sum(self._col_px), 1)
+            span = max(width, self._shown_span(), 1)
             self._canvas.itemconfigure(self._window, width=span)
             self._header_canvas.itemconfigure(self._header_window, width=span)
-            header_h = max(self._header.winfo_reqheight(), 24)
+            header_h = self._header_band_px()
+            self._header_canvas.itemconfigure(self._header_window, height=header_h)
+            self._header_canvas.itemconfigure(self._freeze_header_window, height=header_h)
             self._header_canvas.configure(height=header_h, scrollregion=(0, 0, span, header_h))
             body = self._canvas.bbox("all")
             if body is None:
@@ -953,9 +1102,11 @@ class DrawingBoard(ttk.Frame):
             width = canvas_width if canvas_width is not None else self._header_canvas.winfo_width()
             if width <= 1:
                 width = self._canvas.winfo_width()
-            span = max(width, sum(self._col_px), 1)
+            span = max(width, self._shown_span(), 1)
             self._header_canvas.itemconfigure(self._header_window, width=span)
-            header_h = max(self._header.winfo_reqheight(), 24)
+            header_h = self._header_band_px()
+            self._header_canvas.itemconfigure(self._header_window, height=header_h)
+            self._header_canvas.itemconfigure(self._freeze_header_window, height=header_h)
             self._header_canvas.configure(height=header_h, scrollregion=(0, 0, span, header_h))
             self._size_frozen()
             self._pin_frozen()
@@ -978,17 +1129,30 @@ class DrawingBoard(ttk.Frame):
         box.bind("<MouseWheel>", self._wheel_keeps_dropdown, add="+")
 
     def _apply_col_sizes(self, col: int | None = None) -> None:
-        cols = range(len(self._col_px)) if col is None else (col,)
-        for index in cols:
-            px = self._col_px[index]
-            self._header.columnconfigure(index, minsize=px, weight=0)
-            self._inner.columnconfigure(index, minsize=px, weight=0)
-            if index < FROZEN_COLS:
-                self._freeze_header.columnconfigure(index, minsize=px, weight=0)
-                self._freeze_inner.columnconfigure(index, minsize=px, weight=0)
+        order = self._display_order()
+        positions = range(len(order)) if col is None else (self._visual_column(col),)
+        for pos in positions:
+            if pos < 0 or pos >= len(order):
+                continue
+            logical = order[pos]
+            px = self._shown_px(logical)
+            self._header.columnconfigure(pos, minsize=px, weight=0)
+            self._inner.columnconfigure(pos, minsize=px, weight=0)
+            if pos < FROZEN_COLS:
+                self._freeze_header.columnconfigure(pos, minsize=px, weight=0)
+                self._freeze_inner.columnconfigure(pos, minsize=px, weight=0)
+        if col is None:
+            for pos in range(len(order), BOARD_COLUMNS):
+                self._header.columnconfigure(pos, minsize=0, weight=0)
+                self._inner.columnconfigure(pos, minsize=0, weight=0)
         self._apply_header_wraps(col)
+        self._apply_width_locks(col)
+        self._reflow_all_actions()
         if col is None or col in (DRAWING_COL_INDEX, DESC_COL_INDEX):
             self._apply_body_wraps(col)
+        self._regrid_columns()
+        self._sync_hidden_columns()
+        self._place_vlines()
         if not self._suspend_layout:
             if not self._frozen_syncing:
                 self._frozen_passes = 0
@@ -1000,16 +1164,34 @@ class DrawingBoard(ttk.Frame):
     def _wrap_px(self, col: int) -> int:
         return max(24, self._col_px[col] - WRAP_PAD_PX)
 
+    def _header_band_px(self) -> int:
+        """One heading line, tall enough that the letters are not clipped."""
+        pt = max(8, min(12, round(9 * self._zoom_pct / 100)))
+        band = pt + 20
+        for _col, cell in self._header_cells:
+            for child in cell.winfo_children():
+                if not isinstance(child, ttk.Label):
+                    continue
+                try:
+                    band = max(band, int(child.winfo_reqheight()) + 8)
+                except (tk.TclError, TypeError, ValueError):
+                    continue
+        return band
+
     def _apply_header_wraps(self, col: int | None = None) -> None:
-        """Headings stay one line. Body JIRA ID / Description wrap to the column."""
-        for wrap_col, label in self._header_wraps:
+        """Clip each heading to its column. A narrower column hides the rest of the title."""
+        band = self._header_band_px()
+        for wrap_col, cell in self._header_cells:
             if col is not None and wrap_col != col:
                 continue
             try:
-                if label.winfo_exists():
-                    label.configure(wraplength=0)
+                if cell.winfo_exists():
+                    cell.configure(width=max(MIN_COL_PX, self._col_px[wrap_col]), height=band)
             except tk.TclError:
                 continue
+        for host in (self._header, self._freeze_header):
+            with contextlib.suppress(tk.TclError):
+                host.rowconfigure(0, minsize=band, weight=0)
 
     def _apply_body_wraps(self, col: int | None = None) -> None:
         draw_px = self._wrap_px(DRAWING_COL_INDEX)
@@ -1025,9 +1207,10 @@ class DrawingBoard(ttk.Frame):
 
     def _apply_header_col(self, col: int) -> None:
         px = self._col_px[col]
-        self._header.columnconfigure(col, minsize=px, weight=0)
-        if col < FROZEN_COLS:
-            self._freeze_header.columnconfigure(col, minsize=px, weight=0)
+        pos = self._visual_column(col)
+        self._header.columnconfigure(pos, minsize=px, weight=0)
+        if pos < FROZEN_COLS:
+            self._freeze_header.columnconfigure(pos, minsize=px, weight=0)
             self._size_frozen()
         self._apply_header_wraps(col)
         self._sync_header_span()
@@ -1039,12 +1222,68 @@ class DrawingBoard(ttk.Frame):
         self._col_px[col] = max(MIN_COL_PX, min(int(px), MAX_COL_PX))
         self._apply_col_sizes(col)
         if persist:
-            remember_board_col_px(self._col_px)
+            pct = max(self._zoom_pct, 1)
+            if 0 <= col < len(self._base_col_px):
+                self._base_col_px[col] = max(
+                    MIN_COL_PX, int(round(self._col_px[col] * 100 / pct))
+                )
+            self._remember_columns()
 
     def column_minsizes(self) -> list[int]:
         return [
             int(self._header.grid_columnconfigure(col)["minsize"] or 0) for col in range(BOARD_COLUMNS)
         ]
+
+    def _remember_columns(self) -> None:
+        """This PC keeps the heading widths until she drags or double-clicks a sash."""
+        names = [title for title, _chars in HEADER_TITLES]
+        widths = list(self._base_col_px)
+        if len(widths) != len(names):
+            widths = list(self._col_px)
+        remember_board_col_px(widths, names)
+
+    def _on_zoom(self, value: str) -> None:
+        try:
+            pct = int(round(float(value)))
+        except (TypeError, ValueError):
+            return
+        self._zoom_pct = max(75, min(125, pct))
+        if self._zoom_after:
+            with contextlib.suppress(tk.TclError):
+                self.after_cancel(self._zoom_after)
+        try:
+            self._zoom_after = self.after(60, self._apply_zoom)
+        except tk.TclError:
+            self._zoom_after = ""
+
+    def _apply_zoom(self) -> None:
+        """Scale the drawing list. 100% is the squeezed spreadsheet size."""
+        self._zoom_after = ""
+        pct = max(75, min(125, self._zoom_pct))
+        pt = max(8, min(12, round(9 * pct / 100)))
+        font = ("Segoe UI", pt)
+        style = ttk.Style(self)
+        bold = ("Segoe UI", pt, "bold")
+        for name in (
+            "Board.TLabel",
+            "Header.TLabel",
+            "Focus.TLabel",
+            "FocusOk.TLabel",
+            "FocusBad.TLabel",
+            "Pending.TLabel",
+            "TEntry",
+            "TCombobox",
+            "Locate.TButton",
+        ):
+            style.configure(name, font=font)
+        style.configure("Group.TLabel", font=bold)
+        for block in self._blocks.values():
+            with contextlib.suppress(tk.TclError, AttributeError):
+                block.pack_mark.configure(font=bold)
+        with contextlib.suppress(tk.TclError):
+            self._zoom_readout.configure(text=f"{pct}%")
+        self._col_px = [max(MIN_COL_PX, int(round(px * pct / 100))) for px in self._base_col_px]
+        self._apply_col_sizes()
 
     def header_titles(self) -> list[str]:
         return [str(label.cget("text")) for label in self._header_labels]
@@ -1070,14 +1309,333 @@ class DrawingBoard(ttk.Frame):
         col = self._drag_col
         self._drag_col = None
         self._apply_col_sizes(col)
-        remember_board_col_px(self._col_px)
+        pct = max(self._zoom_pct, 1)
+        if 0 <= col < len(self._base_col_px):
+            self._base_col_px[col] = max(MIN_COL_PX, int(round(self._col_px[col] * 100 / pct)))
+        self._remember_columns()
 
     def _sash_reset(self, col: int, _event: tk.Event | None = None) -> None:
         self._drag_col = None
         self.resize_column(col, default_col_px()[col], persist=True)
 
+    def _regrid_columns(self) -> None:
+        """Move each cell into the chosen left-to-right slot."""
+        visual = {logical: pos for pos, logical in enumerate(self._display_order())}
+        for frame in (self._header, self._freeze_header, self._inner, self._freeze_inner):
+            try:
+                children = frame.winfo_children()
+            except tk.TclError:
+                continue
+            for child in children:
+                logical = getattr(child, "_doccon_logical", None)
+                if not isinstance(logical, int):
+                    continue
+                try:
+                    info = child.grid_info()
+                except tk.TclError:
+                    continue
+                if not info or int(info.get("columnspan") or 1) > 1:
+                    continue
+                pos = visual.get(logical, logical)
+                if int(info.get("column") or 0) == pos:
+                    continue
+                with contextlib.suppress(tk.TclError):
+                    child.grid_configure(column=pos)
+
+    def _widget_column(self, widget: tk.Misc) -> int | None:
+        stored = getattr(widget, "_doccon_logical", None)
+        if not isinstance(stored, int):
+            stored = getattr(widget, "_doccon_col", None)
+        if isinstance(stored, int):
+            return stored
+        try:
+            info = widget.grid_info()
+        except tk.TclError:
+            return None
+        if not info:
+            return None
+        try:
+            return int(info.get("column") or 0)
+        except (TypeError, ValueError):
+            return None
+
+    def _sync_hidden_columns(self) -> None:
+        """Take hidden headings off the grid. A closed edit line stays closed."""
+        for frame in (self._header, self._freeze_header, self._inner, self._freeze_inner):
+            try:
+                children = frame.winfo_children()
+            except tk.TclError:
+                continue
+            for child in children:
+                try:
+                    info = child.grid_info()
+                except tk.TclError:
+                    continue
+                if info:
+                    try:
+                        span = int(info.get("columnspan") or 1)
+                    except (TypeError, ValueError):
+                        continue
+                    if span > 1:
+                        continue
+                    logical = getattr(child, "_doccon_logical", None)
+                    if not isinstance(logical, int):
+                        try:
+                            logical = int(info.get("column") or 0)
+                        except (TypeError, ValueError):
+                            continue
+                        child._doccon_logical = logical
+                    if self._column_on(logical):
+                        continue
+                    child._doccon_col_hidden = True
+                    child.grid_remove()
+                    continue
+                if not getattr(child, "_doccon_col_hidden", False):
+                    continue
+                col = self._widget_column(child)
+                if col is None or not self._column_on(col):
+                    continue
+                child._doccon_col_hidden = False
+                if self._edit_widget_stays_closed(child):
+                    continue
+                with contextlib.suppress(tk.TclError):
+                    child.grid()
+
+    def _edit_widget_stays_closed(self, widget: tk.Misc) -> bool:
+        token = id(widget)
+        for block in self._blocks.values():
+            if token not in block.edit_ids:
+                continue
+            return not block.include.get() and not block.extra
+        return False
+
+    def _choose_columns(self) -> None:
+        """Tick headings and set their order. Both are kept on this PC."""
+        dialog = tk.Toplevel(self.winfo_toplevel())
+        dialog.title("Columns")
+        dialog.transient(self.winfo_toplevel())
+        dialog.resizable(False, False)
+        ttk.Label(
+            dialog,
+            text="Checked columns are shown. Up and Down set the order. Pack and JIRA ID stay first.",
+            wraplength=420,
+        ).pack(anchor="w", padx=12, pady=(12, 4))
+        frozen_titles = {HEADER_TITLES[index][0] for index in range(FROZEN_COLS)}
+        entries: list[dict[str, object]] = []
+        body = ttk.Frame(dialog)
+        body.pack(fill="both", expand=True, padx=8)
+
+        def pack_rows() -> None:
+            for entry in entries:
+                frame = entry["frame"]
+                if isinstance(frame, ttk.Frame):
+                    frame.pack_forget()
+            for entry in entries:
+                frame = entry["frame"]
+                if isinstance(frame, ttk.Frame):
+                    frame.pack(fill="x", pady=1)
+
+        def move(entry: dict[str, object], delta: int) -> None:
+            if str(entry["title"]) in frozen_titles:
+                return
+            index = entries.index(entry)
+            other = index + delta
+            if other < 0 or other >= len(entries):
+                return
+            if str(entries[other]["title"]) in frozen_titles:
+                return
+            entries[index], entries[other] = entries[other], entries[index]
+            pack_rows()
+
+        for logical in self._display_order():
+            title = HEADER_TITLES[logical][0]
+            row = ttk.Frame(body)
+            var = tk.BooleanVar(value=self._column_on(logical))
+            entry: dict[str, object] = {"title": title, "var": var, "frame": row}
+            ttk.Checkbutton(row, text=title, variable=var, width=28).pack(side="left")
+            if title not in frozen_titles:
+                ttk.Button(row, text="Up", width=4, command=lambda item=entry: move(item, -1)).pack(side="left")
+                ttk.Button(row, text="Down", width=4, command=lambda item=entry: move(item, 1)).pack(
+                    side="left", padx=(4, 0)
+                )
+            entries.append(entry)
+        pack_rows()
+
+        def select_all() -> None:
+            for entry in entries:
+                var = entry["var"]
+                if isinstance(var, tk.BooleanVar):
+                    var.set(True)
+
+        def apply_choice() -> None:
+            hidden = [
+                str(entry["title"])
+                for entry in entries
+                if isinstance(entry["var"], tk.BooleanVar) and not entry["var"].get()
+            ]
+            if len(hidden) >= len(entries):
+                messagebox.showinfo("Columns", "Leave at least one column on.", parent=dialog)
+                return
+            self._col_order = [str(entry["title"]) for entry in entries]
+            self._hidden_titles = set(hidden)
+            remember_board_order(self._col_order)
+            remember_board_hidden(hidden)
+            self._apply_col_sizes()
+            dialog.destroy()
+
+        buttons = ttk.Frame(dialog)
+        buttons.pack(fill="x", padx=12, pady=12)
+        ttk.Button(buttons, text="Select all", command=select_all).pack(side="left")
+        ttk.Button(buttons, text="Show these", command=apply_choice).pack(side="right")
+        reveal_on_parent(dialog)
+        dialog.grab_set()
+        dialog.focus_set()
+
     def _place(self, widget: tk.Misc, row: int, col: int, **grid) -> None:
-        widget.grid(row=row, column=col, sticky="nsew", padx=(6, SASH_PX), pady=1, **grid)
+        widget._doccon_col = col
+        widget._doccon_logical = col
+        widget.grid(row=row, column=self._visual_column(col), sticky="nsew", padx=(6, SASH_PX), pady=1, **grid)
+        if not self._column_on(col):
+            widget._doccon_col_hidden = True
+            widget.grid_remove()
+
+    def _content_width(self, col: int) -> int:
+        """Room inside a column after the cell padding. Editors stay inside this."""
+        if col < 0 or col >= len(self._col_px):
+            return MIN_COL_PX
+        return max(8, self._col_px[col] - 6 - SASH_PX)
+
+    def _pin_cell_width(self, cell: tk.Frame, col: int) -> None:
+        """Keep a Next cell from stretching its column when the edit line opens."""
+        self._width_locks.append((col, cell))
+        self._size_pinned_cell(col, cell)
+
+    def _size_pinned_cell(self, col: int, cell: tk.Frame) -> None:
+        height = 20
+        for child in cell.winfo_children():
+            try:
+                height = max(height, int(child.winfo_reqheight()) + 6)
+            except tk.TclError:
+                continue
+        try:
+            cell.pack_propagate(False)
+            cell.configure(width=self._content_width(col), height=height)
+        except tk.TclError:
+            return
+
+    def _apply_width_locks(self, col: int | None = None) -> None:
+        for locked_col, cell in self._width_locks:
+            if col is not None and locked_col != col:
+                continue
+            try:
+                if not cell.winfo_exists():
+                    continue
+            except tk.TclError:
+                continue
+            self._size_pinned_cell(locked_col, cell)
+
+    def _reflow_all_actions(self) -> None:
+        for block in self._blocks.values():
+            self._reflow_actions(block)
+
+    def _reflow_actions(self, block: _Block) -> None:
+        """Lay Locate / Open / Preview inside the PDF column. Do not widen it."""
+        button = block.locate_btn
+        if button is None:
+            return
+        frame = button.master
+        if not isinstance(frame, (tk.Frame, ttk.Frame)):
+            return
+        width = self._content_width(PDF_COL_INDEX)
+        widgets = (
+            block.locate_btn,
+            block.rename_btn,
+            block.open_btn,
+            block.preview_btn,
+            block.shop_folder,
+        )
+        shown: list[tk.Misc] = []
+        for widget in widgets:
+            if widget is None:
+                continue
+            try:
+                if not widget.winfo_exists():
+                    continue
+            except tk.TclError:
+                continue
+            visible = True
+            if widget is block.rename_btn and not getattr(widget, "_doccon_show", False):
+                visible = False
+            if widget is block.shop_folder and not self._shop_choices:
+                visible = False
+            if not visible:
+                with contextlib.suppress(tk.TclError):
+                    widget.place_forget()
+                continue
+            shown.append(widget)
+        x = y = 0
+        line_h = 0
+        gap = 4
+        for widget in shown:
+            try:
+                wanted = max(int(widget.winfo_reqwidth()), 1)
+                w = min(wanted, width)
+                h = max(int(widget.winfo_reqheight()), 1)
+                if x > 0 and x + w > width:
+                    x = 0
+                    y += line_h + gap
+                    line_h = 0
+                widget.place(x=x, y=y, width=w, height=h)
+            except tk.TclError:
+                continue
+            x += w + gap
+            line_h = max(line_h, h)
+        try:
+            frame.pack_propagate(False)
+            frame.configure(width=width, height=max(y + line_h, 1))
+        except tk.TclError:
+            return
+
+    def _place_vlines(self) -> None:
+        """Thin vertical rules, the same weight as the lines between rows."""
+        self._place_vline_set(self._inner, self._vlines, len(self._col_px))
+        self._place_vline_set(self._freeze_inner, self._freeze_vlines, FROZEN_COLS)
+        for _title, label in self._group_headers:
+            with contextlib.suppress(tk.TclError):
+                label.lift()
+        for label in self._group_frozen:
+            with contextlib.suppress(tk.TclError):
+                label.lift()
+
+    def _place_vline_set(self, parent: tk.Misc, lines: list[tk.Frame], count: int) -> None:
+        while len(lines) < count:
+            line = tk.Frame(parent, width=1, height=1, background=BORDER, highlightthickness=0, bd=0)
+            line.bind("<Button-1>", self._press_vline, add="+")
+            lines.append(line)
+        x = 0
+        order = self._display_order()
+        for index in range(count):
+            logical = order[index] if index < len(order) else index
+            px = self._shown_px(logical) if logical < len(self._col_px) else 0
+            if px <= 0:
+                with contextlib.suppress(tk.TclError):
+                    lines[index].place_forget()
+                continue
+            x += px
+            try:
+                lines[index].place(x=max(x - 1, 0), y=0, relheight=1, width=1)
+                lines[index].lift()
+            except tk.TclError:
+                continue
+        for extra in lines[count:]:
+            with contextlib.suppress(tk.TclError):
+                extra.place_forget()
+
+    def _press_vline(self, event: tk.Event) -> None:
+        parent = getattr(event.widget, "master", None)
+        key = self._band_key(parent, int(getattr(event, "y", 0)))
+        if key:
+            self._focus_and_mount(key)
 
     def _field_values(self, field: str) -> tuple[str, ...]:
         override = self._rev_options.get(field)
@@ -1149,7 +1707,12 @@ class DrawingBoard(ttk.Frame):
     ) -> NextWidget:
         """Next editor in a colored cell. ttk fill is ignored on Windows, so the cell is yellow."""
         cell = tk.Frame(host if host is not None else self._inner, bg=SURFACE, highlightthickness=0, bd=0)
-        cell.grid(row=row, column=col, sticky="nsew", padx=(6, SASH_PX), pady=1)
+        cell._doccon_col = col
+        cell._doccon_logical = col
+        cell.grid(row=row, column=self._visual_column(col), sticky="nsew", padx=(6, SASH_PX), pady=1)
+        if not self._column_on(col):
+            cell._doccon_col_hidden = True
+            cell.grid_remove()
         if kind in {"text", "date"}:
             box: NextWidget = NextEntry(cell, width=1)
             box.set(initial)
@@ -1185,6 +1748,7 @@ class DrawingBoard(ttk.Frame):
         cell._doccon_key = key
         cell._doccon_field = field
         self._bind_restore_now(box, cell)
+        self._pin_cell_width(cell, col)
         return box
 
     def _on_next_button1(self, event: tk.Event, key: str) -> str | None:
@@ -1326,7 +1890,15 @@ class DrawingBoard(ttk.Frame):
 
     def _on_pack_tick(self, key: str = "") -> None:
         if key:
-            self._stamp_pack_tick(key)
+            block = self._blocks.get(key)
+            if block is not None and not block.extra:
+                if block.include.get():
+                    self._stamp_pack_tick(key)
+                    fresh = self._blocks.get(key)
+                    if fresh is not None:
+                        self._set_edit_row_open(fresh, True)
+                else:
+                    self._set_edit_row_open(block, False)
         self._notify_draft()
         if not bool(self._packed_only.get()) or self._suspend_layout:
             return
@@ -1336,6 +1908,40 @@ class DrawingBoard(ttk.Frame):
             self._pack_filter_after = self.after_idle(self._run_pack_filter)
         except tk.TclError:
             self._refresh_filter()
+
+    def _set_edit_row_open(self, block: _Block, open_row: bool) -> None:
+        """The Next line stays closed until Pack is ticked."""
+        next_row = block.grid_top + 2
+        if not block.mounted:
+            size = SHELL_ROW_PX // 2 if open_row else 0
+            for frame in (self._inner, self._freeze_inner):
+                with contextlib.suppress(tk.TclError):
+                    frame.rowconfigure(next_row, minsize=size, weight=0)
+            return
+        for widget in block.widgets:
+            if id(widget) not in block.edit_ids:
+                continue
+            try:
+                if open_row:
+                    col = self._widget_column(widget)
+                    if col is not None and not self._column_on(col):
+                        widget._doccon_col_hidden = True
+                        continue
+                    if not widget.winfo_manager():
+                        widget.grid()
+                elif widget.winfo_manager():
+                    widget.grid_remove()
+            except tk.TclError:
+                continue
+        for frame in (self._inner, self._freeze_inner):
+            with contextlib.suppress(tk.TclError):
+                frame.rowconfigure(next_row, minsize=0 if not open_row else 1, weight=0)
+        self._apply_width_locks()
+        self._reflow_actions(block)
+        self._place_vlines()
+        if not self._suspend_layout:
+            self._frozen_passes = 0
+            self._schedule_frozen_row_sync()
 
     def _stamp_pack_tick(self, key: str) -> None:
         block = self._blocks.get(key)
@@ -1402,7 +2008,7 @@ class DrawingBoard(ttk.Frame):
                 block.shown = show
                 for widget in block.widgets:
                     try:
-                        if show:
+                        if show and (id(widget) not in block.edit_ids or block.include.get() or block.extra):
                             widget.grid()
                         else:
                             widget.grid_remove()
@@ -1443,7 +2049,7 @@ class DrawingBoard(ttk.Frame):
             for child in host.winfo_children():
                 child.destroy()
         self._header_labels = []
-        self._header_wraps = []
+        self._header_cells = []
         for col, (title, _width) in enumerate(HEADER_TITLES):
             self._add_header_cell(self._header, col, title, remember=True)
             if col < FROZEN_COLS:
@@ -1451,7 +2057,13 @@ class DrawingBoard(ttk.Frame):
 
     def _add_header_cell(self, parent: tk.Misc, col: int, title: str, *, remember: bool) -> None:
         cell = tk.Frame(parent, background=HEADER_BG, highlightthickness=0, bd=0)
-        cell.grid(row=0, column=col, sticky="nsew")
+        cell.pack_propagate(False)
+        cell._doccon_col = col
+        cell._doccon_logical = col
+        cell.grid(row=0, column=self._visual_column(col), sticky="nsew")
+        if not self._column_on(col):
+            cell._doccon_col_hidden = True
+            cell.grid_remove()
         if col == 0:
             tk.Frame(cell, width=1, background=BORDER, highlightthickness=0, bd=0).pack(side="left", fill="y")
         sash = tk.Frame(
@@ -1468,12 +2080,18 @@ class DrawingBoard(ttk.Frame):
         sash.bind("<ButtonRelease-1>", self._sash_release)
         sash.bind("<Double-Button-1>", lambda event, c=col: self._sash_reset(c, event))
         label = ttk.Label(
-            cell, text=title, style="Header.TLabel", anchor="w", justify="left", wraplength=0
+            cell,
+            text=title,
+            style="Header.TLabel",
+            anchor="w",
+            justify="left",
+            wraplength=0,
+            padding=(4, 1),
         )
-        label.pack(side="left", fill="both", expand=True, padx=(6, 2))
+        label.pack(side="left", fill="both", expand=True, padx=(6, 6))
+        self._header_cells.append((col, cell))
         if remember:
             self._header_labels.append(label)
-            self._header_wraps.append((col, label))
 
     def _unmap_inner(self) -> None:
         """Keep the list off the canvas while rows are created so Tk does not relayout after each drawing."""
@@ -1524,6 +2142,9 @@ class DrawingBoard(ttk.Frame):
                 child.destroy()
         self._blocks.clear()
         self._matches.clear()
+        self._width_locks.clear()
+        self._vlines.clear()
+        self._freeze_vlines.clear()
         self._group_headers.clear()
         self._group_frozen.clear()
         # A repaint drops the band with the blocks it was painted on: no stale focused row.
@@ -1749,7 +2370,14 @@ class DrawingBoard(ttk.Frame):
         next_row = top + 2
         pack = tk.BooleanVar(value=include)
         pack_mark = PackMark(self._freeze_inner, pack)
-        pack_mark.grid(row=now_row, column=PACK_COL_INDEX, rowspan=2, padx=(4, SASH_PX), pady=4)
+        pack_mark._doccon_logical = PACK_COL_INDEX
+        pack_mark.grid(
+            row=now_row,
+            column=self._visual_column(PACK_COL_INDEX),
+            rowspan=2,
+            padx=(4, SASH_PX),
+            pady=4,
+        )
         drawing_label = self._clip_label(
             drawing.drawing_id or drawing.key,
             wrap_col=DRAWING_COL_INDEX,
@@ -1769,9 +2397,10 @@ class DrawingBoard(ttk.Frame):
         # Field Now labels wait until the row is on screen. A long job should not
         # build a cell for every column of every drawing before the first click.
         originals: dict[str, ttk.Label] = {}
+        edit_px = SHELL_ROW_PX // 2 if include else 0
         for frame in (self._inner, self._freeze_inner):
             frame.rowconfigure(now_row, minsize=SHELL_ROW_PX // 2, weight=0)
-            frame.rowconfigure(next_row, minsize=SHELL_ROW_PX // 2, weight=0)
+            frame.rowconfigure(next_row, minsize=edit_px, weight=0)
         h_bot, h_bot_f = self._hline(top + 3)
         nexts: dict[str, NextWidget | _Held] = {
             field: _Held(getattr(drawing, field) or "") for field, _t, _v, _w, _k in FIELD_KEYS
@@ -1957,7 +2586,14 @@ class DrawingBoard(ttk.Frame):
         next_row = top + 2
         pack = tk.BooleanVar(value=include)
         pack_mark = PackMark(self._freeze_inner, pack)
-        pack_mark.grid(row=now_row, column=PACK_COL_INDEX, rowspan=2, padx=(4, SASH_PX), pady=4)
+        pack_mark._doccon_logical = PACK_COL_INDEX
+        pack_mark.grid(
+            row=now_row,
+            column=self._visual_column(PACK_COL_INDEX),
+            rowspan=2,
+            padx=(4, SASH_PX),
+            pady=4,
+        )
         drawing_label = self._clip_label(
             drawing.drawing_id or drawing.key,
             wrap_col=DRAWING_COL_INDEX,
@@ -2032,9 +2668,6 @@ class DrawingBoard(ttk.Frame):
             width=7,
             command=lambda key=drawing.key: self._preview_pdf(key),
         )
-        locate_btn.pack(side="left", padx=(0, 4))
-        open_btn.pack(side="left", padx=(0, 4))
-        preview_btn.pack(side="left")
         shop_folder = self._make_shop_picker(pdf_actions)
         pdf_state = "normal" if row.pdf else "disabled"
         open_btn.configure(state=pdf_state)
@@ -2132,9 +2765,12 @@ class DrawingBoard(ttk.Frame):
             shop_folder=shop_folder,
             mounted=True,
             grid_top=top,
+            edit_ids=tuple(id(widget) for widget in (pdf_actions, *next_cells)),
         )
         pack.trace_add("write", lambda *_args, drawing_key=drawing.key: self._on_pack_tick(drawing_key))
         self._watch_next(self._blocks[drawing.key])
+        if not include:
+            self._set_edit_row_open(self._blocks[drawing.key], False)
         self._style_pdf_rename(self._blocks[drawing.key], row)
         if drawing.key == self._focus_key:
             self._focus_painted = drawing.key
@@ -2146,8 +2782,6 @@ class DrawingBoard(ttk.Frame):
         box = ttk.Combobox(parent, width=18, state="readonly", values=self._shop_choices)
         box.set(ROOT_FOLDER)
         self._quiet_dropdown(box)
-        if self._shop_choices:
-            box.pack(side="left", padx=(8, 0))
         box.bind("<<ComboboxSelected>>", lambda _event: self._notify_draft(), add="+")
         return box
 
@@ -2161,14 +2795,12 @@ class DrawingBoard(ttk.Frame):
             if box is None:
                 continue
             if not self._shop_choices:
-                if str(box.winfo_manager()) == "pack":
-                    box.pack_forget()
+                self._reflow_actions(block)
                 continue
             current = (box.get() or ROOT_FOLDER).strip() or ROOT_FOLDER
             box.configure(values=self._shop_choices)
             box.set(current if current in self._shop_choices else ROOT_FOLDER)
-            if str(box.winfo_manager()) != "pack":
-                box.pack(side="left", padx=(8, 0))
+            self._reflow_actions(block)
 
     def apply_shop_folder_picks(self, picks: dict[str, str]) -> None:
         from doccon.shop_place import ROOT_FOLDER
@@ -2270,7 +2902,14 @@ class DrawingBoard(ttk.Frame):
         next_row = top + 2
         pack = tk.BooleanVar(value=item.packed)
         pack_mark = PackMark(self._freeze_inner, pack)
-        pack_mark.grid(row=now_row, column=PACK_COL_INDEX, rowspan=2, padx=(4, SASH_PX), pady=4)
+        pack_mark._doccon_logical = PACK_COL_INDEX
+        pack_mark.grid(
+            row=now_row,
+            column=self._visual_column(PACK_COL_INDEX),
+            rowspan=2,
+            padx=(4, SASH_PX),
+            pady=4,
+        )
         drawing_label = self._clip_label(item.document_no, wrap_col=DRAWING_COL_INDEX, parent=self._freeze_inner)
         self._place(drawing_label, now_row, DRAWING_COL_INDEX)
         drawing_id_next = self._next_box(
@@ -2335,9 +2974,6 @@ class DrawingBoard(ttk.Frame):
             width=7,
             command=lambda extra_key=key: self._preview_pdf(extra_key),
         )
-        locate_btn.pack(side="left", padx=(0, 4))
-        open_btn.pack(side="left", padx=(0, 4))
-        preview_btn.pack(side="left")
         shop_folder = self._make_shop_picker(pdf_actions)
         pdf_state = "normal" if Path(item.path).is_file() else "disabled"
         open_btn.configure(state=pdf_state)
@@ -2417,6 +3053,9 @@ class DrawingBoard(ttk.Frame):
         pack.trace_add("write", lambda *_args, drawing_key=key: self._on_pack_tick(drawing_key))
         self._bind_row_select(widgets, key)
         self._watch_next(self._blocks[key])
+        if item.email_dropped and rename_btn is not None:
+            rename_btn._doccon_show = True
+        self._reflow_actions(self._blocks[key])
 
     def _pdf_address_cell_text(self, text: str) -> tuple[tk.Frame, ttk.Label]:
         cell = tk.Frame(self._inner, bg=SURFACE, highlightthickness=0, bd=0)
@@ -3166,13 +3805,11 @@ class DrawingBoard(ttk.Frame):
         """Rename… only for an email-dropped DocCon/dropped copy. Locate’d Dropbox files never get it."""
         path = None if row.pdf is None else row.pdf.path
         show = pdf_is_email_dropped(row) and path is not None and is_dropped_pdf_path(path)
-        if show:
-            if str(block.rename_btn.winfo_manager()) != "pack":
-                block.rename_btn.pack(side="left", padx=(0, 4), after=block.locate_btn)
-            block.rename_btn.configure(state="normal")
-            return
-        if str(block.rename_btn.winfo_manager()) == "pack":
-            block.rename_btn.pack_forget()
+        if block.rename_btn is not None:
+            block.rename_btn._doccon_show = bool(show)
+            if show:
+                block.rename_btn.configure(state="normal")
+        self._reflow_actions(block)
 
     def apply_pdf(self, row: MatchedRow) -> None:
         """Update the paired PDF without restoring Next from Now."""

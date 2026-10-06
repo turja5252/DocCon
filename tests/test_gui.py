@@ -952,7 +952,8 @@ def test_console_has_paste_pdf_and_no_pdf_from_outlook_button() -> None:
         assert "Create new Jira Issue" in labels
         assert "Create new\nJira Issue" not in labels
         assert "Batch Next…" in labels
-        assert "Pack all" not in labels
+        assert "Pack all" in labels
+        assert "Pack none" in labels
         assert "Submitted to Client For" in _label_texts(app)
         assert "Approval" in app.board._pack_purpose.cget("values")
         assert "Set packed to…" not in labels

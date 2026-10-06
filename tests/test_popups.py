@@ -7,7 +7,7 @@ from tkinter import ttk
 
 import pytest
 
-from doccon.popups import center_origin, fit_on_monitor, place_on_parent
+from doccon.popups import _pin, bind_console, center_origin, fit_on_monitor, place_on_parent
 
 
 def test_fit_keeps_a_tall_dialog_on_the_parent_monitor() -> None:
@@ -37,5 +37,13 @@ def test_dialog_is_placed_on_the_parent_not_at_the_origin() -> None:
         parent_x = int(root.winfo_rootx())
         assert abs(placed_x - parent_x) < 400
         assert placed_x != 0 or parent_x == 0
+        bind_console(root)
+        pin = _pin(None)
+        assert pin is not None
+        try:
+            assert abs(int(pin.winfo_rootx()) - (parent_x + 200)) < 40
+            assert abs(int(pin.winfo_rooty()) - (int(root.winfo_rooty()) + 150)) < 40
+        finally:
+            pin.destroy()
     finally:
         root.destroy()

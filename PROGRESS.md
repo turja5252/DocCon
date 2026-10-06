@@ -2,6 +2,42 @@
 
 Newest first. Append a dated entry when a decision is locked, a test runs, or the next step changes.
 
+## 2026-10-06 — Elite DocCon 1.98
+
+Source and **Elite DocCon.exe** are **1.98**. Column layout stays on this PC. Create EDDI keeps one workbook and one dated PDF. Messages open on the console’s screen. **Pack all** is back, and Update Jira confirms when the write finished.
+
+## 2026-10-06 — Column widths no longer swell on a new build
+
+Opening DocCon was multiplying the column widths by the screen scale on top of text that was already scaled. A new build then looked like the huge default. The width you drag is the width that comes back.
+
+## 2026-10-06 — Columns can be hidden
+
+**Columns…** on the Filter row lists every heading with a tick. Select all, or tick a few, and only those stay on the list. Up and Down set the order of the headings after Pack and JIRA ID. Those two stay first and do not move. The choice is saved on this PC for every job, the same way column widths are. At least one column stays on.
+
+## 2026-10-06 — Jira updated message, Pack all is back
+
+After Update Jira finishes, a message says Jira has been updated and how many items were written. **Pack all** is on the Filter row again, beside Pack none.
+
+## 2026-10-06 — One EDDI workbook, one PDF
+
+Create EDDI keeps a single `EDDI-{job}.xlsm` in `3.0 Doc Con`. Each run adds a tab named with the date (`2026-10-06`, then `2026-10-06-2`) and replaces the one PDF. The PDF is named `EDDI-{job}-{date}.pdf`, and that date is printed on the sheet. Sheet Project stays the blank form.
+
+## 2026-10-06 — Create EDDI does not need a workbook in the job
+
+The form is `templates/EDDI-template.xlsm` next to Elite DocCon. Create EDDI copies that into `3.0 Doc Con` as `EDDI-{job}-{date}.xlsm` and fills it from the console. A job does not need its own EDDI file. If `EDDI-{job}.xlsm` is already in the job, that file is still the form, and it is not overwritten.
+
+## 2026-10-06 — Pack keeps the columns lined up
+
+Opening the edit line no longer stretches a column past its heading. Locate, Open, and Preview stay inside the PDF column and wrap onto another line when they do not fit. Thin vertical rules run down the columns, the same weight as the lines between rows.
+
+## 2026-10-06 — Headings clip, and both sides of a row stay the same height
+
+A column can be dragged narrower than its heading. The leftover title is hidden. Zoom scales the frozen columns and the scrolling list together, and each row is the same height on both sides.
+
+## 2026-10-06 — Column widths stay on Sarah's PC
+
+A sash drag is saved on this computer with the column heading. The next time she opens DocCon, that width comes back, including after a later build adds a column. Double-click a sash to put that one column back to the default. Zoom does not overwrite the saved width.
+
 ## 2026-10-05 — Smooth scroll on a long list (1.97)
 
 Scrolling no longer rebuilds rows while the list is moving. Locate, Open, and Preview fill in after the scroll stops. Source and **Elite DocCon.exe** are **1.97**.

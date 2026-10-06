@@ -169,6 +169,46 @@ def test_find_live_book_ignores_dated_leftover(tmp_path: Path) -> None:
     assert not is_dated_eddi_name(live.name, "2026-Tanzim")
 
 
+def test_snapshot_uses_doccon_form_when_the_job_has_none(tmp_path: Path) -> None:
+    from doccon.paths import eddi_template_path
+
+    assert eddi_template_path().is_file()
+    job_folder = tmp_path / "2026-Tanzim"
+    (job_folder / "3.0 Doc Con").mkdir(parents=True)
+    snap = snapshot_eddi(job_folder, "2026-Tanzim", [_drawing()], date(2026, 10, 6), print_pdf=False)
+    assert snap.book.name == "EDDI-2026-Tanzim.xlsm"
+    assert snap.pdf.name == "EDDI-2026-Tanzim-2026-10-06.pdf"
+    assert snap.sheet == "2026-10-06"
+    again = snapshot_eddi(job_folder, "2026-Tanzim", [_drawing()], date(2026, 10, 6), print_pdf=False)
+    assert again.book == snap.book
+    assert again.pdf.name == "EDDI-2026-Tanzim-2026-10-06-2.pdf"
+    assert again.sheet == "2026-10-06-2"
+    wb = load_workbook(snap.book, keep_vba=True)
+    assert wb.sheetnames[0] == "Project"
+    assert "2026-10-06" in wb.sheetnames
+    assert "2026-10-06-2" in wb.sheetnames
+    wb.close()
+    assert snap.updated_rows >= 1
+
+
+def test_newer_pdf_is_the_only_eddi_pdf(tmp_path: Path) -> None:
+    from doccon.eddi import _keep_one_pdf
+
+    folder = tmp_path / "3.0 Doc Con"
+    folder.mkdir()
+    old = folder / "EDDI-2026-Tanzim-2026-09-01.pdf"
+    plain = folder / "EDDI-2026-Tanzim.pdf"
+    other = folder / "CT-2026-Tanzim-1.pdf"
+    keep = folder / "EDDI-2026-Tanzim-2026-10-06.pdf"
+    for path, body in ((old, b"old"), (plain, b"plain"), (other, b"ct"), (keep, b"new")):
+        path.write_bytes(body)
+    _keep_one_pdf(folder, "2026-Tanzim", keep)
+    assert keep.read_bytes() == b"new"
+    assert not old.exists()
+    assert not plain.exists()
+    assert other.is_file()
+
+
 def test_find_live_book_missing_raises(tmp_path: Path) -> None:
     folder = tmp_path / "2026-Tanzim" / "3.0 Doc Con"
     folder.mkdir(parents=True)
@@ -190,14 +230,14 @@ def test_find_live_book_uses_parent_job_form(tmp_path: Path) -> None:
         date(2026, 9, 30),
         print_pdf=False,
     )
-    assert snap.book.name == "EDDI-2026-077-2026-09-30.xlsx"
+    assert snap.book == live
+    assert snap.sheet == "2026-09-30"
     assert live.is_file()
 
 
 def test_snapshot_fills_project_form_not_custom_list(tmp_path: Path) -> None:
     job_folder = tmp_path / "2026-Tanzim"
     live = _project_fixture(job_folder / "3.0 Doc Con" / "EDDI-2026-Tanzim.xlsx")
-    before = live.read_bytes()
     drawings = [
         _drawing(
             client_document_number="CNRL-1",
@@ -244,18 +284,18 @@ def test_snapshot_fills_project_form_not_custom_list(tmp_path: Path) -> None:
         ),
     ]
     snap = snapshot_eddi(job_folder, "2026-Tanzim", drawings, date(2026, 9, 10), print_pdf=False)
-    assert snap.book.name == "EDDI-2026-Tanzim-2026-09-10.xlsx"
-    assert snap.book != live
-    assert live.read_bytes() == before
+    assert snap.book == live
+    assert snap.sheet == "2026-09-10"
     assert snap.updated_rows == 5
-    assert snap.note.startswith("EDDI: EDDI-2026-Tanzim-2026-09-10.pdf")
+    assert snap.note.startswith("EDDI: EDDI-2026-Tanzim-2026-09-10.pdf tab 2026-09-10")
 
     wb = load_workbook(snap.book)
     assert wb.sheetnames[0] == "Project"
+    assert wb["Project"]["A2"].value == "EDDI-2026-XXXX"
     assert "EDDI" not in wb.sheetnames
-    ws = wb["Project"]
+    ws = wb["2026-09-10"]
     assert ws["A1"].value == "ELITE DRAWING & DOCUMENT INDEX"
-    assert str(ws["A2"].value) == "EDDI-2026-Tanzim"
+    assert str(ws["A2"].value) == "EDDI-2026-Tanzim 2026-09-10"
     groups = parse_form_groups(ws)
     assert [group.number for group in groups] == list(range(1, 10))
     assert ws["A3"].value == "DOCUMENT NUMBER"
@@ -377,7 +417,7 @@ def test_snapshot_hides_empty_groups_and_drops_stranded_break(tmp_path: Path) ->
     ]
     snap = snapshot_eddi(job_folder, "2026-Tanzim", drawings, date(2026, 9, 11), print_pdf=False)
     wb = load_workbook(snap.book)
-    ws = wb["Project"]
+    ws = wb["2026-09-11"]
     groups = parse_form_groups(ws)
     by_num = {group.number: group for group in groups}
     assert not _hidden(ws, by_num[6].header_row)
@@ -422,7 +462,8 @@ def test_snapshot_includes_matched_pdf_only(tmp_path: Path) -> None:
     snap = snapshot_eddi(job_folder, "2026-Tanzim", drawings, date(2026, 9, 11), print_pdf=False)
     assert snap.updated_rows == 1
     wb = load_workbook(snap.book)
-    values = [ws_cell for ws_cell in (wb["Project"].cell(row, 1).value for row in range(1, wb["Project"].max_row + 1))]
+    filled = wb["2026-09-11"]
+    values = [filled.cell(row, 1).value for row in range(1, filled.max_row + 1)]
     wb.close()
     assert "2026-Tanzim-1-1" in values
     assert "2026-Tanzim-1-2" not in values

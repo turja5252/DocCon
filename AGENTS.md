@@ -38,7 +38,9 @@ The summary is an ID, then optional wording. Empty description is allowed.
 
 No extra Jira status or custom trigger field. Engineer emails Sarah the pack list; she runs DocCon.
 
-**Next:** Source and the frozen exe are **1.97**. Load `2026-Tanzim`. Do not Confirm 075.
+**Next:** Source and the frozen exe are **1.98**. Load `2026-Tanzim`. Do not Confirm 075.
+
+**1.98 Column layout stays, and Create EDDI keeps one workbook.** Dragged widths, hidden columns, and column order stay on this PC. **Columns…** shows, hides, and reorders headings. Pack and JIRA ID stay first. **Pack all** is back. Update Jira says when the write finished. Messages open on the console’s screen. Create EDDI uses the form next to DocCon, adds a dated tab, and replaces the one dated PDF. Drag is not back.
 
 **1.97 Scrolling a long list stays smooth.** Locate, Open, and Preview fill in after the scroll stops. Drag is not back.
 

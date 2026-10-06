@@ -371,8 +371,7 @@ def test_rename_email_dropped_pdf_not_a_locate_file(tmp_path: Path, monkeypatch)
         assert updated.pdf.path.is_file()
         assert app.board._blocks["P2024-1"].nexts["outgoing_rev"].get() == "0"
         assert app.board._blocks["P2024-1"].nexts["outgoing_rev"].cget("style") == "Pending.TCombobox"
-        cluster = list(app.board._blocks["P2024-1"].locate_btn.master.pack_slaves())
-        assert app.board._blocks["P2024-1"].rename_btn in cluster
+        assert str(app.board._blocks["P2024-1"].rename_btn.winfo_manager()) == "place"
 
         real = tmp_path / "Current PDF" / "job.pdf"
         real.parent.mkdir(parents=True, exist_ok=True)

@@ -14,7 +14,7 @@ from doccon.register import DEFAULT_PROJECT, DEFAULT_SITE
 
 # 1.36: ignore pre-1.31 fat board_col_px (e.g. 564px Description) once, then save again.
 # 1.76: PDF column grows for Preview beside Open.
-BOARD_LAYOUT_REV = 137
+BOARD_LAYOUT_REV = 138
 
 ALLOWED_KEYS = (
     "site",
@@ -27,6 +27,9 @@ ALLOWED_KEYS = (
     "shop_cc",
     "last_locate_dir",
     "board_col_px",
+    "board_col_names",
+    "board_hidden_cols",
+    "board_col_order",
     "board_layout_rev",
     "job_folders",
     "shop_ifc_folders",
@@ -45,6 +48,9 @@ class AppSettings:
     shop_cc: tuple[str, ...] = ()
     last_locate_dir: str = ""
     board_col_px: tuple[int, ...] = ()
+    board_col_names: tuple[str, ...] = ()
+    board_hidden_cols: tuple[str, ...] = ()
+    board_col_order: tuple[str, ...] = ()
     board_layout_rev: int = 0
     job_folders: dict[str, str] = field(default_factory=dict)
     shop_ifc_folders: dict[str, str] = field(default_factory=dict)
@@ -77,6 +83,9 @@ def load_settings() -> AppSettings:
         shop_cc=normalize_saved_emails(raw.get("shop_cc")),
         last_locate_dir=str(raw.get("last_locate_dir") or "").strip(),
         board_col_px=_board_col_px(raw.get("board_col_px")),
+        board_col_names=_board_col_names(raw.get("board_col_names")),
+        board_hidden_cols=_board_col_names(raw.get("board_hidden_cols")),
+        board_col_order=_board_col_names(raw.get("board_col_order")),
         board_layout_rev=_board_layout_rev(raw.get("board_layout_rev")),
         job_folders=_job_folders(raw.get("job_folders")),
         shop_ifc_folders=_job_folders(raw.get("shop_ifc_folders")),
@@ -99,6 +108,9 @@ def save_settings(settings: AppSettings) -> None:
         "shop_cc": list(normalize_saved_emails(settings.shop_cc)),
         "last_locate_dir": settings.last_locate_dir.strip(),
         "board_col_px": list(settings.board_col_px),
+        "board_col_names": list(settings.board_col_names),
+        "board_hidden_cols": list(settings.board_hidden_cols),
+        "board_col_order": list(settings.board_col_order),
         "board_layout_rev": int(settings.board_layout_rev),
         "job_folders": dict(_job_folders(settings.job_folders)),
         "shop_ifc_folders": dict(_job_folders(settings.shop_ifc_folders)),
@@ -141,6 +153,12 @@ def _board_col_px(values: object) -> tuple[int, ...]:
     return tuple(out)
 
 
+def _board_col_names(value: object) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        return ()
+    return tuple(str(item) for item in value)
+
+
 def _board_layout_rev(value: object) -> int:
     try:
         return int(value)
@@ -148,12 +166,55 @@ def _board_layout_rev(value: object) -> int:
         return 0
 
 
-def remember_board_col_px(values: list[int]) -> None:
-    stored = tuple(int(v) for v in values)
+def hidden_column_names() -> set[str]:
+    """Column headings this PC has turned off. Empty means show every column."""
+    return {name for name in load_settings().board_hidden_cols if name}
+
+
+def column_order() -> list[str]:
+    """Heading order on this PC. Empty means the built-in order."""
+    return [name for name in load_settings().board_col_order if name]
+
+
+def remember_board_order(names: list[str]) -> None:
+    """Remember the heading order on this PC, for every job."""
+    stored = tuple(dict.fromkeys(str(name) for name in names if str(name).strip()))
     settings = load_settings()
-    if settings.board_col_px == stored and settings.board_layout_rev == BOARD_LAYOUT_REV:
+    if settings.board_col_order == stored:
         return
-    save_settings(replace(settings, board_col_px=stored, board_layout_rev=BOARD_LAYOUT_REV))
+    save_settings(replace(settings, board_col_order=stored))
+
+
+def remember_board_hidden(names: list[str]) -> None:
+    """Remember which headings are hidden on this PC, for every job."""
+    stored = tuple(dict.fromkeys(str(name) for name in names if str(name).strip()))
+    settings = load_settings()
+    if settings.board_hidden_cols == stored:
+        return
+    save_settings(replace(settings, board_hidden_cols=stored))
+
+
+def remember_board_col_px(values: list[int], names: list[str] | None = None) -> None:
+    """Remember sash widths on this PC, tied to the column headings."""
+    stored = tuple(int(v) for v in values)
+    stored_names = tuple(str(name) for name in (names or []))
+    if stored_names and len(stored_names) != len(stored):
+        stored_names = ()
+    settings = load_settings()
+    if (
+        settings.board_col_px == stored
+        and settings.board_col_names == stored_names
+        and settings.board_layout_rev == BOARD_LAYOUT_REV
+    ):
+        return
+    save_settings(
+        replace(
+            settings,
+            board_col_px=stored,
+            board_col_names=stored_names,
+            board_layout_rev=BOARD_LAYOUT_REV,
+        )
+    )
 
 
 def locate_start_dir(fallback: str = "") -> str:
