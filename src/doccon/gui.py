@@ -20,8 +20,8 @@ from doccon.client_log import (
     BookCover,
     LogError,
     book_cover_for_job,
+    cover_date_is_na,
     cover_date_stamp,
-    cover_issued_default,
     expected_return_from_issued,
     find_book,
     inspect_book,
@@ -939,7 +939,8 @@ class DocConApp(tk.Tk):
         dates.pack(fill="x")
         ttk.Label(dates, text="Date issued").pack(side="left")
         self.issued = ttk.Entry(dates, width=12)
-        set_entry_date(self.issued, date.today())
+        self._issued_armed = ""
+        self._expected_armed = ""
         self.issued.pack(side="left", padx=(4, 8))
         attach_calendar(self.issued, parent=self, on_change=self._on_issued_change, allow_na=True)
         ttk.Label(dates, text="Expected return").pack(side="left")
@@ -1332,8 +1333,10 @@ class DocConApp(tk.Tk):
         )
 
     def _write_cover_date_defaults(self) -> None:
-        set_entry_date(self.issued, date.fromisoformat(cover_issued_default()))
+        self.issued.delete(0, "end")
         set_na_text(self.expected)
+        self._issued_armed = ""
+        self._expected_armed = ""
 
     def _reset_cover_dates(self) -> None:
         """Date issued = today, Expected return = N/A. Does not stamp packed Next."""
@@ -1372,18 +1375,30 @@ class DocConApp(tk.Tk):
         self.board.stamp_packed_cover_dates()
 
     def _on_issued_change(self) -> None:
-        if not self._cover_loading:
-            self.board.apply_cover_date_change("submission_date", cover_date_stamp(self.issued.get()))
+        if self._cover_loading:
+            return
+        stamp = cover_date_stamp(self.issued.get())
+        if stamp == self._issued_armed:
+            self._save_pack(quiet=True)
+            return
+        self._issued_armed = stamp
+        self.board.apply_cover_date_change("submission_date", stamp)
         self._save_pack(quiet=True)
 
     def _on_expected_return_change(self) -> None:
-        if not self._cover_loading:
-            stamp = cover_date_stamp(self.expected.get())
-            if not stamp and self._explicit_no_return:
-                self._save_pack(quiet=True)
-                return
-            self._explicit_no_return = False
-            self.board.apply_cover_date_change("return_request_date", stamp)
+        if self._cover_loading:
+            return
+        stamp = cover_date_stamp(self.expected.get())
+        if not stamp and self._explicit_no_return:
+            self._expected_armed = ""
+            self._save_pack(quiet=True)
+            return
+        if stamp == self._expected_armed:
+            self._save_pack(quiet=True)
+            return
+        self._explicit_no_return = False
+        self._expected_armed = stamp
+        self.board.apply_cover_date_change("return_request_date", stamp)
         self._save_pack(quiet=True)
 
     def _save_pack(self, quiet: bool = False, *, force: bool = False) -> bool:
@@ -2549,6 +2564,9 @@ class DocConApp(tk.Tk):
         if not self.board.current_rows():
             messagebox.showinfo("EDDI", "Load a job first.")
             return
+        if cover_date_is_na(self.issued.get()):
+            messagebox.showinfo("EDDI", "Pick a Date issued.")
+            return
         try:
             issued = parse_issued_date(self.issued.get())
         except LogError as exc:
@@ -2726,6 +2744,9 @@ class DocConApp(tk.Tk):
             info = inspect_book(book, job, kind)
         except (LogError, OSError) as exc:
             messagebox.showerror(label, str(exc))
+            return
+        if cover_date_is_na(self.issued.get()):
+            messagebox.showinfo(label, "Pick a Date issued.")
             return
         try:
             issued = parse_issued_date(self.issued.get())

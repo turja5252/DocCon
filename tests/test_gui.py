@@ -290,7 +290,7 @@ def test_open_and_pack_use_today_as_date_issued(monkeypatch) -> None:
     monkeypatch.setattr(jira_client, "apply_drawing_update", _bang)
     today = date.today().isoformat()
     try:
-        assert app.issued.get() == today
+        assert app.issued.get() == ""
         assert app.expected.get() == "N/A"
         app.board.set_rows(
             [_pack_row(key="P2024-1", submission_date=""), _pack_row(key="P2024-2")],
@@ -298,6 +298,9 @@ def test_open_and_pack_use_today_as_date_issued(monkeypatch) -> None:
         )
         app.board._blocks["P2024-1"].include.set(True)
         app.update_idletasks()
+        assert app.board._blocks["P2024-1"].nexts["submission_date"].get() == ""
+        app.issued.insert(0, today)
+        app._on_issued_change()
         assert app.board._blocks["P2024-1"].nexts["submission_date"].get() == today
         assert app.board._blocks["P2024-1"].nexts["return_request_date"].get() == ""
         assert app.board._blocks["P2024-2"].nexts["submission_date"].get() == ""
@@ -398,7 +401,7 @@ def test_load_starts_cover_na_and_unpacked(tmp_path: Path) -> None:
         app._job_number = "2026-Tanzim"
         app.board.set_rows(rows, checked=set())
         app._restore_pack(tmp_path, "2026-Tanzim", None)
-        assert app.issued.get() == date.today().isoformat()
+        assert app.issued.get() == ""
         assert app.expected.get() == "N/A"
         assert app.board.selected_keys() == ()
         assert app.board._blocks["P2024-1"].nexts["submission_date"].get() == "2026-08-01"
@@ -453,7 +456,7 @@ def test_cancel_next_restores_next_and_cover_na(monkeypatch) -> None:
         assert packed.nexts["submission_date"].get() == ""
         assert loose.title_next.get() == "Second"
         assert loose.nexts["client_document_number"].get() == ""
-        assert app.issued.get() == date.today().isoformat()
+        assert app.issued.get() == ""
         assert app.expected.get() == "N/A"
         assert app.board.selected_keys() == ("P2024-1",)
         assert app.board.pending_rows() == []
@@ -543,7 +546,7 @@ def test_load_shows_progress_before_rows(tmp_path: Path, monkeypatch) -> None:
             time.sleep(0.02)
         assert "P2024-1" in app.board._blocks
         assert any("Drawing" in text or "Painting" in text or "Matching" in text for text in statuses)
-        assert app.issued.get() == date.today().isoformat()
+        assert app.issued.get() == ""
         assert app.expected.get() == "N/A"
         assert app.board.selected_keys() == ()
         assert app._progress.mode() == "idle"
@@ -601,7 +604,7 @@ def test_restore_next_keeps_pack_off_and_cover_na(tmp_path: Path, monkeypatch) -
         assert app.board._blocks["P2024-1"].nexts["outgoing_rev"].get() == "C"
         assert app.board._blocks["P2024-1"].status_next.get() == "IFI"
         assert app.board._blocks["P2024-2"].nexts["outgoing_rev"].get() == "A"
-        assert app.issued.get() == date.today().isoformat()
+        assert app.issued.get() == ""
         assert app.expected.get() == "N/A"
         assert app.board.selected_keys() == ()
         assert app._email_value(app.to_box) == "client@example.com"
@@ -650,7 +653,7 @@ def test_jira_id_next_survives_save_and_load(tmp_path: Path, monkeypatch) -> Non
         assert app.board._blocks["P2024-1"].title_next.get() == "Drawing"
         assert app.board._blocks["P2024-2"].drawing_id_next.get() == "2026-Tanzim-1-1"
         assert app.board.selected_keys() == ()
-        assert app.issued.get() == date.today().isoformat()
+        assert app.issued.get() == ""
         assert app.expected.get() == "N/A"
         restored = app.board.pending_rows()
         assert [row.drawing.summary for row in restored] == ["2026-Tanzim-1-STWD Drawing"]

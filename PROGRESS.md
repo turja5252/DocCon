@@ -2,6 +2,14 @@
 
 Newest first. Append a dated entry when a decision is locked, a test runs, or the next step changes.
 
+## 2026-10-06 — Elite DocCon 2.02
+
+Source and **Elite DocCon.exe** are **2.02**. Date issued stays blank until it is picked. Batch Next writes onto packed rows and a later edit on one drawing stays.
+
+## 2026-10-06 — Date issued starts blank, and Batch Next stays
+
+Date issued is empty until it is picked. Leaving that box, or Expected return on N/A, does not put packed dates back. A Batch Next value writes onto packed rows when it changes, and a later edit on one drawing stays.
+
 ## 2026-10-06 — Elite DocCon 2.01
 
 Source and **Elite DocCon.exe** are **2.01**. The list scrolls past the last row.

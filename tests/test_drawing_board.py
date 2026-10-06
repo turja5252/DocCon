@@ -336,6 +336,16 @@ def test_batch_applies_to_pack_only() -> None:
         board._apply_batch()
         assert board._blocks["P2024-1"].status_next.get() == "Done"
         assert board._blocks["P2024-1"].title_next.get() == title_before
+        board._batch_fields["return_request_date"].set("2026-10-20")
+        board._commit_batch_field("return_request_date")
+        board._batch_fields["incoming_rev"].set("B")
+        board._commit_batch_field("incoming_rev")
+        assert board._blocks["P2024-1"].nexts["return_request_date"].get() == "2026-10-20"
+        assert board._blocks["P2024-2"].nexts["return_request_date"].get() == "2026-10-20"
+        assert board._blocks["P2024-1"].nexts["incoming_rev"].get() == "B"
+        board._blocks["P2024-1"].nexts["return_request_date"].set("2026-11-01")
+        board._commit_batch_field("return_request_date")
+        assert board._blocks["P2024-1"].nexts["return_request_date"].get() == "2026-11-01"
     finally:
         root.destroy()
 

@@ -331,7 +331,7 @@ def test_parse_dates() -> None:
     assert cover_submission_date_stamp("") == ""
     assert cover_submission_date_stamp("2026-09-11") == "2026-09-11"
     assert cover_submission_date_stamp("09/11/2026") == "2026-09-11"
-    assert cover_issued_default(today=date(2026, 9, 16)) == "2026-09-16"
+    assert cover_issued_default(today=date(2026, 9, 16)) == ""
     assert expected_return_from_issued("2026-09-16", 0) == "2026-09-16"
     assert expected_return_from_issued("2026-09-16", 1) == "2026-09-17"
     assert expected_return_from_issued("2026-09-16", 7) == "2026-09-23"

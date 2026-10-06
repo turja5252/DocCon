@@ -557,8 +557,9 @@ def parse_expected_return(text: str) -> date | str:
 
 
 def cover_issued_default(*, today: date | None = None) -> str:
-    """Console Date issued on open / Load / Cancel Next. Always a calendar day, never N/A."""
-    return (today or date.today()).isoformat()
+    """Date issued stays blank until the operator picks a day."""
+    del today
+    return ""
 
 
 def expected_return_from_issued(

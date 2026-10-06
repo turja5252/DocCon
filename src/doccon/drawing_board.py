@@ -834,6 +834,7 @@ class DrawingBoard(ttk.Frame):
         batch_h.pack(fill="x")
         self._batch_fields = {}
         self._batch_labels: dict[str, ttk.Label] = {}
+        self._batch_armed: dict[str, str] = {}
         for field, title, values, width, kind in FIELD_KEYS:
             label = ttk.Label(batch_inner, text=title)
             label.pack(side="left")
@@ -843,7 +844,12 @@ class DrawingBoard(ttk.Frame):
                 box: NextWidget = NextEntry(batch_inner, width=box_width)
                 box.pack(side="left", padx=(2, 0) if kind == "date" else (2, 8))
                 if kind == "date":
-                    attach_calendar(box, parent=self)
+                    attach_calendar(
+                        box,
+                        parent=self,
+                        on_change=lambda name=field: self._commit_batch_field(name),
+                        allow_na=(field == "return_request_date"),
+                    )
             else:
                 pick = field in PICK_ONLY_FIELDS
                 box = ttk.Combobox(
@@ -851,6 +857,12 @@ class DrawingBoard(ttk.Frame):
                 )
                 box.pack(side="left", padx=(2, 8))
                 self._quiet_dropdown(box)
+                box.bind(
+                    "<<ComboboxSelected>>",
+                    lambda _event, name=field: self._commit_batch_field(name),
+                    add="+",
+                )
+            box.bind("<FocusOut>", lambda _event, name=field: self._commit_batch_field(name), add="+")
             self._batch_fields[field] = box
             self._batch_visible.add(field)
 
@@ -3888,7 +3900,7 @@ class DrawingBoard(ttk.Frame):
         if not messagebox.askyesno(
             "Cancel Next?",
             f"Throw away Next edits on {pending} drawing(s) and put Now back on every field?\n"
-            "Jira is not written. Pack ticks stay. Date issued goes back to today. "
+            "Jira is not written. Pack ticks stay. Date issued goes back to blank. "
             "Expected return goes back to N/A.",
             parent=self.winfo_toplevel(),
         ):
@@ -3910,12 +3922,39 @@ class DrawingBoard(ttk.Frame):
             self._batch_frame.pack_forget()
             self._batch_toggle.configure(text="Batch Next…")
 
+    def _commit_batch_field(self, field: str) -> None:
+        """Write one Batch Next box onto packed rows when its value changes.
+
+        Leaving the box without a new value does not put Now back, so a later
+        edit on one drawing stays.
+        """
+        box = self._batch_fields.get(field)
+        if box is None or field not in self._batch_visible:
+            return
+        try:
+            value = (box.get() or "").strip()
+        except tk.TclError:
+            return
+        if value == self._batch_armed.get(field, ""):
+            return
+        self._batch_armed[field] = value
+        if not value:
+            return
+        count = self.apply_next_to_pack(fields={field: value})
+        title = next((label for key, label, _v, _w, _k in FIELD_KEYS if key == field), field)
+        if count:
+            self._batch_note.configure(text=f"Applied {title} to {count} packed drawing(s).")
+        else:
+            self._batch_note.configure(text="Tick Pack — that Next will stamp onto packed drawings.")
+
     def _apply_batch(self) -> None:
         fields = {
             field: box.get()
             for field, box in self._batch_fields.items()
             if field in self._batch_visible
         }
+        for field, value in fields.items():
+            self._batch_armed[field] = (value or "").strip()
         count = self.apply_next_to_pack(status=self._batch_status.get(), fields=fields)
         if count:
             self._batch_note.configure(text=f"Applied to {count} packed drawing(s).")
