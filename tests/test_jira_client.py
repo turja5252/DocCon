@@ -214,6 +214,19 @@ def test_fetch_drawings_includes_job_tree(monkeypatch) -> None:
     assert project.summary == "2026-Tanzim"
 
 
+def test_nearby_job_numbers_lists_child_jobs_in_order() -> None:
+    from doccon.jira_client import nearby_job_numbers
+
+    issues = [
+        {"fields": {"customfield_10300": "2026-070-10"}},
+        {"fields": {"customfield_10300": "2026-070"}},
+        {"fields": {"customfield_10300": "2026-070-2"}},
+        {"fields": {"customfield_10300": "2026-070-1"}},
+        {"fields": {"customfield_10300": "2026-071"}},
+    ]
+    assert nearby_job_numbers(issues, "2026-070") == ("2026-070-1", "2026-070-2", "2026-070-10")
+
+
 def test_fetch_job_pack_says_not_found_when_only_a_child_job_matches(monkeypatch) -> None:
     from doccon import jira_client
 
@@ -248,10 +261,12 @@ def test_fetch_job_pack_says_not_found_when_only_a_child_job_matches(monkeypatch
         }
 
     monkeypatch.setattr(jira_client, "_request", fake_request)
-    with pytest.raises(JiraError, match="2026-070 was not found on Jira"):
+    with pytest.raises(JiraError, match="2026-070 was not found on Jira") as raised:
         jira_client.fetch_job_pack(
             "https://example.atlassian.net", "a@b.c", "token", "2026-070", "P2024"
         )
+    assert raised.value.related == ("2026-070-1",)
+    assert "2026-070-1" in str(raised.value)
 
 
 def test_fetch_drawings_drops_generic(monkeypatch) -> None:

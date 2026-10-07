@@ -191,6 +191,7 @@ def test_confirm_eddi_note_is_not_attached(monkeypatch, tmp_path: Path) -> None:
         "display_outlook_draft",
         lambda **kwargs: mailed.update(kwargs),
     )
+    steps: list[str] = []
     result = run_confirm_client_pack(
         site="https://example.atlassian.net",
         email="a@b.c",
@@ -214,7 +215,18 @@ def test_confirm_eddi_note_is_not_attached(monkeypatch, tmp_path: Path) -> None:
             _drawing(),
             _drawing(key="P2024-3", drawing_id="EIS-1", title="WPS"),
         ],
+        on_step=steps.append,
     )
+    assert steps == [
+        "jira_check",
+        "log_check",
+        "jira_write",
+        "file",
+        "pdf",
+        "eddi",
+        "zip",
+        "outlook",
+    ]
     assert seen["count"] == 2
     assert "EDDI-2026-Tanzim-2026-09-09.pdf" in result.pdf_note
     names = [Path(str(item)).name for item in mailed.get("attachments") or []]

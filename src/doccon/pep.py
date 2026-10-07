@@ -39,6 +39,9 @@ class PepCover:
     tank_tag: str
     po: str
     wo: str
+    pm_line: str = ""
+    engineer_line: str = ""
+    pep_cc: str = ""
 
     @property
     def filled(self) -> bool:
@@ -176,9 +179,9 @@ def _load_excel(path: Path) -> PepCover:
         wo = _cell_text(ws["C14"].value)
         to_line = _format_emails(_cell_text(ws["D50"].value))
         cc_emails = _format_emails(_cell_text(ws["D51"].value))
-        pm = _cell_text(ws["C35"].value)
-        pe = _cell_text(ws["I35"].value)
-        cc_line = _cc_line(cc_emails, pm, pe)
+        pm_line = _format_emails(_cell_text(ws["C35"].value))
+        engineer_line = _format_emails(_cell_text(ws["I35"].value))
+        cc_line = compose_cc(cc_emails, pm_line, engineer_line)
         job_cell = _cell_text(ws["A1"].value)
         if job_cell.lower().startswith("insert elite job number") and not client and not to_line:
             raise PepError(f"{path.name} is a blank PEP template.")
@@ -193,6 +196,9 @@ def _load_excel(path: Path) -> PepCover:
             tank_tag=tank,
             po=po,
             wo=wo,
+            pm_line=pm_line,
+            engineer_line=engineer_line,
+            pep_cc=cc_emails,
         )
     finally:
         wb.close()
@@ -232,19 +238,24 @@ def _load_pdf(path: Path) -> PepCover:
     wo = _pdf_after(text, "Work Order No. / MOC No.:")
     pm = _pdf_after(text, "Elite Project Manager:")
     pe = _pdf_after(text, "Elite Project Engineer:")
+    pm_line = _format_emails(pm)
+    pe_line = _format_emails(pe)
     if not _usable(client) and not to_line:
         raise PepError(f"Could not read Transmittal Recipients from {path.name}.")
     return PepCover(
         path=path,
         from_address=DOC_CONTROL_FROM,
         to_line=to_line,
-        cc_line=_cc_line("", pm, pe),
+        cc_line=compose_cc(pm_line, pe_line),
         project_description=_project_line(client, site, tank, po, wo),
         client=client,
         site=site,
         tank_tag=tank,
         po=po,
         wo=wo,
+        pm_line=pm_line,
+        engineer_line=pe_line,
+        pep_cc="",
     )
 
 
@@ -307,25 +318,37 @@ def _project_line(client: str, site: str, tank: str, po: str, wo: str) -> str:
     )
 
 
-def _cc_line(cc_emails: str, pm: str, pe: str) -> str:
-    return _format_emails("; ".join(part for part in (cc_emails, pm, pe) if part))
+def compose_cc(*parts: str) -> str:
+    """One CC line, unique addresses, in the order the parts are given."""
+    return _format_emails("; ".join(part for part in parts if (part or "").strip()))
 
 
 def email_line(text: str) -> str:
-    """TO/CC as unique email addresses, semicolon separated."""
+    """TO/CC as unique email addresses. A semicolon or a comma separates them."""
     return _format_emails(text)
+
+
+def elite_addresses(text: str) -> str:
+    """Addresses on the Elite domain, in the same order."""
+    kept = [
+        part.strip()
+        for part in email_line(text).split(";")
+        if part.strip().casefold().endswith("@eliteintegrityservices.com")
+    ]
+    return email_line("; ".join(kept))
 
 
 def _format_emails(text: str) -> str:
     seen: list[str] = []
     found: set[str] = set()
-    for match in _EMAIL_RE.findall(text or ""):
-        addr = match.strip().rstrip(">").strip()
-        key = addr.casefold()
-        if key in found:
-            continue
-        found.add(key)
-        seen.append(addr)
+    for chunk in re.split(r"[;,\n]+", text or ""):
+        for match in _EMAIL_RE.findall(chunk):
+            addr = match.strip().rstrip(">").strip()
+            key = addr.casefold()
+            if not addr or key in found:
+                continue
+            found.add(key)
+            seen.append(addr)
     return "; ".join(seen)
 
 

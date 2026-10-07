@@ -2,11 +2,11 @@
 # Copyright (c) 2026 Tanzim Nasir.
 # Built for Elite Integrity Services.
 # Unauthorized use by other companies is prohibited.
-"""Import Outlook GAL + Contacts into this-PC Settings saved TO/CC addresses.
+"""Import Outlook GAL + Contacts into the shared TO/CC address book.
 
 Uses desktop Outlook COM (same family as Confirm mail). Prefers the
 eliteintegrityservices.com account / doc.control mailbox; otherwise the signed-in
-default. Does not send mail. Does not write Dropbox pack JSON.
+default. Does not send mail. The book sits next to DocCon, with the email wording.
 """
 from __future__ import annotations
 
@@ -15,11 +15,12 @@ import os
 import subprocess
 import tempfile
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 
 from doccon.pep import DOC_CONTROL_FROM, email_line
-from doccon.settings import load_settings, merge_saved_emails, save_settings
+from doccon.pack_mail import load_saved_addresses, save_saved_addresses
+from doccon.settings import merge_saved_emails
 from doccon.winproc import hidden_run, powershell_hidden_argv
 
 ELITE_MAIL_DOMAIN = "eliteintegrityservices.com"
@@ -88,7 +89,7 @@ def import_saved_emails_from_outlook(
     *,
     lister: Callable[[], Sequence[str]] | None = None,
 ) -> OutlookImportResult:
-    """Merge Outlook addresses into Settings saved TO/CC. Unique; keeps existing."""
+    """Merge Outlook addresses into the shared address book. Unique; keeps existing."""
     fetch = lister if lister is not None else list_outlook_addresses
     try:
         raw = fetch()
@@ -97,11 +98,11 @@ def import_saved_emails_from_outlook(
     except Exception as exc:
         raise OutlookContactsError(OPEN_OUTLOOK) from exc
     incoming = filter_import_addresses(raw)
-    current = load_settings()
-    merged = merge_saved_emails(current.saved_emails, incoming)
-    added = len(merged) - len(current.saved_emails)
-    if merged != current.saved_emails:
-        save_settings(replace(current, saved_emails=merged))
+    current = load_saved_addresses()
+    merged = merge_saved_emails(current, incoming)
+    added = len(merged) - len(current)
+    if merged != current:
+        save_saved_addresses(merged)
     return OutlookImportResult(saved_emails=merged, added=added)
 
 

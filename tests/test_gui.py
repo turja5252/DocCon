@@ -961,25 +961,34 @@ def test_console_has_paste_pdf_and_no_pdf_from_outlook_button() -> None:
     app.withdraw()
     try:
         labels = _button_texts(app)
-        assert "Create transmittal" in labels
+        assert app.send_btn.label() == "Create transmittal"
+        assert "Create transmittal" not in labels
         assert "Create EDDI" in labels
         assert "Confirm…" not in labels
         assert "EDDI…" not in labels
         assert "Paste PDF from email" in labels
-        assert "Create new Jira Issue" in labels
+        assert labels.count("Create new Jira Issue") == 1
+        assert app.new_issue_btn.master is app._pack_extra_bar
         assert "Create new\nJira Issue" not in labels
-        assert "Batch Next…" in labels
+        assert "Batch Next…" not in labels
+        assert "Apply to Pack" not in labels
         assert "Pack all" in labels
         assert "Pack none" in labels
         assert "Submitted to Client For" in _label_texts(app)
-        assert "Approval" in app.board._pack_purpose.cget("values")
+        assert "Jira Status" in _label_texts(app)
+        assert "Approval" in app.board._batch_fields["purpose"].cget("values")
         assert "Set packed to…" not in labels
-        assert "Set packed to" in _label_texts(app)
+        assert "Set packed to" not in _label_texts(app)
         assert "OFA" in app.board._pack_status.cget("values")
         assert "Hide batch" not in labels
-        assert app.board._batch_open is False
-        assert "Date issued" in _label_texts(app)
-        assert "Expected return" in _label_texts(app)
+        assert app.board._batch_open is True
+        assert "Date issued" not in _label_texts(app)
+        assert "Expected return" not in _label_texts(app)
+        assert "Submission Date" in _label_texts(app)
+        assert "Return Request Date" in _label_texts(app)
+        assert "Locate PEP…" in labels
+        assert "Transmittal Editor…" in labels
+        assert app.pep_label.master is app.project_box.master
         assert str(app.issued.winfo_manager()) == "pack"
         assert str(app.expected.winfo_manager()) == "pack"
         assert "Load starts Date issued" not in " ".join(_label_texts(app))

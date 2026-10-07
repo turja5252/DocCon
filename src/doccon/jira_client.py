@@ -104,7 +104,31 @@ REV_OPTION_FIELDS = {
 
 
 class JiraError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, related: tuple[str, ...] = ()) -> None:
+        super().__init__(message)
+        self.related = related
+
+
+def nearby_job_numbers(issues: list[dict], job: str) -> tuple[str, ...]:
+    """Job Numbers such as 2026-070-1 when the typed number 2026-070 is not on Jira."""
+    typed = (job or "").strip()
+    prefix = typed.casefold() + "-"
+    found: list[str] = []
+    seen: set[str] = set()
+    for issue in issues:
+        fields = issue.get("fields") or {}
+        value = option_value(fields.get(JOB_NUMBER_FIELD)).strip()
+        key = value.casefold()
+        if not value or not key.startswith(prefix) or key in seen:
+            continue
+        seen.add(key)
+        found.append(value)
+
+    def sort_key(value: str) -> tuple:
+        parts = re.split(r"(\d+)", value.casefold())
+        return tuple(int(part) if part.isdigit() else part for part in parts)
+
+    return tuple(sorted(found, key=sort_key))
 
 
 def parse_allowed_values(field_meta: object) -> tuple[str, ...]:
@@ -451,15 +475,22 @@ def fetch_job_pack(
         return keys
 
     step("drawings")
-    pack_issues, project_issues = _search_many(
+    raw_pack, raw_project = _search_many(
         site,
         email,
         token,
         [drawings_jql(job, key), job_project_jql(job, key)],
     )
-    pack_issues = [issue for issue in pack_issues if _keeps_typed_job(issue, job)]
-    project_issues = [issue for issue in project_issues if _keeps_typed_job(issue, job)]
+    pack_issues = [issue for issue in raw_pack if _keeps_typed_job(issue, job)]
+    project_issues = [issue for issue in raw_project if _keeps_typed_job(issue, job)]
     if not pack_issues and not project_issues:
+        related = nearby_job_numbers([*raw_pack, *raw_project], job)
+        if related:
+            lines = "\n".join(related)
+            raise JiraError(
+                f"{job} was not found on Jira.\n\nThese job numbers are on Jira:\n{lines}",
+                related=related,
+            )
         raise JiraError(f"{job} was not found on Jira.")
     add_issues(pack_issues)
     job_project = job_project_from_issues(project_issues)

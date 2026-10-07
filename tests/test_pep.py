@@ -9,6 +9,7 @@ from doccon.pep import (
     SALES_DIR,
     PepError,
     email_line,
+    elite_addresses,
     empty_pep_workbook,
     find_pep,
     load_pep,
@@ -61,6 +62,11 @@ def test_load_pep_formats_cover(tmp_path: Path) -> None:
 def test_email_line_keeps_addresses_only() -> None:
     assert email_line("Elite: Client Contact (PM) ; Blake Rancier; extra@x.com") == "extra@x.com"
     assert email_line("a@x.com; a@x.com, b@y.com") == "a@x.com; b@y.com"
+    assert email_line("a@x.com, b@y.com; c@z.com") == "a@x.com; b@y.com; c@z.com"
+    assert elite_addresses(
+        "sarah.chan@eliteintegrityservices.com; glen.philips@interpipeline.com; "
+        "ShopIFC@eliteintegrityservices.com"
+    ) == "sarah.chan@eliteintegrityservices.com; ShopIFC@eliteintegrityservices.com"
 
 
 def test_cc_keeps_emails_from_pep_cells(tmp_path: Path) -> None:
@@ -72,6 +78,9 @@ def test_cc_keeps_emails_from_pep_cells(tmp_path: Path) -> None:
     )
     cover = load_pep(path)
     assert cover.cc_line == "cc@client.com; breydon@eliteintegrityservices.com"
+    assert cover.pep_cc == "cc@client.com"
+    assert cover.pm_line == "breydon@eliteintegrityservices.com"
+    assert cover.engineer_line == ""
 
 
 def test_blank_template_is_rejected(tmp_path: Path) -> None:

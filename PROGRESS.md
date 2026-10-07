@@ -2,9 +2,137 @@
 
 Newest first. Append a dated entry when a decision is locked, a test runs, or the next step changes.
 
+## 2026-10-07 — A missing job offers the numbered ones
+
+Load `2026-070` when Jira only has `2026-070-1` (or `2026-070-2`, `2026-070-3`, …) lists those job numbers. Load opens the one you pick.
+
+## 2026-10-07 — Shop and Field address lists left Settings
+
+Shop transmittal TO/CC and Field transmittal TO/CC are off Settings. Those addresses are the permanent lists. The button is **Email Format Editor**.
+
+## 2026-10-07 — Settings fits the screen
+
+Settings scrolls inside the window. The saved address list has its own scrollbar. **Remove** sits under that list, beside **Add**. Open log folder, Email wording, Test connection, and Save stay along the bottom.
+
+## 2026-10-07 — Client, Location, Tag, PO, WO, and MOC stay in the editor
+
+Those boxes are off the cover strip. The Transmittal Editor still shows them, and the letter and the email still use them.
+
+## 2026-10-07 — The wheel scrolls the drawing list
+
+The mouse wheel moves the drawing list while the pointer is on that list. It does not change a dropdown, and it does not scroll the rest of the console.
+
+## 2026-10-07 — Shop and Field CC are Permanent and Additional
+
+Shop and Field each have a Permanent CC and an Additional CC. Additional starts as the @eliteintegrityservices.com addresses on the client transmittal CC. Accept keeps a difference on this job.
+
+## 2026-10-07 — Saved TO / CC addresses are shared
+
+The address book sits in the same file as the email wording, so every PC sees it. Tick the boxes beside the addresses and press Remove to delete those together.
+
+## 2026-10-07 — Pick uses permanent addresses and the saved address book
+
+Pick… lists this transmittal’s permanent TO or CC, then Saved TO / CC from Settings. An address already on the permanent list is not listed twice.
+
+## 2026-10-07 — Shop and Field email wording follows the Outlook templates
+
+Shop and Field subjects are `Trans. # {transmittal} | {issued_for} | {client} | Loc: {location} | Ref. Tag: {tag}`, with `{urgent}` in front. Shop body points at 1.0 Current IFC Drawings. Field body points at the Field Construction folder.
+
+## 2026-10-07 — Urgent shows at the start of the subject
+
+The default subject starts with `{urgent}`. Urgent same day and Urgent +1 put **URGENT** in front. Any other return leaves that word off.
+
+## 2026-10-07 — Permanent addresses are TO or CC, per transmittal
+
+Settings **Permanent addresses** has a TO list and a CC list for Client, Shop, and Field. They are shared by every PC. Pick… on a TO box uses that transmittal’s TO list. Pick… on a CC box uses its CC list. A job keeps a difference only after Accept.
+
+## 2026-10-07 — Transmittal Editor Accept, Cancel, and Read from PEP
+
+**Read from PEP** fills Client, Location, Tag, PO, WO, MOC, Project, TO, Engineering, PM, and From PEP. A changed box turns yellow. **Accept** keeps the edits. **Cancel** drops them.
+
+## 2026-10-07 — Settings keeps the mother format
+
+Settings **Email wording…** and **Permanent CC** are the shared format for every job. The Transmittal Editor starts from those. Save there keeps a difference only on this job.
+
+## 2026-10-07 — Permanent CC is in the shared wording file
+
+Email subject and body defaults are in the program. A saved wording change, and the permanent CC list, sit in `mail-formats.json` next to DocCon. They are not stored in this PC's settings.
+
+## 2026-10-07 — Client CC is five lists
+
+Client CC is Permanent (this PC), Engineering (PEP project engineer), PM (PEP project manager), From PEP (the PEP CC list), and anyone additional on this pack. The cover CC is those addresses together, each person once.
+
+## 2026-10-07 — Client email body, with the ITP note only when an ITP is packed
+
+The client body is the Good Day note, the return address, and Kind Regards. The ITP sign-off sentence is added only when a packed document is an ITP.
+
+## 2026-10-07 — Client email subject follows the transmittal line
+
+The client subject is `Trans. # {transmittal} | ISSUED FOR {issued_for} | {client} | Loc: {location} | Ref. Tag: {tag} | PO#: {po} | WO#: {wo} | MOC#: {moc}`. A missing piece is N/A. Shop and Field keep their own subject.
+
+## 2026-10-07 — A missing job field shows N/A
+
+Client, Location, Tag, PO#, WO#, MOC#, Project, and Issued for show **N/A** when they are not found. A value you type and save stays. N/A is still replaced when the PEP has the real value.
+
+## 2026-10-07 — Transmittal Editor fills what DocCon already knows
+
+A blank job field is filled from the PEP. Shop and Field TO / CC use the letter, then the saved pack, then Settings. Each tab shows Issued for from the packed rows. Urgent is shown when Urgent same day or Urgent +1 was used.
+
+## 2026-10-07 — Transmittal Editor has Client, Shop, and Field
+
+**Transmittal Editor…** on the cover opens three tabs. Each tab edits that transmittal's subject, body, TO, and CC. Client, Location, Tag, PO#, WO#, MOC#, and Project are this job and sit above the tabs. Subject and body stay the shared wording file. The job fields and recipients stay in this pack.
+
+## 2026-10-07 — PEP client fields are editable on the cover
+
+Client, Location, Tag, PO#, WO#, and MOC# sit on the cover strip. Locate PEP fills them. An edit is what the email tokens and the letter use, and it is saved in the pack.
+
+## 2026-10-07 — Email wording has more tokens
+
+Settings **Email wording…** can insert `{urgent}`, `{transmittal}`, `{issued_for}`, `{client}`, `{location}`, `{tag}`, `{po}`, `{wo}`, and `{moc}`. `{urgent}` is URGENT when Return Request Date was set with Urgent same day or Urgent +1. `{transmittal}` is the cover number, the same value as `{cover}`. `{issued_for}` is Submitted to Client For, Shop For, or Field For on this pack. Client, location, tag, PO, WO, and MOC come from the PEP. WO and MOC share one PEP cell; a slash splits them.
+
+## 2026-10-07 — A size after the drawing number is the description
+
+`2026-011-1-6 48" x 36"` keeps `2026-011-1-6` as the JIRA ID. `48" x 36"` is the description, so the transmittal document number is the drawing number only.
+
+## 2026-10-07 — Create new Jira Issue is also on the Non Jira row
+
+The Non Jira row keeps Add row, Add PDF…, and Remove. A bar separates **Create new Jira Issue**. That button is off the navy row. **Locate job folder…** picks the Dropbox job root (`3.0 Doc Con` / `2.0 Drafting`).
+
+## 2026-10-07 — Create transmittal shows its progress
+
+The Create transmittal button fills and names the step, the same way Load does: Checking Jira, the log, Writing Jira, filing, the PDF, EDDI, the zip, then Outlook.
+
+## 2026-10-07 — Locate PEP and Save sit with Project
+
+Locate PEP…, Save, and the PEP name are on the cover strip, beside Project. The row under the navy bar is gone.
+
+## 2026-10-07 — Next line waits for Pack all or Packed only
+
+Ticking Pack on one drawing does not open its Next line. That line opens for Pack all, and while Packed only is on.
+
+## 2026-10-07 — Pack on the EDDI header
+
+Each EDDI header has a Pack box. Ticking it packs every drawing in that group. Unticking one drawing clears the header box and leaves the rest packed. Unticking the header unpacks that group.
+
+## 2026-10-07 — Apply to Pack is gone
+
+A pick on the batch row writes itself onto packed drawings. The Apply to Pack button is off the console.
+
+## 2026-10-07 — Client Doc No. stays on the row
+
+Client Doc No. is off the batch row. Each drawing keeps its own number on the list.
+
 ## 2026-10-06 — Elite DocCon 2.02
 
 Source and **Elite DocCon.exe** are **2.02**. Date issued stays blank until it is picked. Batch Next writes onto packed rows and a later edit on one drawing stays.
+
+## 2026-10-07 — Set packed to and Submitted to are only in the batch row
+
+Set packed to and Submitted to Client For are off the filter row. The batch row names that status **Jira Status**. Submitted to Client For, Submitted to Shop For, and Submitted to Field For stay in the batch row.
+
+## 2026-10-07 — Cover dates are the Jira batch fields
+
+Date issued and Expected return are off the console. Submission Date and Return Request Date in the batch row are those Jira fields. The batch row stays open. There is no Batch Next or Hide batch button.
 
 ## 2026-10-06 — Date issued starts blank, and Batch Next stays
 

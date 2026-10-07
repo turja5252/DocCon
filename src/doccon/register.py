@@ -182,6 +182,26 @@ def _looks_like_language(token: str) -> bool:
     return len(letters) >= 5 and not any(ch.isdigit() for ch in piece)
 
 
+def _looks_like_id_fragment(token: str) -> bool:
+    """True when a later token is still the drawing code, not a size or title.
+
+    ``ITP-1-1`` and ``STWD`` continue ``2026-075``. ``48"``, ``x``, and ``36"`` do not.
+    """
+    if any(ch in token for ch in "\"'″′×"):
+        return False
+    piece = token.strip(".,;:()[]\"'″′")
+    if not piece or piece.casefold() in {"x", "by", "-", "–", "—", "/", "&"}:
+        return False
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", piece):
+        return False
+    letters = "".join(ch for ch in piece if ch.isalpha())
+    if not letters:
+        return False
+    if piece[0].isdigit() and letters.casefold() in {"in", "mm", "cm", "ft", "m"}:
+        return False
+    return True
+
+
 def weld_package_description(drawing_id: str) -> str:
     """Set wording for a welding-package document number. Empty if it is not one."""
     token = (drawing_id or "").strip()
@@ -224,7 +244,7 @@ def parse_summary(summary: str) -> tuple[str, str]:
     if weld_id is not None:
         return weld_id
     end = 1
-    while end < len(tokens) and not _looks_like_language(tokens[end]):
+    while end < len(tokens) and _looks_like_id_fragment(tokens[end]) and not _looks_like_language(tokens[end]):
         end += 1
     drawing_id = " ".join(tokens[:end]).strip(" \t-–—:")
     title = " ".join(tokens[end:]).strip(" -–—")

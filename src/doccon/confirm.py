@@ -102,14 +102,25 @@ def run_confirm_client_pack(
     extra_pdfs: list[Path] | None = None,
     shop_root: Path | None = None,
     shop_copies: list[tuple[Path, str]] | None = None,
+    on_step=None,
+    mail=None,
+    mail_subject: str = "",
+    mail_body: str = "",
 ) -> ConfirmResult:
     """Check that every write can succeed, then Jira, then file. Abort leaves no tab."""
+
+    def step(name: str) -> None:
+        if on_step is not None:
+            on_step(name)
+
     if kind == SHOP and (shop_root is None or not Path(shop_root).is_dir()):
         raise LogError(MISSING_SHOP_FOLDER)
     if kind == SHOP:
         _preflight_shop_copies(Path(shop_root), shop_copies or [])
     if pairs:
+        step("jira_check")
         preflight_jira_updates(site, email, token, pairs, eddi_contexts)
+    step("log_check")
     log_job = preflight_client_file(book, job, rows, kind, extra_pdfs).job_number
     jira_written = False
     filed = False
@@ -118,8 +129,10 @@ def run_confirm_client_pack(
     pdf_note = ""
     try:
         if pairs:
+            step("jira_write")
             apply_jira_updates(site, email, token, pairs, eddi_contexts)
             jira_written = True
+        step("file")
         result = file_client_transmittal(
             book,
             log_job,
@@ -133,10 +146,12 @@ def run_confirm_client_pack(
         cover_id = result.cover_id
         pdf_path = book.parent / f"{cover_id}.pdf"
         try:
+            step("pdf")
             export_sheet_pdf(result.book, result.sheet_name, pdf_path)
             pdf_note = f"PDF: {pdf_path.name}"
         except LogError as exc:
             pdf_note = str(exc)
+        step("eddi")
         eddi_note = _eddi_snapshot_note(
             job_folder,
             job,
@@ -148,6 +163,7 @@ def run_confirm_client_pack(
         zip_path: Path | None = None
         if kind == SHOP:
             try:
+                step("shop")
                 _copy_shop_pack(Path(shop_root), shop_copies or [], pdf_path)
             except LogError as exc:
                 raise ConfirmDeliveryError(
@@ -162,6 +178,7 @@ def run_confirm_client_pack(
             pdfs = attach_pdfs(rows, extra_pdfs or [])
             zip_path = book.parent / f"{cover_id}.zip"
             try:
+                step("zip")
                 write_drawings_zip(
                     zip_path,
                     pdfs,
@@ -187,16 +204,20 @@ def run_confirm_client_pack(
                 pdf_note=pdf_note,
             )
         wording = load_mail_formats().get(mail_kind_key(kind), ("", ""))
+        subject_template = mail_subject or wording[0]
+        body_template = mail_body or wording[1]
+        step("outlook")
         display_outlook_draft(
             to_line=cover.to_line,
             cc_line=cover.cc_line,
-            subject=draft_subject(cover_id, log_job, template=wording[0]),
+            subject=draft_subject(cover_id, log_job, template=subject_template, facts=mail),
             body=draft_body(
                 cover_id=cover_id,
                 project=cover.project_description,
                 rows=rows,
                 job=log_job,
-                template=wording[1],
+                template=body_template,
+                facts=mail,
             ),
             attachments=files,
             require_to=kind == CLIENT,

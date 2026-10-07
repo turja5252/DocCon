@@ -38,7 +38,9 @@ The summary is an ID, then optional wording. Empty description is allowed.
 
 No extra Jira status or custom trigger field. Engineer emails Sarah the pack list; she runs DocCon.
 
-**Next:** Source and the frozen exe are **2.02**. Load `2026-Tanzim`. Do not Confirm 075.
+**Next:** Source and the frozen exe are **2.03**. Load `2026-Tanzim`. Do not Confirm 075.
+
+**2.03 The transmittal email and permanent addresses are on the console.** Client, Shop, and Field wording is in Email Format Editor. Permanent TO and CC are shared. Shop and Field CC are Permanent plus Additional. A missing job such as `2026-070` offers `2026-070-1` and the other numbered jobs. The wheel scrolls the drawing list. Drag is not back.
 
 **2.02 Date issued starts blank, and Batch Next stays on the rows.** Date issued is empty until it is picked. Leaving that box, or Expected return on N/A, does not put packed dates back. A Batch Next value writes onto packed rows when it changes, and a later edit on one drawing stays. Drag is not back.
 

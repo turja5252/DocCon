@@ -91,9 +91,21 @@ from doccon.pack_mail import (
     default_mail_body,
     default_mail_subject,
     draft_subject,
+    issued_for_text,
+    job_mail_override,
     load_mail_formats,
+    load_permanent,
+    load_saved_addresses,
+    mail_facts,
     mail_kind_key,
+    mother_wording,
+    permanent_line,
+    pick_address_lists,
     save_mail_formats,
+    save_permanent,
+    save_saved_addresses,
+    split_wo_moc,
+    value_or_na,
 )
 from doccon.pack_state import (
     ClientPack,
@@ -107,7 +119,17 @@ from doccon.pack_state import (
     with_cover_recipients,
 )
 from doccon.pdf_preview import close_pdf_preview, open_pdf_preview
-from doccon.pep import DOC_CONTROL_FROM, SALES_DIR, PepCover, PepError, email_line, find_pep, load_pep
+from doccon.pep import (
+    DOC_CONTROL_FROM,
+    SALES_DIR,
+    PepCover,
+    PepError,
+    compose_cc,
+    elite_addresses,
+    email_line,
+    find_pep,
+    load_pep,
+)
 from doccon.popups import bind_console
 from doccon.popups import install as _install_popups
 from doccon.popups import reveal_on_parent
@@ -146,6 +168,7 @@ from doccon.shop_place import (
     shop_folder_choices,
 )
 from doccon.theme import (
+    CONFIRM_STEPS,
     FOLDER,
     FONT,
     FONT_SMALL,
@@ -154,6 +177,8 @@ from doccon.theme import (
     JIRA,
     LOAD_STEPS,
     NAVY,
+    PENDING_BG,
+    SURFACE,
     LoadButton,
     ThemeProgress,
     apply_theme,
@@ -441,7 +466,7 @@ class EmailWordingDialog(tk.Toplevel):
     def __init__(self, master: tk.Misc) -> None:
         super().__init__(master)
         self.withdraw()
-        self.title("Email wording")
+        self.title("Email Format Editor")
         self.resizable(True, True)
         self.transient(master)
         self.grab_set()
@@ -457,7 +482,9 @@ class EmailWordingDialog(tk.Toplevel):
             wraplength=520,
             justify="left",
         ).pack(anchor="w")
-        ttk.Label(intro, text=MAIL_MARKERS, style="Muted.TLabel").pack(anchor="w", pady=(6, 0))
+        ttk.Label(intro, text=MAIL_MARKERS, style="Muted.TLabel", wraplength=640, justify="left").pack(
+            anchor="w", pady=(6, 0)
+        )
         book = ttk.Notebook(self)
         book.pack(fill="both", expand=True, padx=12, pady=8)
         for key, title in MAIL_KIND_LABELS:
@@ -466,13 +493,13 @@ class EmailWordingDialog(tk.Toplevel):
             subject, body = stored.get(key, ("", ""))
             ttk.Label(page, text="Subject").pack(anchor="w")
             subject_box = ttk.Entry(page, width=64)
-            subject_box.insert(0, subject.strip() or default_mail_subject())
+            subject_box.insert(0, subject.strip() or default_mail_subject(key))
             subject_box.pack(fill="x", pady=(2, 8))
             ttk.Label(page, text="Body").pack(anchor="w")
             body_box = tk.Text(page, width=64, height=12, wrap="word", font=FONT)
             body_box.insert("1.0", body if body.strip() else default_mail_body(key))
             body_box.pack(fill="both", expand=True, pady=(2, 4))
-            ttk.Label(page, text=MAIL_MARKERS, style="Muted.TLabel").pack(anchor="w")
+            ttk.Label(page, text=MAIL_MARKERS, style="Muted.TLabel", wraplength=640, justify="left").pack(anchor="w")
             self._subjects[key] = subject_box
             self._bodies[key] = body_box
         buttons = ttk.Frame(self, padding=(12, 0, 12, 12))
@@ -491,9 +518,347 @@ class EmailWordingDialog(tk.Toplevel):
         try:
             path = save_mail_formats(formats)
         except OSError as exc:
-            messagebox.showerror("Email wording", str(exc), parent=self)
+            messagebox.showerror("Email Format Editor", str(exc), parent=self)
             return
-        messagebox.showinfo("Email wording", f"Saved for every PC.\n{path.name}", parent=self)
+        messagebox.showinfo("Email Format Editor", f"Saved for every PC.\n{path.name}", parent=self)
+        self.destroy()
+
+
+class TransmittalEditor(tk.Toplevel):
+    """Client, Shop, and Field wording, recipients, and the job fields the email fills in."""
+
+    def __init__(
+        self,
+        master: tk.Misc,
+        *,
+        formats: dict[str, tuple[str, str]],
+        covers: dict[str, tuple[str, str]],
+        project: str,
+        job_fields: dict[str, str],
+        on_save,
+        detected: str = "",
+        issued: dict[str, str] | None = None,
+        client_cc: dict[str, str] | None = None,
+        kind_cc: dict[str, dict[str, str]] | None = None,
+        on_read_pep=None,
+    ) -> None:
+        super().__init__(master)
+        self.withdraw()
+        self.title("Transmittal Editor")
+        self.resizable(True, True)
+        self.transient(master)
+        self.grab_set()
+        apply_theme(self)
+        self._on_save = on_save
+        self._on_read_pep = on_read_pep
+        self._watched: dict[tk.Misc, str] = {}
+        self._subjects: dict[str, ttk.Entry] = {}
+        self._bodies: dict[str, tk.Text] = {}
+        self._tos: dict[str, tk.Text] = {}
+        self._ccs: dict[str, tk.Text] = {}
+        self._cc_parts: dict[str, tk.Text] = {}
+        self._kind_cc_boxes: dict[str, dict[str, tk.Text]] = {}
+        intro = ttk.Frame(self, padding=(12, 12, 12, 4))
+        intro.pack(fill="x")
+        ttk.Label(
+            intro,
+            text=(
+                "Subject and body start from Settings. Permanent TO and CC start from Settings "
+                "for this transmittal. Save here only keeps a difference for this job. "
+                "{urgent}, {transmittal}, {issued_for}, {job}, and {documents} fill in when the email is created."
+            ),
+            wraplength=680,
+            justify="left",
+        ).pack(anchor="w")
+        if detected:
+            ttk.Label(intro, text=detected, style="Muted.TLabel", wraplength=680, justify="left").pack(
+                anchor="w", pady=(6, 0)
+            )
+        card = ttk.LabelFrame(self, text="This job", padding=8)
+        card.pack(fill="x", padx=12, pady=(4, 0))
+        self._fields: dict[str, ttk.Entry] = {}
+        for col, (key, label) in enumerate(
+            (
+                ("client", "Client"),
+                ("location", "Location"),
+                ("tag", "Tag"),
+                ("po", "PO#"),
+                ("wo", "WO#"),
+                ("moc", "MOC#"),
+            )
+        ):
+            card.columnconfigure(col, weight=1)
+            ttk.Label(card, text=label).grid(row=0, column=col, sticky="w")
+            box = ttk.Entry(card)
+            box.insert(0, job_fields.get(key, ""))
+            box.grid(row=1, column=col, sticky="ew", padx=(0, 8), pady=(0, 4))
+            self._fields[key] = box
+        ttk.Label(card, text="Project").grid(row=2, column=0, columnspan=6, sticky="w")
+        self._project = tk.Text(card, height=2, wrap="word", font=FONT)
+        self._project.insert("1.0", project)
+        self._project.grid(row=3, column=0, columnspan=6, sticky="ew")
+        style_text(self._project)
+        buttons = ttk.Frame(self, padding=(12, 0, 12, 12))
+        buttons.pack(side="bottom", fill="x")
+        if on_read_pep is not None:
+            ttk.Button(buttons, text="Read from PEP", command=self._read_pep).pack(side="left")
+        ttk.Button(buttons, text="Cancel", command=self.destroy).pack(side="right")
+        ttk.Button(buttons, text="Accept", style="Accent.TButton", command=self._accept).pack(
+            side="right", padx=(0, 8)
+        )
+        book = ttk.Notebook(self)
+        book.pack(fill="both", expand=True, padx=12, pady=8)
+        for key, title in MAIL_KIND_LABELS:
+            page = self._tab_page(book, title)
+            found = (issued or {}).get(key, "")
+            ttk.Label(
+                page,
+                text=f"Issued for: {value_or_na(found)}",
+                style="Muted.TLabel",
+            ).pack(anchor="w", pady=(0, 6))
+            subject, body = formats.get(key, ("", ""))
+            to_line, cc_line = covers.get(key, ("", ""))
+            ttk.Label(page, text="Subject").pack(anchor="w")
+            subject_box = ttk.Entry(page)
+            subject_box.insert(0, subject.strip() or default_mail_subject(key))
+            subject_box.pack(fill="x", pady=(2, 6))
+            ttk.Label(page, text="Body").pack(anchor="w")
+            body_box = tk.Text(page, height=6, wrap="word", font=FONT)
+            body_box.insert("1.0", body if body.strip() else default_mail_body(key))
+            body_box.pack(fill="x", pady=(2, 4))
+            style_text(body_box)
+            self._subjects[key] = subject_box
+            self._bodies[key] = body_box
+            ttk.Label(page, text=MAIL_MARKERS, style="Muted.TLabel", wraplength=640, justify="left").pack(
+                anchor="w", pady=(0, 6)
+            )
+            to_box = tk.Text(page, height=2, wrap="word", font=FONT)
+            to_box.insert("1.0", to_line)
+            self._address_head(page, "TO", to_box, key, "to")
+            to_box.pack(fill="x", pady=(2, 6))
+            style_text(to_box)
+            self._tos[key] = to_box
+            if key == "client":
+                ttk.Label(page, text="CC").pack(anchor="w", pady=(4, 0))
+                parts = client_cc or {}
+                for part, label in (
+                    ("permanent", "1 Permanent"),
+                    ("engineering", "2 Engineering"),
+                    ("pm", "3 PM"),
+                    ("pep", "4 From PEP"),
+                    ("additional", "5 Anyone additional"),
+                ):
+                    box = tk.Text(page, height=2, wrap="word", font=FONT)
+                    box.insert("1.0", parts.get(part, ""))
+                    self._address_head(page, label, box, "client", "cc")
+                    box.pack(fill="x", pady=(2, 6))
+                    style_text(box)
+                    self._cc_parts[part] = box
+                continue
+            ttk.Label(page, text="CC").pack(anchor="w", pady=(4, 0))
+            slots = (kind_cc or {}).get(key, {})
+            self._kind_cc_boxes[key] = {}
+            for part, label in (("permanent", "1 Permanent"), ("additional", "2 Additional")):
+                box = tk.Text(page, height=2, wrap="word", font=FONT)
+                box.insert("1.0", slots.get(part, ""))
+                self._address_head(page, label, box, key, "cc")
+                box.pack(fill="x", pady=(2, 6))
+                style_text(box)
+                self._kind_cc_boxes[key][part] = box
+        self.protocol("WM_DELETE_WINDOW", self.destroy)
+        self.geometry("780x720")
+        self._remember_clean()
+        reveal_on_parent(self)
+
+    def _tab_page(self, book: ttk.Notebook, title: str) -> ttk.Frame:
+        """A tab that scrolls, so CC and the rest stay reachable."""
+        outer = ttk.Frame(book)
+        book.add(outer, text=title)
+        canvas = tk.Canvas(outer, highlightthickness=0, background=SURFACE)
+        bar = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
+        page = ttk.Frame(canvas, padding=8)
+        window = canvas.create_window((0, 0), window=page, anchor="nw")
+        canvas.configure(yscrollcommand=bar.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        bar.pack(side="right", fill="y")
+
+        def _fit(event: tk.Event) -> None:
+            canvas.itemconfigure(window, width=max(int(event.width), 1))
+
+        def _region(_event: tk.Event | None = None) -> None:
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        canvas.bind("<Configure>", _fit)
+        page.bind("<Configure>", _region)
+
+        def _over(host: tk.Misc) -> bool:
+            try:
+                widget = self.winfo_containing(*self.winfo_pointerxy())
+            except tk.TclError:
+                return False
+            while widget is not None:
+                if widget is host:
+                    return True
+                widget = getattr(widget, "master", None)
+            return False
+
+        def _wheel(event: tk.Event) -> str | None:
+            if not _over(canvas):
+                return None
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+            return "break"
+
+        binding = self.bind_all("<MouseWheel>", _wheel, add="+")
+
+        def _drop(event: tk.Event) -> None:
+            if event.widget is not self:
+                return
+            with contextlib.suppress(tk.TclError):
+                self.unbind_all("<MouseWheel>", binding)
+
+        self.bind("<Destroy>", _drop, add="+")
+        return page
+
+    def _address_head(self, parent: ttk.Frame, label: str, box: tk.Text, kind: str, side: str) -> None:
+        row = ttk.Frame(parent)
+        row.pack(fill="x")
+        ttk.Label(row, text=label).pack(side="left")
+        ttk.Button(
+            row,
+            text="Pick…",
+            command=lambda target=box, which=kind, slot=side: self._pick_permanent(target, which, slot),
+        ).pack(side="left", padx=(8, 0))
+
+    def _pick_permanent(self, box: tk.Text, kind: str, side: str) -> None:
+        standing, saved = pick_address_lists(kind, side)
+        self._popup_addresses(
+            standing,
+            saved,
+            lambda value, target=box: self._append_address(target, value),
+        )
+
+    def _popup_addresses(self, standing: tuple[str, ...], saved: tuple[str, ...], choose) -> None:
+        if not standing and not saved:
+            messagebox.showinfo(
+                "Pick address",
+                "Add permanent addresses, or addresses in Saved TO / CC, in Settings first.",
+                parent=self,
+            )
+            return
+        menu = tk.Menu(self, tearoff=0)
+        if standing and saved:
+            menu.add_command(label="Permanent", state="disabled")
+        for addr in standing:
+            menu.add_command(label=addr, command=lambda value=addr: choose(value))
+        if standing and saved:
+            menu.add_separator()
+            menu.add_command(label="Saved addresses", state="disabled")
+        for addr in saved:
+            menu.add_command(label=addr, command=lambda value=addr: choose(value))
+        try:
+            menu.tk_popup(self.winfo_pointerx(), self.winfo_pointery())
+        finally:
+            menu.grab_release()
+
+    def _append_address(self, box: tk.Text, address: str) -> None:
+        merged = append_email(email_line(self._widget_text(box)), address)
+        self._set_widget(box, merged)
+        self._paint_dirty()
+
+    def _remember_clean(self) -> None:
+        self._watched.clear()
+        for widget in (
+            *self._fields.values(),
+            self._project,
+            *self._subjects.values(),
+            *self._bodies.values(),
+            *self._tos.values(),
+            *self._ccs.values(),
+            *self._cc_parts.values(),
+            *(box for slots in self._kind_cc_boxes.values() for box in slots.values()),
+        ):
+            self._watched[widget] = self._widget_text(widget)
+            widget.bind("<KeyRelease>", lambda _event: self._paint_dirty(), add="+")
+        self._paint_dirty()
+
+    def _widget_text(self, widget: tk.Misc) -> str:
+        if isinstance(widget, tk.Text):
+            return widget.get("1.0", "end").replace("\r\n", "\n").strip()
+        return str(widget.get()).strip()
+
+    def _set_widget(self, widget: tk.Misc, value: str) -> None:
+        if isinstance(widget, tk.Text):
+            widget.delete("1.0", "end")
+            if value:
+                widget.insert("1.0", value)
+            return
+        widget.delete(0, "end")
+        if value:
+            widget.insert(0, value)
+
+    def _paint_dirty(self) -> None:
+        for widget, original in self._watched.items():
+            dirty = self._widget_text(widget) != original
+            if isinstance(widget, tk.Text):
+                widget.configure(background=PENDING_BG if dirty else SURFACE)
+            else:
+                widget.configure(style="Pending.TEntry" if dirty else "TEntry")
+
+    def _read_pep(self) -> None:
+        if self._on_read_pep is None:
+            return
+        data = self._on_read_pep()
+        if not data:
+            return
+        for key, box in self._fields.items():
+            if key in data:
+                self._set_widget(box, data[key])
+        if "project" in data:
+            self._set_widget(self._project, data["project"])
+        client_to = self._tos.get("client")
+        if client_to is not None and data.get("to"):
+            self._set_widget(client_to, data["to"])
+        for part in ("engineering", "pm", "pep"):
+            box = self._cc_parts.get(part)
+            if box is not None and part in data:
+                self._set_widget(box, data[part])
+        self._paint_dirty()
+
+    def _accept(self) -> None:
+        formats = {
+            key: (
+                self._subjects[key].get().strip(),
+                self._bodies[key].get("1.0", "end").replace("\r\n", "\n"),
+            )
+            for key, _title in MAIL_KIND_LABELS
+        }
+        covers: dict[str, tuple[str, str]] = {}
+        client_cc: dict[str, str] = {}
+        kind_cc: dict[str, dict[str, str]] = {}
+        for key, _title in MAIL_KIND_LABELS:
+            to_line = email_line(self._tos[key].get("1.0", "end"))
+            if key == "client" and self._cc_parts:
+                client_cc = {
+                    part: email_line(box.get("1.0", "end")) for part, box in self._cc_parts.items()
+                }
+                cc_line = compose_cc(
+                    client_cc.get("permanent", ""),
+                    client_cc.get("engineering", ""),
+                    client_cc.get("pm", ""),
+                    client_cc.get("pep", ""),
+                    client_cc.get("additional", ""),
+                )
+            else:
+                slots = {
+                    part: email_line(box.get("1.0", "end"))
+                    for part, box in self._kind_cc_boxes.get(key, {}).items()
+                }
+                kind_cc[key] = slots
+                cc_line = compose_cc(slots.get("permanent", ""), slots.get("additional", ""))
+            covers[key] = (to_line, cc_line)
+        fields = {key: box.get().strip() for key, box in self._fields.items()}
+        project = self._project.get("1.0", "end").strip()
+        self._on_save(formats, covers, project, fields, client_cc, kind_cc)
         self.destroy()
 
 
@@ -502,48 +867,134 @@ class SettingsDialog(tk.Toplevel):
         super().__init__(master)
         self.withdraw()
         self.title("Settings")
-        self.resizable(False, False)
+        self.minsize(760, 520)
+        self.resizable(True, True)
         self.transient(master)
         self.grab_set()
         apply_theme(self)
+        screen_w = max(self.winfo_screenwidth(), 800)
+        screen_h = max(self.winfo_screenheight(), 600)
+        self.geometry(f"{min(980, screen_w - 48)}x{min(760, screen_h - 96)}")
+
+        buttons = ttk.Frame(self, padding=(12, 8))
+        buttons.pack(side="bottom", fill="x")
+        shell = ttk.Frame(self)
+        shell.pack(side="top", fill="both", expand=True)
+        scroller = tk.Canvas(shell, highlightthickness=0, background=SURFACE)
+        form_scroll = ttk.Scrollbar(shell, orient="vertical", command=scroller.yview)
+        page = ttk.Frame(scroller)
+        page_window = scroller.create_window((0, 0), window=page, anchor="nw")
+        scroller.configure(yscrollcommand=form_scroll.set)
+        form_scroll.pack(side="right", fill="y")
+        scroller.pack(side="left", fill="both", expand=True)
+
+        def _fit_page(event: tk.Event) -> None:
+            scroller.itemconfigure(page_window, width=max(int(event.width), 1))
+
+        def _page_region(_event: tk.Event | None = None) -> None:
+            scroller.configure(scrollregion=scroller.bbox("all") or (0, 0, 0, 0))
+
+        scroller.bind("<Configure>", _fit_page)
+        page.bind("<Configure>", _page_region)
+        page.columnconfigure(1, weight=1)
+        self._settings_scroller = scroller
+        self._address_canvas: tk.Canvas | None = None
+
+        def _over(host: tk.Misc) -> bool:
+            try:
+                widget = self.winfo_containing(*self.winfo_pointerxy())
+            except tk.TclError:
+                return False
+            while widget is not None:
+                if widget is host:
+                    return True
+                widget = getattr(widget, "master", None)
+            return False
+
+        def _page_wheel(event: tk.Event) -> str | None:
+            address = self._address_canvas
+            if not _over(self) or (address is not None and _over(address)):
+                return None
+            scroller.yview_scroll(int(-event.delta / 120), "units")
+            return "break"
+
+        wheel_bind = self.bind_all("<MouseWheel>", _page_wheel, add="+")
+
+        def _drop_wheel(event: tk.Event) -> None:
+            if event.widget is not self:
+                return
+            with contextlib.suppress(tk.TclError):
+                self.unbind_all("<MouseWheel>", wheel_bind)
+
+        self.bind("<Destroy>", _drop_wheel, add="+")
 
         settings = load_settings()
         pad = {"padx": 12, "pady": 6}
-        ttk.Label(self, text="Jira connection", font=FONT_TITLE).grid(
+        ttk.Label(page, text="Jira connection", font=FONT_TITLE).grid(
             row=0, column=0, columnspan=2, sticky="w", padx=12, pady=(12, 8)
         )
-        ttk.Label(self, text="Site").grid(row=1, column=0, sticky="w", **pad)
-        self.site = ttk.Entry(self, width=48)
+        ttk.Label(page, text="Site").grid(row=1, column=0, sticky="w", **pad)
+        self.site = ttk.Entry(page, width=48)
         self.site.insert(0, settings.site)
         self.site.grid(row=1, column=1, **pad)
 
-        ttk.Label(self, text="Email").grid(row=2, column=0, sticky="w", **pad)
-        self.email = ttk.Entry(self, width=48)
+        ttk.Label(page, text="Email").grid(row=2, column=0, sticky="w", **pad)
+        self.email = ttk.Entry(page, width=48)
         self.email.insert(0, settings.email)
         self.email.grid(row=2, column=1, **pad)
 
-        ttk.Label(self, text="Project").grid(row=3, column=0, sticky="w", **pad)
-        self.project = ttk.Entry(self, width=48)
+        ttk.Label(page, text="Project").grid(row=3, column=0, sticky="w", **pad)
+        self.project = ttk.Entry(page, width=48)
         self.project.insert(0, settings.project_key)
         self.project.grid(row=3, column=1, **pad)
 
-        ttk.Label(self, text="API token").grid(row=4, column=0, sticky="w", **pad)
-        self.token = ttk.Entry(self, width=48, show="*")
+        ttk.Label(page, text="API token").grid(row=4, column=0, sticky="w", **pad)
+        self.token = ttk.Entry(page, width=48, show="*")
         self.token.grid(row=4, column=1, **pad)
         hint = (
             "Already saved in Windows Credential Manager."
             if load_token(settings.email)
             else "Paste a token from id.atlassian.com. It is not stored in Dropbox."
         )
-        ttk.Label(self, text=hint, style="Muted.TLabel").grid(row=5, column=1, sticky="w", padx=12, pady=(0, 4))
+        ttk.Label(page, text=hint, style="Muted.TLabel").grid(row=5, column=1, sticky="w", padx=12, pady=(0, 4))
 
-        book = ttk.LabelFrame(self, text="Saved TO / CC addresses", padding=8)
-        book.grid(row=6, column=0, columnspan=2, sticky="ew", padx=12, pady=(8, 4))
-        self._addresses = tk.Listbox(book, height=6, width=52, exportselection=False)
-        scroll = ttk.Scrollbar(book, orient="vertical", command=self._addresses.yview)
-        self._addresses.configure(yscrollcommand=scroll.set)
-        self._addresses.grid(row=0, column=0, columnspan=3, sticky="ew")
-        scroll.grid(row=0, column=3, sticky="ns")
+        permanent = ttk.LabelFrame(page, text="Permanent addresses", padding=8)
+        permanent.grid(row=6, column=0, columnspan=2, sticky="ew", padx=12, pady=(8, 4))
+        permanent.columnconfigure(1, weight=1)
+        permanent.columnconfigure(3, weight=1)
+        ttk.Label(permanent, text="TO").grid(row=0, column=1, sticky="w")
+        ttk.Label(permanent, text="CC").grid(row=0, column=3, sticky="w")
+        self._permanent: dict[str, dict[str, ttk.Entry]] = {}
+        lists = load_permanent()
+        for row, (kind, title) in enumerate(MAIL_KIND_LABELS, start=1):
+            ttk.Label(permanent, text=title).grid(row=row, column=0, sticky="w", padx=(0, 8), pady=2)
+            to_box = ttk.Entry(permanent, width=36)
+            cc_box = ttk.Entry(permanent, width=36)
+            to_box.insert(0, "; ".join(lists[kind]["to"]))
+            cc_box.insert(0, "; ".join(lists[kind]["cc"]))
+            to_box.grid(row=row, column=1, sticky="ew", padx=(0, 12), pady=2)
+            cc_box.grid(row=row, column=3, sticky="ew", pady=2)
+            self._permanent[kind] = {"to": to_box, "cc": cc_box}
+        ttk.Label(
+            permanent,
+            text="Shared by every PC. Each transmittal has its own TO list and its own CC list.",
+            style="Muted.TLabel",
+        ).grid(row=4, column=0, columnspan=4, sticky="w", pady=(6, 0))
+
+        book = ttk.LabelFrame(page, text="Saved TO / CC addresses", padding=8)
+        book.grid(row=7, column=0, columnspan=2, sticky="ew", padx=12, pady=(8, 4))
+        self._address_canvas = tk.Canvas(book, height=220, highlightthickness=0, background=SURFACE)
+        address_scroll = ttk.Scrollbar(book, orient="vertical", command=self._address_canvas.yview)
+        self._address_inner = ttk.Frame(self._address_canvas)
+        self._address_window = self._address_canvas.create_window((0, 0), window=self._address_inner, anchor="nw")
+        self._address_canvas.configure(yscrollcommand=address_scroll.set)
+        self._address_canvas.grid(row=0, column=0, columnspan=3, sticky="ew")
+        address_scroll.grid(row=0, column=3, sticky="ns")
+        self._address_canvas.bind("<Configure>", self._fit_address_book)
+        self._address_canvas.bind("<MouseWheel>", self._address_wheel)
+        self._address_inner.bind("<Configure>", self._sync_address_scroll)
+        self._address_inner.bind("<MouseWheel>", self._address_wheel)
+        self._address_rows: list[tuple[tk.BooleanVar, str]] = []
         self._new_address = ttk.Entry(book, width=36)
         self._new_address.grid(row=1, column=0, sticky="ew", pady=(8, 0), padx=(0, 8))
         self._new_address.bind("<Return>", lambda _event: self._add_address())
@@ -556,39 +1007,16 @@ class SettingsDialog(tk.Toplevel):
         )
         ttk.Label(
             book,
-            text="This PC only. Import from Outlook… copies GAL and Contacts. Pick… adds one.",
+            text="Shared by every PC. Scroll the names. Tick the ones to remove, then press Remove.",
             style="Muted.TLabel",
         ).grid(row=3, column=0, columnspan=4, sticky="w", pady=(6, 0))
         book.columnconfigure(0, weight=1)
-        self._fill_addresses(settings.saved_emails)
+        self._fill_addresses(load_saved_addresses())
 
-        pairs = ttk.Frame(self)
-        pairs.grid(row=7, column=0, columnspan=2, sticky="ew", padx=12, pady=(4, 4))
-        pairs.columnconfigure(0, weight=1)
-        pairs.columnconfigure(1, weight=1)
-        self._shop_to, self._shop_cc, self._shop_new = self._address_pair(
-            pairs,
-            0,
-            "Shop transmittal TO / CC",
-            "This PC only. Shop cover uses these when the ST letter has no TO or CC yet.",
-            settings.shop_to,
-            settings.shop_cc,
-        )
-        self._field_to, self._field_cc, self._field_new = self._address_pair(
-            pairs,
-            1,
-            "Field transmittal TO / CC",
-            "This PC only. Field cover uses these when the FT letter has no TO or CC yet.",
-            settings.field_to,
-            settings.field_cc,
-        )
-
-        buttons = ttk.Frame(self)
-        buttons.grid(row=8, column=0, columnspan=2, sticky="e", padx=12, pady=(8, 14))
         ttk.Button(buttons, text="Open log folder", command=self._open_log_folder).pack(
             side="left", padx=(0, 8)
         )
-        ttk.Button(buttons, text="Email wording…", command=self._email_wording).pack(side="left", padx=(0, 8))
+        ttk.Button(buttons, text="Email Format Editor", command=self._email_wording).pack(side="left", padx=(0, 8))
         ttk.Button(buttons, text="Test connection", command=self._test).pack(side="left", padx=(0, 8))
         ttk.Button(buttons, text="Save", style="Accent.TButton", command=self._save).pack(side="left")
         reveal_on_parent(self)
@@ -596,72 +1024,50 @@ class SettingsDialog(tk.Toplevel):
     def _email_wording(self) -> None:
         EmailWordingDialog(self)
 
-    def _address_pair(
-        self,
-        parent: ttk.Frame,
-        column: int,
-        title: str,
-        hint: str,
-        to_emails: tuple[str, ...],
-        cc_emails: tuple[str, ...],
-    ) -> tuple[tk.Listbox, tk.Listbox, ttk.Entry]:
-        frame = ttk.LabelFrame(parent, text=title, padding=8)
-        frame.grid(row=0, column=column, sticky="nsew", padx=(0 if column == 0 else 8, 0))
-        ttk.Label(frame, text="TO").grid(row=0, column=0, sticky="w")
-        ttk.Label(frame, text="CC").grid(row=0, column=1, sticky="w", padx=(8, 0))
-        to_box = tk.Listbox(frame, height=4, width=24, exportselection=False)
-        cc_box = tk.Listbox(frame, height=4, width=24, exportselection=False)
-        to_box.grid(row=1, column=0, sticky="ew")
-        cc_box.grid(row=1, column=1, sticky="ew", padx=(8, 0))
-        entry = ttk.Entry(frame, width=24)
-        entry.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(8, 0))
-        entry.bind("<Return>", lambda _event, box=None: self._add_pair_address(entry, to_box, "to"))
-        adds = ttk.Frame(frame)
-        adds.grid(row=3, column=0, columnspan=2, sticky="w", pady=(8, 0))
-        ttk.Button(adds, text="Add to TO", command=lambda: self._add_pair_address(entry, to_box, "to")).pack(
-            side="left"
-        )
-        ttk.Button(
-            adds, text="Add to CC", command=lambda: self._add_pair_address(entry, cc_box, "cc")
-        ).pack(side="left", padx=(8, 0))
-        ttk.Button(
-            adds,
-            text="Remove",
-            style="Danger.TButton",
-            command=lambda: self._remove_pair_address(to_box, cc_box),
-        ).pack(side="left", padx=(8, 0))
-        ttk.Label(frame, text=hint, style="Muted.TLabel", wraplength=280).grid(
-            row=4, column=0, columnspan=2, sticky="w", pady=(6, 0)
-        )
-        frame.columnconfigure(0, weight=1)
-        frame.columnconfigure(1, weight=1)
-        self._fill_list(to_box, to_emails)
-        self._fill_list(cc_box, cc_emails)
-        return to_box, cc_box, entry
-
     def _open_log_folder(self) -> None:
         try:
             open_log_folder()
         except OSError as exc:
             messagebox.showerror("Settings", str(exc), parent=self)
 
-    def _fill_list(self, box: tk.Listbox, emails: tuple[str, ...] | list[str]) -> None:
-        box.delete(0, "end")
-        for addr in emails:
-            box.insert("end", addr)
+    def _fit_address_book(self, event: tk.Event) -> None:
+        self._address_canvas.itemconfigure(self._address_window, width=max(int(event.width), 1))
+        self._sync_address_scroll()
+
+    def _sync_address_scroll(self, _event: tk.Event | None = None) -> None:
+        inner = self._address_inner
+        height = max(inner.winfo_reqheight(), 1)
+        width = max(inner.winfo_reqwidth(), 1)
+        self._address_canvas.configure(scrollregion=(0, 0, width, height))
+
+    def _address_wheel(self, event: tk.Event) -> str:
+        self._address_canvas.yview_scroll(int(-event.delta / 120), "units")
+        return "break"
 
     def _fill_addresses(self, emails: tuple[str, ...] | list[str]) -> None:
-        self._fill_list(self._addresses, emails)
-
-    def _list_emails(self, box: tk.Listbox) -> tuple[str, ...]:
-        return normalize_saved_emails(list(box.get(0, "end")))
+        for child in self._address_inner.winfo_children():
+            child.destroy()
+        self._address_rows = []
+        for addr in emails:
+            mark = tk.BooleanVar(value=False)
+            row = ttk.Frame(self._address_inner)
+            row.pack(fill="x", anchor="w")
+            tick = ttk.Checkbutton(row, variable=mark)
+            tick.pack(side="left")
+            label = ttk.Label(row, text=addr)
+            label.pack(side="left", padx=(4, 0))
+            for widget in (row, tick, label):
+                widget.bind("<MouseWheel>", self._address_wheel, add="+")
+            self._address_rows.append((mark, addr))
+        self._address_inner.update_idletasks()
+        self._sync_address_scroll()
+        self._address_canvas.yview_moveto(0)
 
     def _listed_emails(self) -> tuple[str, ...]:
-        return normalize_saved_emails(list(self._addresses.get(0, "end")))
+        return normalize_saved_emails([addr for _mark, addr in self._address_rows])
 
     def _persist_addresses(self) -> None:
-        current = load_settings()
-        save_settings(replace(current, saved_emails=self._listed_emails()))
+        save_saved_addresses(self._listed_emails())
 
     def _add_address(self) -> None:
         added = normalize_saved_emails(self._new_address.get())
@@ -674,40 +1080,12 @@ class SettingsDialog(tk.Toplevel):
         self._persist_addresses()
 
     def _remove_address(self) -> None:
-        selected = list(self._addresses.curselection())
-        if not selected:
-            messagebox.showinfo("Settings", "Select an address to remove.", parent=self)
+        remaining = [addr for mark, addr in self._address_rows if not mark.get()]
+        if len(remaining) == len(self._address_rows):
+            messagebox.showinfo("Settings", "Tick the addresses to remove.", parent=self)
             return
-        remaining = [
-            addr for index, addr in enumerate(self._listed_emails()) if index not in set(selected)
-        ]
         self._fill_addresses(remaining)
         self._persist_addresses()
-
-    def _add_pair_address(self, entry: ttk.Entry, box: tk.Listbox, _which: str) -> None:
-        added = normalize_saved_emails(entry.get())
-        if not added:
-            messagebox.showerror("Settings", "Type an email address.", parent=self)
-            return
-        merged = normalize_saved_emails(list(self._list_emails(box)) + list(added))
-        self._fill_list(box, merged)
-        entry.delete(0, "end")
-
-    def _remove_pair_address(self, to_box: tk.Listbox, cc_box: tk.Listbox) -> None:
-        box = to_box if to_box.curselection() else cc_box
-        selected = list(box.curselection())
-        if not selected:
-            messagebox.showinfo("Settings", "Select a TO or CC address to remove.", parent=self)
-            return
-        remaining = [addr for index, addr in enumerate(self._list_emails(box)) if index not in set(selected)]
-        self._fill_list(box, remaining)
-
-    def _add_field_address(self, which: str) -> None:
-        box = self._field_to if which == "to" else self._field_cc
-        self._add_pair_address(self._field_new, box, which)
-
-    def _remove_field_address(self) -> None:
-        self._remove_pair_address(self._field_to, self._field_cc)
 
     def _import_outlook(self, *, lister=None) -> None:
         self.configure(cursor="watch")
@@ -729,7 +1107,7 @@ class SettingsDialog(tk.Toplevel):
         if result.added:
             messagebox.showinfo(
                 "Settings",
-                f"Added {result.added} address(es) from Outlook. They stay on this PC, not Dropbox.",
+                f"Added {result.added} address(es) from Outlook. They are shared by every PC.",
                 parent=self,
             )
             return
@@ -740,11 +1118,11 @@ class SettingsDialog(tk.Toplevel):
             site=self.site.get().strip(),
             email=self.email.get().strip(),
             project_key=self.project.get().strip(),
-            saved_emails=self._listed_emails(),
-            field_to=self._list_emails(self._field_to),
-            field_cc=self._list_emails(self._field_cc),
-            shop_to=self._list_emails(self._shop_to),
-            shop_cc=self._list_emails(self._shop_cc),
+            saved_emails=load_settings().saved_emails,
+            field_to=load_settings().field_to,
+            field_cc=load_settings().field_cc,
+            shop_to=load_settings().shop_to,
+            shop_cc=load_settings().shop_cc,
             last_locate_dir=load_settings().last_locate_dir,
             board_col_px=load_settings().board_col_px,
             board_layout_rev=load_settings().board_layout_rev,
@@ -760,6 +1138,16 @@ class SettingsDialog(tk.Toplevel):
             messagebox.showerror("Settings", "Email is required.", parent=self)
             return
         save_settings(settings)
+        try:
+            save_permanent(
+                {
+                    kind: {"to": boxes["to"].get(), "cc": boxes["cc"].get()}
+                    for kind, boxes in self._permanent.items()
+                }
+            )
+        except OSError as exc:
+            messagebox.showerror("Settings", str(exc), parent=self)
+            return
         if token:
             try:
                 save_token(settings.email, token)
@@ -805,6 +1193,12 @@ class DocConApp(tk.Tk):
         self._load_cap = 0
         self._load_caption = ""
         self._load_creep = 0.0
+        self._confirm_gen = 0
+        self._confirm_mark: tuple[int, int, int, str] | None = None
+        self._confirm_shown = 0
+        self._confirm_cap = 0
+        self._confirm_caption = ""
+        self._confirm_creep = 0.0
         self._pending_rows: tuple | None = None
         self._pending_files: tuple | None = None
         self._book_covers: dict[str, BookCover] = {}
@@ -878,7 +1272,9 @@ class DocConApp(tk.Tk):
         self.shop_locate_btn = ttk.Button(
             bar, text="Locate shop folder…", style="Brand.TButton", command=self._locate_shop_folder
         )
-        self.send_btn = ttk.Button(bar, text=CREATE_TRANSMITTAL_BTN, style="Accent.TButton", command=self._issue_pack)
+        self.send_btn = LoadButton(
+            bar, self._issue_pack, label=CREATE_TRANSMITTAL_BTN, width=250
+        )
         self.send_btn.pack(side="left", padx=(8, 0))
         ttk.Button(bar, text="Update Jira…", style="Brand.TButton", command=self._update_jira).pack(
             side="left", padx=(6, 0)
@@ -912,14 +1308,6 @@ class DocConApp(tk.Tk):
             style="Brand.TButton",
             command=self._locate_job_folder,
         ).pack(side="left", padx=(16, 0))
-        self.new_issue_btn = ttk.Button(
-            identity,
-            text=CREATE_ISSUE_BTN,
-            style="Brand.TButton",
-            command=self._new_issue,
-        )
-        self.new_issue_btn.pack(side="left", padx=(8, 0))
-        self.new_issue_btn.configure(state=tk.DISABLED)
         self._set_job_identity(None, None)
         self._load_meter = tk.Frame(chrome, bg=NAVY)
         self._progress = ThemeProgress(self._load_meter, manage_pack=False)
@@ -935,36 +1323,9 @@ class DocConApp(tk.Tk):
         )
         self._load_status.pack(fill="x", pady=(2, 0))
 
-        dates = ttk.Frame(self, padding=(12, 4, 12, 4))
-        dates.pack(fill="x")
-        ttk.Label(dates, text="Date issued").pack(side="left")
-        self.issued = ttk.Entry(dates, width=12)
         self._issued_armed = ""
         self._expected_armed = ""
-        self.issued.pack(side="left", padx=(4, 8))
-        attach_calendar(self.issued, parent=self, on_change=self._on_issued_change, allow_na=True)
-        ttk.Label(dates, text="Expected return").pack(side="left")
-        self.expected = ttk.Entry(dates, width=12)
         self._explicit_no_return = False
-        set_na_text(self.expected)
-        self.expected.pack(side="left", padx=(4, 0))
-        attach_calendar(
-            self.expected,
-            parent=self,
-            on_change=self._on_expected_return_change,
-            allow_na=True,
-            presets=(
-                ("Urgent same day", lambda: self._apply_expected_preset(0)),
-                ("Urgent +1", lambda: self._apply_expected_preset(1)),
-                ("7 days", lambda: self._apply_expected_preset(7)),
-                ("14 days", lambda: self._apply_expected_preset(14)),
-                ("No return", self._apply_no_return),
-            ),
-        )
-        ttk.Button(dates, text="Locate PEP…", command=self._locate_pep).pack(side="left", padx=(12, 0))
-        ttk.Button(dates, text="Save", command=self._save_pack).pack(side="left", padx=(6, 0))
-        self.pep_label = ttk.Label(dates, text="PEP: load a job", style="Muted.TLabel")
-        self.pep_label.pack(side="left", padx=(8, 0))
 
         cover = ttk.LabelFrame(self, text="Cover (this pack)", padding=4)
         cover.pack(side="bottom", fill="x", padx=12, pady=(0, 4))
@@ -977,7 +1338,14 @@ class DocConApp(tk.Tk):
         cc_head.grid(row=0, column=2, sticky="w", padx=(0, 8))
         ttk.Label(cc_head, text="CC", style="CoverHead.TLabel").pack(side="left")
         ttk.Button(cc_head, text="Pick…", command=lambda: self._pick_cover_email("cc")).pack(side="left", padx=(8, 0))
-        ttk.Label(cover, text="PROJECT", style="CoverHead.TLabel").grid(row=0, column=3, sticky="w")
+        project_head = ttk.Frame(cover)
+        project_head.grid(row=0, column=3, sticky="w")
+        ttk.Label(project_head, text="PROJECT", style="CoverHead.TLabel").pack(side="left")
+        ttk.Button(project_head, text="Locate PEP…", command=self._locate_pep).pack(side="left", padx=(8, 0))
+        ttk.Button(project_head, text="Transmittal Editor…", command=self._edit_transmittal).pack(
+            side="left", padx=(6, 0)
+        )
+        ttk.Button(project_head, text="Save", command=self._save_pack).pack(side="left", padx=(6, 0))
         self.from_addr = ttk.Entry(cover, width=36)
         self.from_addr.grid(row=1, column=0, sticky="ew", padx=(0, 8), pady=(0, 2))
         self._set_from_address(DOC_CONTROL_FROM)
@@ -991,17 +1359,18 @@ class DocConApp(tk.Tk):
             style_text(box)
         self.cover_hint = ttk.Label(
             cover,
-            text="TO and CC are email addresses only. Pick… adds a saved address.",
+            text="TO and CC are email addresses only. Pick… uses this transmittal’s permanent list and Saved TO / CC. Separate addresses with a semicolon or a comma.",
             style="Muted.TLabel",
         )
-        self.cover_hint.grid(row=2, column=0, columnspan=4, sticky="w")
+        self.cover_hint.grid(row=2, column=0, columnspan=3, sticky="w")
+        self.pep_label = ttk.Label(cover, text="PEP: load a job", style="Muted.TLabel")
+        self.pep_label.grid(row=2, column=3, sticky="e")
+        self._job_fields = {key: "" for key in ("client", "location", "tag", "po", "wo", "moc")}
         cover.columnconfigure(0, weight=1, minsize=200)
         for col in range(1, 4):
             cover.columnconfigure(col, weight=2, minsize=160)
         for box in (self.to_box, self.cc_box, self.project_box):
             box.bind("<FocusOut>", lambda _event: self._save_pack(quiet=True))
-        self.issued.bind("<FocusOut>", lambda _event: self._on_issued_change())
-        self.expected.bind("<FocusOut>", lambda _event: self._on_expected_return_change())
 
         body = ttk.Frame(self, padding=(6, 0, 6, 0))
         body.pack(fill="both", expand=True)
@@ -1066,6 +1435,17 @@ class DocConApp(tk.Tk):
             style="Danger.TButton",
             command=self._remove_pack_extra,
         ).pack(side="left", padx=(0, 10))
+        rule = tk.Frame(self._pack_extra_bar, bg=FOLDER, width=2, height=22, highlightthickness=0, bd=0)
+        rule.pack_propagate(False)
+        rule.pack(side="left", padx=(4, 8), pady=4)
+        self.new_issue_btn = ttk.Button(
+            self._pack_extra_bar,
+            text=CREATE_ISSUE_BTN,
+            style="Brand.TButton",
+            command=self._new_issue,
+        )
+        self.new_issue_btn.pack(side="left", padx=(0, 8))
+        self.new_issue_btn.configure(state=tk.DISABLED)
         self.board = DrawingBoard(
             body,
             on_open_pdf=self._open_pdf_key,
@@ -1078,40 +1458,38 @@ class DocConApp(tk.Tk):
             on_draft_change=self._schedule_pack_save,
             on_no_return=self._mark_cover_no_return,
         )
+        self.issued = self.board.batch_entry("submission_date")
+        self.expected = self.board.batch_entry("return_request_date")
+        set_na_text(self.expected)
+        self.board._batch_armed["return_request_date"] = "N/A"
         self.board.pack(fill="both", expand=True)
 
     def _settings(self) -> None:
         SettingsDialog(self)
 
     def _field_default_lines(self) -> tuple[str, str]:
-        settings = load_settings()
-        return email_line("; ".join(settings.field_to)), email_line("; ".join(settings.field_cc))
+        return permanent_line("field", "to"), permanent_line("field", "cc")
 
     def _shop_default_lines(self) -> tuple[str, str]:
-        settings = load_settings()
-        return email_line("; ".join(settings.shop_to)), email_line("; ".join(settings.shop_cc))
+        return permanent_line("shop", "to"), permanent_line("shop", "cc")
 
     def _pick_cover_email(self, which: str) -> None:
-        settings = load_settings()
-        kind = self.kind.get()
-        if kind == FIELD:
-            emails = settings.field_to if which == "to" else settings.field_cc
-            empty = "Add Field transmittal TO addresses in Settings first." if which == "to" else (
-                "Add Field transmittal CC addresses in Settings first."
+        standing, saved = pick_address_lists(self.kind.get(), which)
+        if not standing and not saved:
+            messagebox.showinfo(
+                "Pick address",
+                "Add permanent addresses, or addresses in Saved TO / CC, in Settings first.",
             )
-        elif kind == SHOP:
-            emails = settings.shop_to if which == "to" else settings.shop_cc
-            empty = "Add Shop transmittal TO addresses in Settings first." if which == "to" else (
-                "Add Shop transmittal CC addresses in Settings first."
-            )
-        else:
-            emails = settings.saved_emails
-            empty = "Save email addresses in Settings first."
-        if not emails:
-            messagebox.showinfo("Pick address", empty)
             return
         menu = tk.Menu(self, tearoff=0)
-        for addr in emails:
+        if standing and saved:
+            menu.add_command(label="Permanent", state="disabled")
+        for addr in standing:
+            menu.add_command(label=addr, command=lambda value=addr: self._append_cover_email(which, value))
+        if standing and saved:
+            menu.add_separator()
+            menu.add_command(label="Saved addresses", state="disabled")
+        for addr in saved:
             menu.add_command(label=addr, command=lambda value=addr: self._append_cover_email(which, value))
         try:
             menu.tk_popup(self.winfo_pointerx(), self.winfo_pointery())
@@ -1125,10 +1503,9 @@ class DocConApp(tk.Tk):
         self._save_pack(quiet=True)
 
     def _kind_changed(self) -> None:
-        self.send_btn.configure(text=CREATE_TRANSMITTAL_BTN, state="normal")
         if self.kind.get() == INCOMING:
             self.cover_hint.configure(
-                text="Incoming stamps Return Date, Incoming Rev, and Client Approval Status on packed rows. Date issued is not written. Use Update Jira."
+                text="Incoming does not write Submission Date. Use the batch fields, then Update Jira."
             )
             self.board.set_transmittal_kind(INCOMING)
             self._refresh_shop_place()
@@ -1136,15 +1513,15 @@ class DocConApp(tk.Tk):
             return
         if self.kind.get() == CLIENT:
             self.cover_hint.configure(
-                text="TO and CC are email addresses only. Add more with a semicolon."
+                text="TO and CC are email addresses only. Separate them with a semicolon or a comma."
             )
         elif self.kind.get() == FIELD:
             self.cover_hint.configure(
-                text="Field TO and CC start from Settings when the FT letter is empty."
+                text="Field TO is the permanent Field list. CC is Permanent plus Additional."
             )
         else:
             self.cover_hint.configure(
-                text="Shop TO and CC start from Settings when the ST letter is empty."
+                text="Shop TO is the permanent Shop list. CC is Permanent plus Additional."
             )
         self._show_kind_cover()
         if self.board.extras_painted():
@@ -1179,8 +1556,8 @@ class DocConApp(tk.Tk):
         )
         self._cover_loading = True
         try:
-            self._set_text(self.to_box, email_line(chosen.to_line))
-            self._set_text(self.cc_box, email_line(chosen.cc_line))
+            self._set_text(self.to_box, email_line(self._with_permanent(kind, "to", chosen.to_line, pack)))
+            self._set_text(self.cc_box, self._cover_cc(kind, chosen.cc_line, pep, pack))
         finally:
             self._cover_loading = False
         self._cover_stamp = self._cover_text_now()
@@ -1249,6 +1626,46 @@ class DocConApp(tk.Tk):
         if value:
             box.insert("1.0", value)
 
+    def _job_field(self, key: str) -> str:
+        return str(self._job_fields.get(key) or "").strip()
+
+    def _set_job_fields(self, client: str, location: str, tag: str, po: str, wo: str, moc: str) -> None:
+        self._job_fields = {
+            "client": client,
+            "location": location,
+            "tag": tag,
+            "po": po,
+            "wo": wo,
+            "moc": moc,
+        }
+
+    def _joined_wo_moc(self) -> str:
+        wo = self._job_field("wo")
+        moc = self._job_field("moc")
+        if wo and moc:
+            return f"{wo} / {moc}"
+        return wo or moc
+
+    def _set_job_fields_from(self, pep: PepCover | None, pack: ClientPack | None) -> None:
+        """A typed value stays. A blank box is filled from the PEP."""
+        wo, moc = split_wo_moc(pep.wo) if pep is not None else ("", "")
+        detected = (
+            pep.client if pep else "",
+            pep.site if pep else "",
+            pep.tank_tag if pep else "",
+            pep.po if pep else "",
+            wo,
+            moc,
+        )
+        saved = ("", "", "", "", "", "")
+        if pack is not None and pack.pep_fields_saved:
+            saved = (pack.client, pack.location, pack.tag, pack.po, pack.wo, pack.moc)
+        self._set_job_fields(*(value_or_na(left, right) for left, right in zip(saved, detected)))
+        current = self._text_value(self.project_box).strip()
+        found = pep.project_description if pep is not None else ""
+        if not current or current.casefold() == "n/a":
+            self._set_text(self.project_box, value_or_na(current, found))
+
     def _apply_cover_fields(self, cover: PepCover, *, overlay: ClientPack | None = None) -> None:
         self._cover_loading = True
         try:
@@ -1280,8 +1697,9 @@ class DocConApp(tk.Tk):
                 else cover.project_description
             )
             self._set_text(self.to_box, to_line)
-            self._set_text(self.cc_box, cc_line)
+            self._set_text(self.cc_box, email_line(self._with_client_cc(kind, cc_line, cover, overlay)))
             self._set_text(self.project_box, project)
+            self._set_job_fields_from(cover, overlay)
         finally:
             self._cover_loading = False
         self._stamp_packed_from_cover_dates()
@@ -1293,6 +1711,7 @@ class DocConApp(tk.Tk):
             self._set_text(self.to_box, "")
             self._set_text(self.cc_box, "")
             self._set_text(self.project_box, "")
+            self._set_job_fields("", "", "", "", "", "")
             self._write_cover_date_defaults()
         finally:
             self._cover_loading = False
@@ -1313,7 +1732,24 @@ class DocConApp(tk.Tk):
             shop_cc=base.shop_cc,
             field_to=base.field_to,
             field_cc=base.field_cc,
+            cc_engineer=base.cc_engineer,
+            cc_pm=base.cc_pm,
+            cc_pep=base.cc_pep,
+            cc_additional=base.cc_additional,
+            cc_parts_saved=base.cc_parts_saved,
+            cc_permanent=base.cc_permanent,
+            cc_permanent_saved=base.cc_permanent_saved,
+            permanent_overrides={key: dict(slot) for key, slot in base.permanent_overrides.items()},
+            kind_cc_additional=dict(base.kind_cc_additional),
+            mail_overrides=dict(base.mail_overrides),
             project_description=self._text_value(self.project_box),
+            client=self._job_field("client"),
+            location=self._job_field("location"),
+            tag=self._job_field("tag"),
+            po=self._job_field("po"),
+            wo=self._job_field("wo"),
+            moc=self._job_field("moc"),
+            pep_fields_saved=True,
             selected_keys=self.board.selected_keys(),
             located_pdfs=dict(self._located_pdfs),
             next_edits=self.board.next_edits(),
@@ -1337,6 +1773,8 @@ class DocConApp(tk.Tk):
         set_na_text(self.expected)
         self._issued_armed = ""
         self._expected_armed = ""
+        self.board._batch_armed["submission_date"] = ""
+        self.board._batch_armed["return_request_date"] = "N/A"
 
     def _reset_cover_dates(self) -> None:
         """Date issued = today, Expected return = N/A. Does not stamp packed Next."""
@@ -1496,8 +1934,9 @@ class DocConApp(tk.Tk):
         try:
             self._set_from_address(DOC_CONTROL_FROM)
             self._set_text(self.to_box, email_line(chosen.to_line))
-            self._set_text(self.cc_box, email_line(chosen.cc_line))
+            self._set_text(self.cc_box, self._cover_cc(kind, chosen.cc_line, cover, pack))
             self._set_text(self.project_box, chosen.project_description)
+            self._set_job_fields_from(cover, pack)
             self._cover_stamp = self._cover_text_now()
             self._write_cover_date_defaults()
             if pack is not None:
@@ -1513,6 +1952,11 @@ class DocConApp(tk.Tk):
     def _cover_for_write(self) -> PepCover | None:
         kind = self.kind.get()
         to_line = self._email_value(self.to_box)
+        cc_line = self._email_value(self.cc_box)
+        pack = load_client_pack(self._job_folder, self._job_number) if self._job_folder else None
+        to_line = email_line(self._with_permanent(kind, "to", to_line, pack))
+        if kind != CLIENT:
+            cc_line = email_line(self._with_permanent(kind, "cc", cc_line, pack))
         if kind == CLIENT and not to_line:
             messagebox.showerror(
                 LABELS[CLIENT],
@@ -1532,13 +1976,33 @@ class DocConApp(tk.Tk):
             path=cover_path,
             from_address=DOC_CONTROL_FROM,
             to_line=to_line,
-            cc_line=self._email_value(self.cc_box),
+            cc_line=cc_line,
             project_description=self._text_value(self.project_box),
-            client=pep.client if pep else "",
-            site=pep.site if pep else "",
-            tank_tag=pep.tank_tag if pep else "",
-            po=pep.po if pep else "",
-            wo=pep.wo if pep else "",
+            client=self._job_field("client"),
+            site=self._job_field("location"),
+            tank_tag=self._job_field("tag"),
+            po=self._job_field("po"),
+            wo=self._joined_wo_moc(),
+        )
+
+    def _effective_wording(self, kind: str) -> tuple[str, str]:
+        pack = load_client_pack(self._job_folder, self._job_number) if self._job_folder else None
+        key = mail_kind_key(kind)
+        override = pack.mail_overrides.get(key) if pack is not None else None
+        mother_subject, mother_body = mother_wording(key)
+        if override and (override[0].strip() or override[1].strip()):
+            return override[0].strip() or mother_subject, override[1].strip() or mother_body
+        return mother_subject, mother_body
+
+    def _mail_facts(self, rows: list, kind: str):
+        return mail_facts(
+            urgent=self.board.return_urgency(),
+            issued_for=issued_for_text(rows, kind),
+            client=self._job_field("client"),
+            location=self._job_field("location"),
+            tag=self._job_field("tag"),
+            po=self._job_field("po"),
+            wo_moc=self._joined_wo_moc(),
         )
 
     def _set_pep(self, path: Path | None) -> None:
@@ -1654,6 +2118,293 @@ class DocConApp(tk.Tk):
         with contextlib.suppress(tk.TclError):
             self.new_issue_btn.configure(state=tk.NORMAL if enabled else tk.DISABLED)
 
+    def _permanent_side(self, kind: str, side: str, pack: ClientPack | None) -> str:
+        """Settings list, unless this job saved a different permanent TO or CC."""
+        key = mail_kind_key(kind)
+        slot = pack.permanent_overrides.get(key, {}) if pack is not None else {}
+        if side in slot:
+            return email_line(slot[side])
+        if key == "client" and side == "cc" and pack is not None and pack.cc_permanent_saved:
+            return email_line(pack.cc_permanent)
+        return permanent_line(key, side)
+
+    def _with_permanent(self, kind: str, side: str, line: str, pack: ClientPack | None) -> str:
+        return email_line(f"{self._permanent_side(kind, side, pack)}; {line or ''}")
+
+    def _kept_permanent(self, settings_line: str, box_line: str) -> str | None:
+        """Addresses from Settings that are still in the box. None when every one is still there."""
+        settings = email_line(settings_line)
+        if not settings:
+            return None
+        present = {part.strip().casefold() for part in email_line(box_line).split(";") if part.strip()}
+        kept = [part.strip() for part in settings.split(";") if part.strip() and part.strip().casefold() in present]
+        if email_line("; ".join(kept)) == settings:
+            return None
+        return "; ".join(kept)
+
+    def _client_elite_cc(self, pep: PepCover | None, pack: ClientPack | None) -> str:
+        """Elite addresses on the client transmittal CC. Shop and Field additional start here."""
+        parts = self._client_cc_parts(pep, pack)
+        return elite_addresses(
+            compose_cc(
+                parts.get("permanent", ""),
+                parts.get("engineering", ""),
+                parts.get("pm", ""),
+                parts.get("pep", ""),
+                parts.get("additional", ""),
+            )
+        )
+
+    def _kind_cc_parts(self, kind: str, pep: PepCover | None, pack: ClientPack | None) -> dict[str, str]:
+        key = mail_kind_key(kind)
+        saved = pack.kind_cc_additional if pack is not None else {}
+        additional = saved[key] if key in saved else self._client_elite_cc(pep, pack)
+        return {"permanent": self._permanent_side(key, "cc", pack), "additional": additional}
+
+    def _kind_cc_line(self, kind: str, pep: PepCover | None, pack: ClientPack | None) -> str:
+        parts = self._kind_cc_parts(kind, pep if pep is not None else self._pep_cover, pack)
+        return compose_cc(parts["permanent"], parts["additional"])
+
+    def _cover_cc(self, kind: str, chosen_cc: str, pep: PepCover | None, pack: ClientPack | None) -> str:
+        if kind == CLIENT:
+            return email_line(self._with_client_cc(kind, chosen_cc, pep, pack))
+        return self._kind_cc_line(kind, pep, pack)
+
+    def _client_cc_parts(self, pep: PepCover | None, pack: ClientPack | None) -> dict[str, str]:
+        """Permanent is the shared client CC. Engineering, PM, and From PEP start from the PEP. Additional is this pack."""
+        standing = self._permanent_side("client", "cc", pack)
+        if pack is not None and pack.cc_parts_saved:
+            return {
+                "permanent": standing,
+                "engineering": pack.cc_engineer,
+                "pm": pack.cc_pm,
+                "pep": pack.cc_pep,
+                "additional": pack.cc_additional,
+            }
+        return {
+            "permanent": standing,
+            "engineering": pep.engineer_line if pep is not None else "",
+            "pm": pep.pm_line if pep is not None else "",
+            "pep": pep.pep_cc if pep is not None else "",
+            "additional": "",
+        }
+
+    def _with_client_cc(self, kind: str, cc: str, pep: PepCover | None, pack: ClientPack | None) -> str:
+        if kind != CLIENT:
+            return cc
+        parts = self._client_cc_parts(pep, pack)
+        composed = compose_cc(
+            parts["permanent"],
+            parts["engineering"],
+            parts["pm"],
+            parts["pep"],
+            parts["additional"],
+        )
+        return composed or cc
+
+    def _edit_transmittal(self) -> None:
+        pep = self._pep_cover
+        if pep is None and self._pep_path is not None and self._pep_path.is_file():
+            try:
+                pep = load_pep(self._pep_path)
+            except PepError:
+                pep = None
+            else:
+                self._pep_cover = pep
+        pack = load_client_pack(self._job_folder, self._job_number) if self._job_folder else None
+        self._set_job_fields_from(pep, pack)
+        if not self._text_value(self.project_box).strip() and pep is not None and pep.project_description:
+            self._set_text(self.project_box, pep.project_description)
+        current = self.kind.get()
+        live_to = self._email_value(self.to_box)
+        live_cc = self._email_value(self.cc_box)
+        covers: dict[str, tuple[str, str]] = {}
+        issued: dict[str, str] = {}
+        kind_parts: dict[str, dict[str, str]] = {}
+        rows = self.board.selected_rows()
+        for key, _title in MAIL_KIND_LABELS:
+            issued[key] = issued_for_text(rows, key)
+            if key == current and (live_to or live_cc):
+                book = BookCover()
+                pack_to, pack_cc = live_to, live_cc
+            else:
+                book = self._book_covers.get(key, BookCover())
+                pack_to, pack_cc = cover_recipients(pack, key)
+            chosen = pick_cover_fields(
+                book=book,
+                pack_to=pack_to,
+                pack_cc=pack_cc,
+                pack_project=self._text_value(self.project_box),
+                pep=pep,
+                kind=key,
+                field_to=self._field_default_lines()[0],
+                field_cc=self._field_default_lines()[1],
+                shop_to=self._shop_default_lines()[0],
+                shop_cc=self._shop_default_lines()[1],
+            )
+            to_line = self._with_permanent(key, "to", chosen.to_line, pack)
+            if key == "client":
+                cc_line = chosen.cc_line
+            else:
+                kind_parts[key] = self._kind_cc_parts(key, pep, pack)
+                cc_line = compose_cc(
+                    kind_parts[key]["permanent"],
+                    kind_parts[key]["additional"],
+                )
+            covers[key] = (to_line, cc_line)
+        urgent = "URGENT" if self.board.return_urgency() else "Not urgent"
+        TransmittalEditor(
+            self,
+            formats=self._editor_wording(pack),
+            covers=covers,
+            project=self._text_value(self.project_box),
+            job_fields={key: self._job_field(key) for key in ("client", "location", "tag", "po", "wo", "moc")},
+            detected=f"Job {self._job_number or 'not loaded'}. {urgent}. The transmittal number is assigned when you create it.",
+            issued=issued,
+            client_cc=self._client_cc_parts(pep, pack),
+            kind_cc=kind_parts,
+            on_save=self._apply_transmittal_edit,
+            on_read_pep=self._pep_editor_values,
+        )
+
+    def _editor_wording(self, pack: ClientPack | None) -> dict[str, tuple[str, str]]:
+        """Job wording when this pack saved a difference. Otherwise the Settings wording."""
+        overrides = pack.mail_overrides if pack is not None else {}
+        out: dict[str, tuple[str, str]] = {}
+        for key, _title in MAIL_KIND_LABELS:
+            pair = overrides.get(key)
+            if pair and (pair[0].strip() or pair[1].strip()):
+                mother_subject, mother_body = mother_wording(key)
+                out[key] = (pair[0].strip() or mother_subject, pair[1].strip() or mother_body)
+            else:
+                out[key] = mother_wording(key)
+        return out
+
+    def _pep_editor_values(self) -> dict[str, str] | None:
+        pep = self._pep_cover
+        if pep is None and self._pep_path is not None and self._pep_path.is_file():
+            try:
+                pep = load_pep(self._pep_path)
+            except PepError as exc:
+                messagebox.showinfo("Read from PEP", str(exc))
+                return None
+            self._pep_cover = pep
+        if pep is None:
+            messagebox.showinfo("Read from PEP", "Locate a PEP first.")
+            return None
+        wo, moc = split_wo_moc(pep.wo)
+        return {
+            "client": value_or_na(pep.client),
+            "location": value_or_na(pep.site),
+            "tag": value_or_na(pep.tank_tag),
+            "po": value_or_na(pep.po),
+            "wo": value_or_na(wo),
+            "moc": value_or_na(moc),
+            "project": value_or_na(pep.project_description),
+            "to": pep.to_line,
+            "engineering": pep.engineer_line,
+            "pm": pep.pm_line,
+            "pep": pep.pep_cc,
+        }
+
+    def _apply_transmittal_edit(
+        self,
+        formats: dict[str, tuple[str, str]],
+        covers: dict[str, tuple[str, str]],
+        project: str,
+        fields: dict[str, str],
+        client_cc: dict[str, str] | None = None,
+        kind_cc: dict[str, dict[str, str]] | None = None,
+    ) -> None:
+        self._cover_loading = True
+        try:
+            self._set_job_fields(
+                value_or_na(fields.get("client", "")),
+                value_or_na(fields.get("location", "")),
+                value_or_na(fields.get("tag", "")),
+                value_or_na(fields.get("po", "")),
+                value_or_na(fields.get("wo", "")),
+                value_or_na(fields.get("moc", "")),
+            )
+            self._set_text(self.project_box, value_or_na(project))
+            current = self.kind.get()
+            if current in covers:
+                self._set_text(self.to_box, covers[current][0])
+                self._set_text(self.cc_box, covers[current][1])
+        finally:
+            self._cover_loading = False
+        if self._job_folder is None:
+            messagebox.showinfo(
+                "Transmittal Editor",
+                "Load a job to keep a wording or CC change for this pack. "
+                "Settings saves the wording and permanent CC for every job.",
+            )
+            return
+        overrides: dict[str, tuple[str, str]] = {}
+        for key, (subject, body) in formats.items():
+            pair = job_mail_override(key, subject, body)
+            if pair is not None:
+                overrides[key] = pair
+        central_permanent = permanent_line("client", "cc")
+        job_permanent = email_line((client_cc or {}).get("permanent", ""))
+        permanent_saved = bool(client_cc) and job_permanent != central_permanent
+        kept: dict[str, dict[str, str]] = {}
+        for key, (to_line, cc_line) in covers.items():
+            slot: dict[str, str] = {}
+            kept_to = self._kept_permanent(permanent_line(key, "to"), to_line)
+            if kept_to is not None:
+                slot["to"] = kept_to
+            if key == "client":
+                if permanent_saved:
+                    slot["cc"] = job_permanent
+            else:
+                typed_perm = email_line((kind_cc or {}).get(key, {}).get("permanent", ""))
+                if typed_perm != email_line(permanent_line(key, "cc")):
+                    slot["cc"] = typed_perm
+            if slot:
+                kept[key] = slot
+        default_additional = elite_addresses(
+            compose_cc(
+                (client_cc or {}).get("permanent", ""),
+                (client_cc or {}).get("engineering", ""),
+                (client_cc or {}).get("pm", ""),
+                (client_cc or {}).get("pep", ""),
+                (client_cc or {}).get("additional", ""),
+            )
+        )
+        kept_additional = {
+            key: email_line(slots.get("additional", ""))
+            for key, slots in (kind_cc or {}).items()
+            if email_line(slots.get("additional", "")) != default_additional
+        }
+        pack = self._pack_from_console()
+        for key, (to_line, cc_line) in covers.items():
+            pack = with_cover_recipients(pack, key, to_line, cc_line)
+        pack = replace(
+            pack,
+            mail_overrides=overrides,
+            cc_permanent=job_permanent if permanent_saved else "",
+            cc_permanent_saved=permanent_saved,
+            permanent_overrides=kept,
+            kind_cc_additional=kept_additional,
+        )
+        if client_cc:
+            pack = replace(
+                pack,
+                cc_engineer=client_cc.get("engineering", ""),
+                cc_pm=client_cc.get("pm", ""),
+                cc_pep=client_cc.get("pep", ""),
+                cc_additional=client_cc.get("additional", ""),
+                cc_parts_saved=True,
+            )
+        try:
+            save_client_pack(self._job_folder, pack)
+        except OSError as exc:
+            messagebox.showerror("Transmittal Editor", str(exc))
+            return
+        self._cover_stamp = self._cover_text_now()
+        self._set_status("Transmittal editor saved.")
+
     def _locate_pep(self) -> None:
         job = self._current_job()
         if not job:
@@ -1731,6 +2482,7 @@ class DocConApp(tk.Tk):
             self._create_focus_key = ""
         self._load_gen += 1
         gen = self._load_gen
+        self._nearby_jobs: tuple[str, ...] = ()
         self._busy = True
         self._work = "load"
         self._job_number = job
@@ -1809,8 +2561,12 @@ class DocConApp(tk.Tk):
                             )
                         except (JiraError, OSError, ValueError, TypeError):
                             eddi_contexts = {}
-                except (JiraError, OSError, ValueError, TypeError) as exc:
+                except JiraError as exc:
                     error = str(exc)
+                    self._nearby_jobs = tuple(getattr(exc, "related", ()) or ())
+                except (OSError, ValueError, TypeError) as exc:
+                    error = str(exc)
+                    self._nearby_jobs = ()
 
             def folder_work() -> None:
                 nonlocal folder, folder_label
@@ -2065,9 +2821,10 @@ class DocConApp(tk.Tk):
         )
         self._cover_loading = True
         try:
-            self._set_text(self.to_box, email_line(chosen.to_line))
-            self._set_text(self.cc_box, email_line(chosen.cc_line))
+            self._set_text(self.to_box, email_line(self._with_permanent(kind, "to", chosen.to_line, pack)))
+            self._set_text(self.cc_box, self._cover_cc(kind, chosen.cc_line, pep, pack))
             self._set_text(self.project_box, chosen.project_description)
+            self._set_job_fields_from(pep, pack)
         finally:
             self._cover_loading = False
         self._cover_stamp = self._cover_text_now()
@@ -2122,6 +2879,44 @@ class DocConApp(tk.Tk):
         if self._load_meter.winfo_manager():
             self._progress.set_determinate(self._load_shown, 100)
 
+    def _post_confirm(self, gen: int, pct: int, cap: int, caption: str) -> None:
+        """Worker threads store a Create transmittal step. The pump moves the button."""
+        self._confirm_mark = (gen, int(pct), int(cap), caption)
+
+    def _mark_confirm(self, pct: int, cap: int, caption: str) -> None:
+        """Move the Create transmittal button forward. A later step never pulls the percent back."""
+        pct = max(0, min(100, int(pct)))
+        cap = max(0, min(100, int(cap)))
+        if pct >= self._confirm_shown:
+            self._confirm_shown = pct
+            if caption:
+                self._confirm_caption = caption
+        if cap > self._confirm_cap:
+            self._confirm_cap = cap
+        if self._confirm_cap < self._confirm_shown:
+            self._confirm_cap = self._confirm_shown
+        self.send_btn.set_progress(self._confirm_shown, self._confirm_caption)
+        if caption:
+            self._set_status(caption)
+
+    def _creep_confirm(self) -> None:
+        if self._work != "confirm" or self._confirm_shown >= self._confirm_cap:
+            return
+        now = time.monotonic()
+        if now - self._confirm_creep < LOAD_CREEP_S:
+            return
+        self._confirm_creep = now
+        self._confirm_shown += 1
+        self.send_btn.set_progress(self._confirm_shown, self._confirm_caption)
+
+    def _finish_confirm_button(self) -> None:
+        if hasattr(self, "send_btn"):
+            self.send_btn.finish()
+        self._confirm_shown = 0
+        self._confirm_cap = 0
+        self._confirm_caption = ""
+        self._confirm_mark = None
+
     def _pump_load_ui(self) -> None:
         self._load_pump = ""
         note = self._load_note
@@ -2136,12 +2931,20 @@ class DocConApp(tk.Tk):
                 self._load_mark = None
             if gen == self._load_gen:
                 self._mark_load(pct, cap, caption)
+        mark = self._confirm_mark
+        if mark is not None:
+            gen, pct, cap, caption = mark
+            if self._confirm_mark is mark:
+                self._confirm_mark = None
+            if gen == self._confirm_gen and self._work == "confirm":
+                self._mark_confirm(pct, cap, caption)
         self._creep_load()
+        self._creep_confirm()
         pending = self._pending_rows
         if pending is not None:
             self._pending_rows = None
             self._show_rows(*pending)
-        if self._work == "load" or self._progress.mode() != "idle":
+        if self._work in {"load", "confirm"} or self._progress.mode() != "idle":
             with contextlib.suppress(tk.TclError, RuntimeError):
                 self._load_pump = self.after(80, self._pump_load_ui)
 
@@ -2181,6 +2984,43 @@ class DocConApp(tk.Tk):
         self._load_caption = ""
         self._load_mark = None
 
+    def _offer_nearby_jobs(self, typed: str, jobs: tuple[str, ...]) -> None:
+        """2026-070 is missing, but 2026-070-1 (and others) are on Jira."""
+        dialog = tk.Toplevel(self)
+        dialog.withdraw()
+        dialog.title("Job Number")
+        dialog.transient(self)
+        dialog.resizable(False, False)
+        apply_theme(dialog)
+        ttk.Label(
+            dialog,
+            text=f"{typed} was not found on Jira. These job numbers are:",
+            wraplength=420,
+        ).pack(anchor="w", padx=12, pady=(12, 8))
+        box = tk.Listbox(dialog, height=min(8, len(jobs)), width=42, exportselection=False)
+        for item in jobs:
+            box.insert("end", item)
+        box.selection_set(0)
+        box.pack(fill="x", padx=12)
+        actions = ttk.Frame(dialog)
+        actions.pack(fill="x", padx=12, pady=12)
+
+        def use(_event: tk.Event | None = None) -> None:
+            picked = ""
+            if box.curselection():
+                picked = str(box.get(box.curselection()[0])).strip()
+            dialog.destroy()
+            if not picked:
+                return
+            self.job.delete(0, "end")
+            self.job.insert(0, picked)
+            self._load()
+
+        box.bind("<Double-Button-1>", use)
+        ttk.Button(actions, text="Cancel", command=dialog.destroy).pack(side="right")
+        ttk.Button(actions, text="Load", style="Accent.TButton", command=use).pack(side="right", padx=(0, 8))
+        reveal_on_parent(dialog)
+
     def _show_rows(
         self,
         gen: int,
@@ -2215,6 +3055,11 @@ class DocConApp(tk.Tk):
             self._set_new_issue_enabled(False)
             self._stop_progress()
             self._set_status("Load failed.")
+            nearby = tuple(getattr(self, "_nearby_jobs", ()) or ())
+            self._nearby_jobs = ()
+            if nearby:
+                self._offer_nearby_jobs(job, nearby)
+                return
             messagebox.showerror("Jira", error)
             return
         if self._resolve_eddi_conflicts([row.drawing for row in matched]):
@@ -2565,7 +3410,7 @@ class DocConApp(tk.Tk):
             messagebox.showinfo("EDDI", "Load a job first.")
             return
         if cover_date_is_na(self.issued.get()):
-            messagebox.showinfo("EDDI", "Pick a Date issued.")
+            messagebox.showinfo("EDDI", "Pick a Submission Date.")
             return
         try:
             issued = parse_issued_date(self.issued.get())
@@ -2746,7 +3591,7 @@ class DocConApp(tk.Tk):
             messagebox.showerror(label, str(exc))
             return
         if cover_date_is_na(self.issued.get()):
-            messagebox.showinfo(label, "Pick a Date issued.")
+            messagebox.showinfo(label, "Pick a Submission Date.")
             return
         try:
             issued = parse_issued_date(self.issued.get())
@@ -2783,8 +3628,9 @@ class DocConApp(tk.Tk):
             extra += f"\n{missing} packed drawing(s) have no PDF and will not be attached."
         extra += self._jira_change_note(jira_rows, packed=True)
         expected_label = expected.isoformat() if isinstance(expected, date) else expected
-        wording = load_mail_formats().get(mail_kind_key(kind), ("", ""))
-        subject = draft_subject(info.cover_id, info.job_number, template=wording[0])
+        wording = self._effective_wording(kind)
+        facts = self._mail_facts(rows, kind)
+        subject = draft_subject(info.cover_id, info.job_number, template=wording[0], facts=facts)
         cover_pdf = f"{info.cover_id}.pdf"
         shop_root: Path | None = None
         shop_copies: list[tuple[Path, str]] = []
@@ -2848,7 +3694,21 @@ class DocConApp(tk.Tk):
         self._work = "confirm"
         self._job_number = job
         self._job_folder = folder
-        self._set_status(f"Confirming {info.cover_id}…")
+        self._confirm_gen += 1
+        confirm_gen = self._confirm_gen
+        self._confirm_shown = 0
+        self._confirm_cap = 0
+        self._confirm_caption = ""
+        self._confirm_mark = None
+        self._confirm_creep = time.monotonic()
+        self.send_btn.start("Checking the pack")
+        self._mark_confirm(4, 16, "Checking the pack")
+        self._pump_load_ui()
+
+        def on_confirm_step(name: str) -> None:
+            step = CONFIRM_STEPS.get(name)
+            if step is not None:
+                self._post_confirm(confirm_gen, step[0], step[1], step[2])
 
         def work() -> None:
             error: str | None = None
@@ -2879,6 +3739,10 @@ class DocConApp(tk.Tk):
                     extra_pdfs=extra_pdfs,
                     shop_root=shop_root,
                     shop_copies=shop_copies,
+                    on_step=on_confirm_step,
+                    mail=facts,
+                    mail_subject=wording[0],
+                    mail_body=wording[1],
                 )
                 cover_id = result.cover_id
                 saved_attach = result.attach_note
@@ -2915,6 +3779,7 @@ class DocConApp(tk.Tk):
     ) -> None:
         self._busy = False
         self._work = ""
+        self._finish_confirm_button()
         self._job_folder = folder
         self._job_number = job
         if jira_ok and jira_rows:
@@ -3526,7 +4391,7 @@ class DocConApp(tk.Tk):
             self.board.set_shop_folders(())
             return
         if not self.shop_locate_btn.winfo_ismapped():
-            self.shop_locate_btn.pack(side="left", padx=(8, 0), before=self.send_btn)
+            self.shop_locate_btn.pack(side="left", padx=(8, 0), before=self.send_btn.shell)
         remembered = remembered_shop_folder(self._job_number)
         found = find_shop_ifc_folder(self._job_number, self._job_folder, remembered)
         self._shop_root = found

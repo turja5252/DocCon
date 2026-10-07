@@ -25,6 +25,7 @@ ALLOWED_KEYS = (
     "field_cc",
     "shop_to",
     "shop_cc",
+    "cc_permanent",
     "last_locate_dir",
     "board_col_px",
     "board_col_names",
@@ -46,6 +47,7 @@ class AppSettings:
     field_cc: tuple[str, ...] = ()
     shop_to: tuple[str, ...] = ()
     shop_cc: tuple[str, ...] = ()
+    cc_permanent: tuple[str, ...] = ()
     last_locate_dir: str = ""
     board_col_px: tuple[int, ...] = ()
     board_col_names: tuple[str, ...] = ()
@@ -81,6 +83,7 @@ def load_settings() -> AppSettings:
         field_cc=normalize_saved_emails(raw.get("field_cc")),
         shop_to=normalize_saved_emails(raw.get("shop_to")),
         shop_cc=normalize_saved_emails(raw.get("shop_cc")),
+        cc_permanent=normalize_saved_emails(raw.get("cc_permanent")),
         last_locate_dir=str(raw.get("last_locate_dir") or "").strip(),
         board_col_px=_board_col_px(raw.get("board_col_px")),
         board_col_names=_board_col_names(raw.get("board_col_names")),
@@ -106,6 +109,7 @@ def save_settings(settings: AppSettings) -> None:
         "field_cc": list(normalize_saved_emails(settings.field_cc)),
         "shop_to": list(normalize_saved_emails(settings.shop_to)),
         "shop_cc": list(normalize_saved_emails(settings.shop_cc)),
+        "cc_permanent": list(normalize_saved_emails(settings.cc_permanent)),
         "last_locate_dir": settings.last_locate_dir.strip(),
         "board_col_px": list(settings.board_col_px),
         "board_col_names": list(settings.board_col_names),

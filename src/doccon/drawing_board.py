@@ -166,6 +166,8 @@ FIELD_KEYS = (
     ("eddi_status", "EDDI Status", EDDI_VALUES, 28, "eddi"),
 )
 
+# Each drawing has its own client number, so the batch row does not stamp it.
+BATCH_SKIP_FIELDS = frozenset({"client_document_number"})
 # Pick from the list only (same as Status). Outgoing / Incoming Rev stay typeable after double-click.
 PICK_ONLY_FIELDS = frozenset(
     {
@@ -697,6 +699,9 @@ class DrawingBoard(ttk.Frame):
         self._freeze_vlines: list[tk.Frame] = []
         self._group_headers: list[tuple[str, ttk.Label]] = []
         self._group_frozen: list[ttk.Label] = []
+        self._group_pack_marks: list[PackMark] = []
+        self._group_pack: dict[str, tk.BooleanVar] = {}
+        self._group_pack_guard = False
         self._drag_col: int | None = None
         self._drag_start_x = 0
         self._drag_start_w = 0
@@ -711,6 +716,7 @@ class DrawingBoard(ttk.Frame):
         self._extras_painted = False
         self._shop_choices: tuple[str, ...] = ()
         self._packed_only = tk.BooleanVar(value=False)
+        self._pack_all_options = False
         self._pack_filter_after = ""
         self._drop_hover_key = ""
 
@@ -737,27 +743,12 @@ class DrawingBoard(ttk.Frame):
         ttk.Button(self._find_bar, text="Cancel Next", style="Danger.TButton", command=self._cancel_next).pack(
             side="left", padx=(0, 8)
         )
-        ttk.Label(self._find_bar, text="Set packed to").pack(side="left")
-        self._pack_status = ttk.Combobox(
-            self._find_bar, width=22, values=("",) + DRAWING_STATUSES, state="readonly"
-        )
-        self._pack_status.pack(side="left", padx=(4, 8))
-        self._pack_status.bind("<<ComboboxSelected>>", self._on_pack_status_change)
-        self._quiet_dropdown(self._pack_status)
         self._pack_purpose_kind = CLIENT
         self._pack_purpose_field = "purpose"
+        self._return_urgency = ""
+        self._return_urgency_hold = False
         self._stamp_submission = True
         self._batch_visible: set[str] = set()
-        self._pack_purpose_label = ttk.Label(self._find_bar, text="Submitted to Client For")
-        self._pack_purpose_label.pack(side="left")
-        self._pack_purpose = ttk.Combobox(
-            self._find_bar, width=16, values=PURPOSE_VALUES, state="readonly"
-        )
-        self._pack_purpose.pack(side="left", padx=(4, 8))
-        self._pack_purpose.bind("<<ComboboxSelected>>", self._on_pack_purpose_change)
-        self._quiet_dropdown(self._pack_purpose)
-        self._batch_toggle = ttk.Button(self._find_bar, text="Batch Next…", command=self._toggle_batch)
-        self._batch_toggle.pack(side="left")
         self._incoming_row = ttk.Frame(self)
         self._incoming_loading = False
         self._incoming_armed = {"return_date": "", "incoming_rev": "", "approval": ""}
@@ -815,13 +806,12 @@ class DrawingBoard(ttk.Frame):
         top.pack(fill="x")
         actions = ttk.Frame(top)
         actions.pack(side="left", fill="y")
-        ttk.Button(actions, text="Apply to Pack", style="Accent.TButton", command=self._apply_batch).pack(
-            side="left", padx=(0, 8)
-        )
-        ttk.Label(actions, text="Status").pack(side="left")
+        ttk.Label(actions, text="Jira Status").pack(side="left")
         self._batch_status = ttk.Combobox(actions, width=18, values=("",) + DRAWING_STATUSES, state="readonly")
         self._batch_status.pack(side="left", padx=(2, 8))
         self._quiet_dropdown(self._batch_status)
+        self._pack_status = self._batch_status
+        self._batch_status.bind("<<ComboboxSelected>>", self._on_pack_status_change)
 
         fields_host = ttk.Frame(top)
         fields_host.pack(side="left", fill="x", expand=True)
@@ -836,20 +826,34 @@ class DrawingBoard(ttk.Frame):
         self._batch_labels: dict[str, ttk.Label] = {}
         self._batch_armed: dict[str, str] = {}
         for field, title, values, width, kind in FIELD_KEYS:
+            if field in BATCH_SKIP_FIELDS:
+                continue
             label = ttk.Label(batch_inner, text=title)
             label.pack(side="left")
             self._batch_labels[field] = label
             box_width = max(8, width - 2)
-            if kind in {"text", "date"}:
+            if kind == "text":
                 box: NextWidget = NextEntry(batch_inner, width=box_width)
-                box.pack(side="left", padx=(2, 0) if kind == "date" else (2, 8))
-                if kind == "date":
-                    attach_calendar(
-                        box,
-                        parent=self,
-                        on_change=lambda name=field: self._commit_batch_field(name),
-                        allow_na=(field == "return_request_date"),
+                box.pack(side="left", padx=(2, 8))
+            elif kind == "date":
+                presets = ()
+                if field == "return_request_date":
+                    presets = (
+                        ("Urgent same day", lambda: self._preset_return_request(0)),
+                        ("Urgent +1", lambda: self._preset_return_request(1)),
+                        ("7 days", lambda: self._preset_return_request(7)),
+                        ("14 days", lambda: self._preset_return_request(14)),
+                        ("No return", self._preset_no_return),
                     )
+                box = NextEntry(batch_inner, width=box_width)
+                box.pack(side="left", padx=(2, 0))
+                attach_calendar(
+                    box,
+                    parent=self,
+                    on_change=lambda name=field: self._commit_batch_field(name),
+                    allow_na=(field == "return_request_date"),
+                    presets=presets,
+                )
             else:
                 pick = field in PICK_ONLY_FIELDS
                 box = ttk.Combobox(
@@ -871,6 +875,7 @@ class DrawingBoard(ttk.Frame):
             batch_canvas.itemconfigure(batch_win, height=max(batch_inner.winfo_reqheight(), 28))
 
         batch_inner.bind("<Configure>", _batch_sync)
+        self._set_batch_open(True)
 
         table = ttk.Frame(self)
         table.pack(fill="both", expand=True)
@@ -903,8 +908,8 @@ class DrawingBoard(ttk.Frame):
         self._freeze_inner.bind("<Configure>", lambda _event: self._schedule_frozen_row_sync())
         self._canvas.bind("<Configure>", lambda event: self._sync_scroll(event.width))
         self._header_canvas.bind("<Configure>", lambda event: self._sync_scroll(event.width))
-        self.bind("<Enter>", lambda _event: self._canvas.bind_all("<MouseWheel>", self._wheel))
-        self.bind("<Leave>", lambda _event: self._canvas.unbind_all("<MouseWheel>"))
+        self._wheel_bind = self.bind_all("<MouseWheel>", self._wheel_list, add="+")
+        self.bind("<Destroy>", self._drop_wheel, add="+")
         self.bind_all("<Button-1>", self._on_global_press, add="+")
         self.bind_all("<Return>", self._on_global_return, add="+")
         self.bind_all("<KP_Enter>", self._on_global_return, add="+")
@@ -1092,12 +1097,16 @@ class DrawingBoard(ttk.Frame):
                 tracked.add(id(widget))
                 if block.shown:
                     shown.add(id(widget))
-        for (group, label), freeze in zip(self._group_headers, self._group_frozen, strict=True):
+        for (group, label), freeze, mark in zip(
+            self._group_headers, self._group_frozen, self._group_pack_marks, strict=True
+        ):
             tracked.add(id(label))
             tracked.add(id(freeze))
+            tracked.add(id(mark))
             if group in visible_groups:
                 shown.add(id(label))
                 shown.add(id(freeze))
+                shown.add(id(mark))
         return tracked, shown
 
     def _row_needed_height(
@@ -1284,6 +1293,33 @@ class DrawingBoard(ttk.Frame):
             self._pin_frozen()
         finally:
             self._syncing = False
+
+    def _pointer_inside(self, host: tk.Misc) -> bool:
+        try:
+            widget = self.winfo_containing(*self.winfo_pointerxy())
+        except tk.TclError:
+            return False
+        while widget is not None:
+            if widget is host:
+                return True
+            widget = getattr(widget, "master", None)
+        return False
+
+    def _wheel_list(self, event: tk.Event) -> str | None:
+        """The wheel scrolls the drawing list, and only while the pointer is on that list."""
+        if not self.winfo_exists() or not self._pointer_inside(self._canvas):
+            return None
+        self._wheel(event)
+        return "break"
+
+    def _drop_wheel(self, event: tk.Event) -> None:
+        if event.widget is not self:
+            return
+        binding = getattr(self, "_wheel_bind", "")
+        if binding:
+            with contextlib.suppress(tk.TclError):
+                self.unbind_all("<MouseWheel>", binding)
+            self._wheel_bind = ""
 
     def _wheel(self, event: tk.Event) -> None:
         steps = int(-event.delta / 120)
@@ -1594,7 +1630,7 @@ class DrawingBoard(ttk.Frame):
         for block in self._blocks.values():
             if token not in block.edit_ids:
                 continue
-            return not block.include.get() and not block.extra
+            return not self._next_options_open(block)
         return False
 
     def _choose_columns(self) -> None:
@@ -2072,6 +2108,7 @@ class DrawingBoard(ttk.Frame):
         if bool(self._packed_only.get()) != wanted:
             self._packed_only.set(wanted)
         self._style_packed_only()
+        self._apply_next_option_rows()
         if refresh:
             self._refresh_filter()
 
@@ -2094,17 +2131,42 @@ class DrawingBoard(ttk.Frame):
     def _cover_stamp_date(self) -> str:
         return self._cover_field_date("return_request_date")
 
+    def _next_options_open(self, block: _Block) -> bool:
+        """The Next line is the slow part. Open it for Pack all, or while Packed only is on."""
+        if block.extra:
+            return True
+        if not block.include.get():
+            return False
+        return bool(self._packed_only.get()) or self._pack_all_options
+
+    def _apply_next_option_rows(self) -> None:
+        if not self._blocks:
+            return
+        self._suspend_layout = True
+        try:
+            for block in list(self._blocks.values()):
+                if block.extra:
+                    continue
+                self._set_edit_row_open(block, self._next_options_open(block))
+        finally:
+            self._suspend_layout = False
+        if not self._suspend_layout:
+            self._frozen_passes = 0
+            self._schedule_frozen_row_sync()
+
     def _on_pack_tick(self, key: str = "") -> None:
         if key:
             block = self._blocks.get(key)
             if block is not None and not block.extra:
                 if block.include.get():
                     self._stamp_pack_tick(key)
-                    fresh = self._blocks.get(key)
-                    if fresh is not None:
-                        self._set_edit_row_open(fresh, True)
-                else:
-                    self._set_edit_row_open(block, False)
+                fresh = self._blocks.get(key)
+                target = fresh if fresh is not None else block
+                self._set_edit_row_open(target, self._next_options_open(target))
+        if key:
+            block = self._blocks.get(key)
+            if block is not None:
+                self._sync_group_pack(block.group)
         self._notify_draft()
         if not bool(self._packed_only.get()) or self._suspend_layout:
             return
@@ -2217,20 +2279,24 @@ class DrawingBoard(ttk.Frame):
                 block.shown = show
                 for widget in block.widgets:
                     try:
-                        if show and (id(widget) not in block.edit_ids or block.include.get() or block.extra):
+                        if show and (id(widget) not in block.edit_ids or self._next_options_open(block)):
                             widget.grid()
                         else:
                             widget.grid_remove()
                     except tk.TclError:
                         continue
-            for (group, label), freeze in zip(self._group_headers, self._group_frozen, strict=True):
+            for (group, label), freeze, mark in zip(
+                self._group_headers, self._group_frozen, self._group_pack_marks, strict=True
+            ):
                 try:
                     if group in visible_groups:
                         label.grid()
                         freeze.grid()
+                        mark.grid()
                     else:
                         label.grid_remove()
                         freeze.grid_remove()
+                        mark.grid_remove()
                 except tk.TclError:
                     continue
         finally:
@@ -2357,6 +2423,9 @@ class DrawingBoard(ttk.Frame):
         self._freeze_vlines.clear()
         self._group_headers.clear()
         self._group_frozen.clear()
+        self._group_pack_marks.clear()
+        self._group_pack.clear()
+        self._pack_all_options = False
         # A repaint drops the band with the blocks it was painted on: no stale focused row.
         self._focus_key = ""
         self._focus_painted = ""
@@ -2391,11 +2460,13 @@ class DrawingBoard(ttk.Frame):
         self._schedule_paint()
 
     def _begin_rows(self, rows: list[MatchedRow], *, checked: set[str] | None = None) -> None:
-        self._set_batch_open(False)
         self._pack_status_loading = True
         self._pack_purpose_loading = True
+        self._return_urgency = ""
         self._pack_status.set("")
-        self._pack_purpose.set("")
+        box = self._purpose_box()
+        if box is not None:
+            box.set("")
         self._editor_count = 0
         self.clear()
         self._suspend_layout = True
@@ -2462,6 +2533,7 @@ class DrawingBoard(ttk.Frame):
         done = self._paint_on_done
         self._paint_on_progress = None
         self._paint_on_done = None
+        self._sync_all_group_packs()
         if done is not None:
             done()
         self._schedule_mount()
@@ -2540,17 +2612,63 @@ class DrawingBoard(ttk.Frame):
             padx=2,
             pady=(8, 2),
         )
+        pack_var = tk.BooleanVar(value=False)
+        mark = PackMark(self._freeze_inner, pack_var)
+        mark._doccon_logical = PACK_COL_INDEX
+        mark.grid(row=grid_row, column=0, sticky="w", padx=(4, 2), pady=(8, 2))
         freeze = ttk.Label(self._freeze_inner, text=title, style="Group.TLabel", width=1, anchor="w")
         freeze.grid(
             row=grid_row,
-            column=0,
-            columnspan=FROZEN_COLS,
+            column=1,
+            columnspan=max(FROZEN_COLS - 1, 1),
             sticky="ew",
             padx=2,
             pady=(8, 2),
         )
         self._group_headers.append((title, label))
         self._group_frozen.append(freeze)
+        self._group_pack_marks.append(mark)
+        self._group_pack[title] = pack_var
+        pack_var.trace_add("write", lambda *_args, group=title: self._on_group_pack(group))
+
+    def _on_group_pack(self, group: str) -> None:
+        """Pack or unpack every drawing under this EDDI header."""
+        if self._group_pack_guard:
+            return
+        var = self._group_pack.get(group)
+        if var is None:
+            return
+        want = bool(var.get())
+        self._group_pack_guard = True
+        try:
+            for block in self._blocks.values():
+                if block.group == group and bool(block.include.get()) != want:
+                    block.include.set(want)
+        finally:
+            self._group_pack_guard = False
+
+    def _sync_group_pack(self, group: str) -> None:
+        """Header stays ticked only while every row in that group is packed."""
+        if self._group_pack_guard:
+            return
+        var = self._group_pack.get(group)
+        if var is None:
+            return
+        members = [block for block in self._blocks.values() if block.group == group]
+        if not members:
+            return
+        all_on = all(bool(block.include.get()) for block in members)
+        if bool(var.get()) == all_on:
+            return
+        self._group_pack_guard = True
+        try:
+            var.set(all_on)
+        finally:
+            self._group_pack_guard = False
+
+    def _sync_all_group_packs(self) -> None:
+        for group in list(self._group_pack):
+            self._sync_group_pack(group)
 
     def _hline(self, grid_row: int) -> tuple[tk.Frame, tk.Frame]:
         rest = tk.Frame(
@@ -3004,8 +3122,8 @@ class DrawingBoard(ttk.Frame):
         )
         pack.trace_add("write", lambda *_args, drawing_key=drawing.key: self._on_pack_tick(drawing_key))
         self._watch_next(self._blocks[drawing.key])
-        if not include:
-            self._set_edit_row_open(self._blocks[drawing.key], False)
+        if not include or not self._next_options_open(self._blocks[drawing.key]):
+            self._set_edit_row_open(self._blocks[drawing.key], self._next_options_open(self._blocks[drawing.key]))
         self._style_pdf_rename(self._blocks[drawing.key], row)
         if drawing.key == self._focus_key:
             self._focus_painted = drawing.key
@@ -3097,6 +3215,7 @@ class DrawingBoard(ttk.Frame):
         finally:
             self._suspend_layout = False
         self._extras_painted = True
+        self._sync_all_group_packs()
         self._refresh_filter()
         self._sync_scroll()
 
@@ -3110,17 +3229,24 @@ class DrawingBoard(ttk.Frame):
             del self._blocks[key]
         headers: list[tuple[str, ttk.Label]] = []
         frozen: list[ttk.Label] = []
-        for pair, freeze in zip(self._group_headers, self._group_frozen, strict=True):
+        marks: list[PackMark] = []
+        for pair, freeze, mark in zip(
+            self._group_headers, self._group_frozen, self._group_pack_marks, strict=True
+        ):
             group, label = pair
             if group == NON_JIRA_GROUP:
                 with contextlib.suppress(tk.TclError):
                     label.destroy()
                     freeze.destroy()
+                    mark.destroy()
+                self._group_pack.pop(group, None)
                 continue
             headers.append(pair)
             frozen.append(freeze)
+            marks.append(mark)
         self._group_headers = headers
         self._group_frozen = frozen
+        self._group_pack_marks = marks
 
     def _paint_extra_blocks(self, items: list[PackExtra], statuses: tuple[str, ...]) -> None:
         grid = self._jira_grid_end
@@ -3299,11 +3425,20 @@ class DrawingBoard(ttk.Frame):
         return cell, label
 
     def set_pack(self, checked: bool) -> None:
+        """Pack all opens the Next lines. Pack none closes them. A single tick does not."""
+        self._pack_all_options = bool(checked)
         filtering = bool(self._filter_needle.strip())
-        for block in self._blocks.values():
-            if filtering and not self._block_matches(block):
-                continue
-            block.include.set(checked)
+        self._suspend_layout = True
+        try:
+            for block in self._blocks.values():
+                if filtering and not self._block_matches(block):
+                    continue
+                block.include.set(checked)
+        finally:
+            self._suspend_layout = False
+        self._apply_next_option_rows()
+        if self.packed_only():
+            self._refresh_filter()
 
     def _list_value_allowed(self, block: _Block, field: str, value: str) -> bool:
         if field not in PICK_ONLY_FIELDS:
@@ -3321,7 +3456,7 @@ class DrawingBoard(ttk.Frame):
     def _apply_next_to_block(
         self, block: _Block, *, status: str = "", fields: dict[str, str] | None = None
     ) -> None:
-        """Set Next on one row (same dirty/yellow path as Apply to Pack). Does not write Jira.
+        """Set Next on one row (same dirty/yellow path as a batch pick). Does not write Jira.
 
         Does not move the focused row: a batch stamp, a cover-date pack tick, and a Load
         restore are not the operator pointing at a drawing, and `explicit_focus_key` is
@@ -3569,36 +3704,23 @@ class DrawingBoard(ttk.Frame):
         incoming = token == INCOMING
         was_incoming = not self._stamp_submission
         self._stamp_submission = not incoming
-        self._show_pack_purpose(not incoming)
         self._show_batch_fields(None)
-        self._show_incoming_row(incoming)
+        self._show_incoming_row(False)
         if incoming:
             self.restore_packed_next_field("submission_date")
             self._pack_purpose_kind = INCOMING
             self._pack_purpose_field = ""
-            self._pack_purpose_loading = True
-            try:
-                self._pack_purpose.set("")
-            finally:
-                self._pack_purpose_loading = False
             return
         if was_incoming:
             self.apply_cover_date_change(
                 "submission_date", self._cover_field_date("submission_date")
             )
         spec = PACK_PURPOSE.get(token, PACK_PURPOSE[CLIENT])
-        field, title, values = spec
+        field = spec[0]
         if field == self._pack_purpose_field and kind == self._pack_purpose_kind:
             return
         self._pack_purpose_kind = kind if kind in PACK_PURPOSE else CLIENT
         self._pack_purpose_field = field
-        self._pack_purpose_label.configure(text=title)
-        self._pack_purpose_loading = True
-        try:
-            self._pack_purpose.configure(values=values)
-            self._pack_purpose.set("")
-        finally:
-            self._pack_purpose_loading = False
 
     def _batch_anchor(self) -> tk.Misc:
         if self._incoming_row.winfo_manager():
@@ -3698,16 +3820,9 @@ class DrawingBoard(ttk.Frame):
                 self._apply_next_to_block(block, fields={field: value})
 
     def _show_pack_purpose(self, show: bool) -> None:
-        if show:
-            if not self._pack_purpose_label.winfo_manager():
-                self._pack_purpose_label.pack(side="left", before=self._batch_toggle)
-            if not self._pack_purpose.winfo_manager():
-                self._pack_purpose.pack(side="left", padx=(4, 8), before=self._batch_toggle)
-            return
-        if self._pack_purpose_label.winfo_manager():
-            self._pack_purpose_label.pack_forget()
-        if self._pack_purpose.winfo_manager():
-            self._pack_purpose.pack_forget()
+        """Submitted to Client/Shop/Field lives in the batch row only."""
+        del show
+        return
 
     def _show_batch_fields(self, only: tuple[str, ...] | None) -> None:
         """Show every Batch Next field, or only the incoming return fields."""
@@ -3736,17 +3851,28 @@ class DrawingBoard(ttk.Frame):
         return self._pack_purpose_field
 
     def pack_purpose(self) -> str:
+        box = self._purpose_box()
+        if box is None:
+            return ""
         try:
-            return (self._pack_purpose.get() or "").strip()
+            return (box.get() or "").strip()
         except tk.TclError:
             return ""
 
+    def _purpose_box(self) -> ttk.Combobox | NextEntry | None:
+        field = self._pack_purpose_field
+        if not field:
+            return None
+        return self._batch_fields.get(field)
+
     def set_pack_purpose(self, purpose: str, *, stamp: bool = True) -> int:
-        """Set the filter-row Submitted to Client For. stamp writes packed Next."""
+        """Set the batch Submitted-to list for this transmittal. stamp writes packed Next."""
         value = (purpose or "").strip()
+        box = self._purpose_box()
         self._pack_purpose_loading = True
         try:
-            self._pack_purpose.set(value)
+            if box is not None:
+                box.set(value)
         finally:
             if stamp:
                 self._pack_purpose_loading = False
@@ -3763,10 +3889,8 @@ class DrawingBoard(ttk.Frame):
         self._pack_purpose_loading = False
 
     def _pack_purpose_title(self) -> str:
-        try:
-            return str(self._pack_purpose_label.cget("text") or "Submitted to Client For")
-        except tk.TclError:
-            return "Submitted to Client For"
+        spec = PACK_PURPOSE.get(self._pack_purpose_kind, PACK_PURPOSE[CLIENT])
+        return spec[1]
 
     def stamp_purpose_on_keys(
         self, purpose: str, keys: tuple[str, ...], *, field: str = ""
@@ -3900,8 +4024,7 @@ class DrawingBoard(ttk.Frame):
         if not messagebox.askyesno(
             "Cancel Next?",
             f"Throw away Next edits on {pending} drawing(s) and put Now back on every field?\n"
-            "Jira is not written. Pack ticks stay. Date issued goes back to blank. "
-            "Expected return goes back to N/A.",
+            "Jira is not written. Pack ticks stay.",
             parent=self.winfo_toplevel(),
         ):
             return
@@ -3909,18 +4032,64 @@ class DrawingBoard(ttk.Frame):
         self._run_cancel_next_hook()
         self._batch_note.configure(text=f"Cancelled Next on {pending} drawing(s). Jira was not written.")
 
+    def batch_entry(self, field: str) -> NextWidget:
+        box = self._batch_fields.get(field)
+        if box is None:
+            raise KeyError(field)
+        return box
+
+    def batch_value(self, field: str) -> str:
+        box = self._batch_fields.get(field)
+        if box is None:
+            return ""
+        try:
+            return (box.get() or "").strip()
+        except tk.TclError:
+            return ""
+
+    def return_urgency(self) -> str:
+        """same or plus1 when Return Request Date was set from Urgent. Otherwise blank."""
+        return self._return_urgency
+
+    def _preset_return_request(self, days: int) -> None:
+        from doccon.client_log import expected_return_from_issued
+
+        stamp = expected_return_from_issued(self.batch_value("submission_date"), days)
+        box = self._batch_fields.get("return_request_date")
+        if box is None:
+            return
+        self._return_urgency_hold = True
+        try:
+            box.set(stamp)
+            self._batch_armed["return_request_date"] = ""
+            self._commit_batch_field("return_request_date")
+        finally:
+            self._return_urgency_hold = False
+        if days == 0:
+            self._return_urgency = "same"
+        elif days == 1:
+            self._return_urgency = "plus1"
+        else:
+            self._return_urgency = ""
+
+    def _preset_no_return(self) -> None:
+        box = self._batch_fields.get("return_request_date")
+        if box is None:
+            return
+        box.set("N/A")
+        self._batch_armed["return_request_date"] = ""
+        self._return_urgency = ""
+        self._commit_batch_field("return_request_date")
+        self._signal_no_return()
+
     def _toggle_batch(self) -> None:
-        self._set_batch_open(not self._batch_open)
+        return
 
     def _set_batch_open(self, shown: bool) -> None:
-        self._batch_open = bool(shown)
-        if self._batch_open:
-            if not self._batch_frame.winfo_manager():
-                self._batch_frame.pack(fill="x", padx=8, pady=(0, 4), after=self._batch_anchor())
-            self._batch_toggle.configure(text="Hide batch")
-        else:
-            self._batch_frame.pack_forget()
-            self._batch_toggle.configure(text="Batch Next…")
+        del shown
+        self._batch_open = True
+        if not self._batch_frame.winfo_manager():
+            self._batch_frame.pack(fill="x", padx=8, pady=(0, 4), after=self._find_bar)
 
     def _commit_batch_field(self, field: str) -> None:
         """Write one Batch Next box onto packed rows when its value changes.
@@ -3938,6 +4107,8 @@ class DrawingBoard(ttk.Frame):
         if value == self._batch_armed.get(field, ""):
             return
         self._batch_armed[field] = value
+        if field == "return_request_date" and not self._return_urgency_hold:
+            self._return_urgency = ""
         if not value:
             return
         count = self.apply_next_to_pack(fields={field: value})
@@ -3946,20 +4117,6 @@ class DrawingBoard(ttk.Frame):
             self._batch_note.configure(text=f"Applied {title} to {count} packed drawing(s).")
         else:
             self._batch_note.configure(text="Tick Pack — that Next will stamp onto packed drawings.")
-
-    def _apply_batch(self) -> None:
-        fields = {
-            field: box.get()
-            for field, box in self._batch_fields.items()
-            if field in self._batch_visible
-        }
-        for field, value in fields.items():
-            self._batch_armed[field] = (value or "").strip()
-        count = self.apply_next_to_pack(status=self._batch_status.get(), fields=fields)
-        if count:
-            self._batch_note.configure(text=f"Applied to {count} packed drawing(s).")
-        else:
-            self._batch_note.configure(text="Tick Pack and pick at least one Next value.")
 
     def next_edits(self) -> dict[str, dict[str, str]]:
         """Dirty Next fields keyed by Jira issue key. Empty when Next matches Now."""

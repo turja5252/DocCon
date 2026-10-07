@@ -332,8 +332,9 @@ def test_batch_applies_to_pack_only() -> None:
         assert board.apply_next_to_pack() == 0
         assert not hasattr(board, "_batch_title")
         title_before = board._blocks["P2024-1"].title_next.get()
+        root.update()
         board._batch_status.set("Done")
-        board._apply_batch()
+        board._on_pack_status_change()
         assert board._blocks["P2024-1"].status_next.get() == "Done"
         assert board._blocks["P2024-1"].title_next.get() == title_before
         board._batch_fields["return_request_date"].set("2026-10-20")
@@ -350,23 +351,18 @@ def test_batch_applies_to_pack_only() -> None:
         root.destroy()
 
 
-def test_batch_strip_starts_hidden() -> None:
+def test_batch_fields_stay_open() -> None:
     root = _board_root()
     try:
         board = DrawingBoard(root, on_open_pdf=lambda _key: None)
         root.update_idletasks()
-        assert board._batch_open is False
-        assert board._batch_frame.winfo_manager() == ""
-        assert str(board._batch_toggle.cget("text")) == "Batch Next…"
-        board._set_batch_open(True)
-        root.update_idletasks()
+        assert board._batch_open is True
         assert board._batch_frame.winfo_manager() == "pack"
-        assert str(board._batch_toggle.cget("text")) == "Hide batch"
+        assert "Submission Date" in [str(label.cget("text")) for label in board._batch_labels.values()]
         board.set_rows([_row()])
         root.update_idletasks()
-        assert board._batch_open is False
-        assert board._batch_frame.winfo_manager() == ""
-        assert str(board._batch_toggle.cget("text")) == "Batch Next…"
+        assert board._batch_open is True
+        assert board._batch_frame.winfo_manager() == "pack"
     finally:
         root.destroy()
 
@@ -688,25 +684,25 @@ def test_incoming_batch_is_return_fields_and_skips_date_issued() -> None:
         assert board._blocks["P2024-1"].nexts["submission_date"].get() == "2026-10-06"
         board.set_transmittal_kind(INCOMING)
         assert board._blocks["P2024-1"].nexts["submission_date"].get() == ""
-        assert str(board._incoming_row.winfo_manager()) == "pack"
-        assert board._incoming_return.winfo_manager() == "pack"
-        assert board._incoming_rev.winfo_manager() == "pack"
-        assert board._incoming_approval.winfo_manager() == "pack"
-        assert board._pack_purpose_label.winfo_manager() == ""
-        board._incoming_return.set("2026-10-06")
-        board._on_incoming_return()
+        assert board._incoming_row.winfo_manager() == ""
+        assert board._batch_fields["return_date"].winfo_manager() == "pack"
+        assert board._batch_fields["incoming_rev"].winfo_manager() == "pack"
+        assert board._batch_fields["approval"].winfo_manager() == "pack"
+        board._batch_fields["return_date"].set("2026-10-06")
+        board._commit_batch_field("return_date")
         assert board._blocks["P2024-1"].nexts["return_date"].get() == "2026-10-06"
         board._blocks["P2024-1"].nexts["return_date"].set("2026-11-01")
-        board._on_incoming_return()
+        board._commit_batch_field("return_date")
         assert board._blocks["P2024-1"].nexts["return_date"].get() == "2026-11-01"
-        board._incoming_return.set("2026-12-01")
-        board._on_incoming_return()
+        board._batch_fields["return_date"].set("2026-12-01")
+        board._commit_batch_field("return_date")
         assert board._blocks["P2024-1"].nexts["return_date"].get() == "2026-12-01"
         assert board.apply_cover_date_change("submission_date", "2026-10-06") == 0
         assert board._blocks["P2024-1"].nexts["submission_date"].get() != "2026-10-06"
         board.set_transmittal_kind("client")
         assert board._incoming_row.winfo_manager() == ""
-        assert board._pack_purpose_label.winfo_manager() == "pack"
+        assert board._batch_fields["purpose"].winfo_manager() == "pack"
+        assert board._batch_fields["return_date"].winfo_manager() == "pack"
     finally:
         root.destroy()
 
@@ -1285,23 +1281,23 @@ def test_filter_purpose_follows_transmittal_kind() -> None:
         root.update_idletasks()
         assert board._blocks["P2024-1"].nexts["purpose"].get() == "Approval"
         board.set_transmittal_kind("shop")
-        assert board._pack_purpose_label.cget("text") == "Submitted to Shop For"
-        assert "IFC" in board._pack_purpose.cget("values")
-        assert "Purchasing Only" in board._pack_purpose.cget("values")
+        assert board._pack_purpose_field == "shop_purpose"
+        assert "IFC" in board._batch_fields["shop_purpose"].cget("values")
+        assert "Purchasing Only" in board._batch_fields["shop_purpose"].cget("values")
         assert board.pack_purpose() == ""
         assert board._blocks["P2024-1"].nexts["purpose"].get() == "Approval"
         board.set_pack_purpose("IFU")
         assert board._blocks["P2024-1"].nexts["shop_purpose"].get() == "IFU"
         assert board._blocks["P2024-1"].nexts["purpose"].get() == "Approval"
         board.set_transmittal_kind("field")
-        assert board._pack_purpose_label.cget("text") == "Submitted to Field For"
-        assert "IFI" in board._pack_purpose.cget("values")
+        assert board._pack_purpose_field == "field_purpose"
+        assert "IFI" in board._batch_fields["field_purpose"].cget("values")
         assert board._blocks["P2024-1"].nexts["shop_purpose"].get() == "IFU"
         board.set_pack_purpose("IFI")
         assert board._blocks["P2024-1"].nexts["field_purpose"].get() == "IFI"
         board.set_transmittal_kind("client")
-        assert board._pack_purpose_label.cget("text") == "Submitted to Client For"
-        assert "Approval" in board._pack_purpose.cget("values")
+        assert board._pack_purpose_field == "purpose"
+        assert "Approval" in board._batch_fields["purpose"].cget("values")
     finally:
         root.destroy()
 
@@ -1387,6 +1383,69 @@ def test_packed_only_hides_unpacked_and_empty_eddi_headers() -> None:
         assert groups["4 - Engineering"] == "grid"
         assert board._filter_note.cget("text") == "Type, then Find"
         assert board._packed_only_btn.cget("style") == "TButton"
+    finally:
+        root.destroy()
+
+
+def test_eddi_header_pack_selects_the_group_and_clears_when_one_row_is_unticked() -> None:
+    root = _board_root()
+    try:
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.set_rows(
+            [
+                _row(key="P2024-1", drawing_id="2026-Tanzim-1-1", eddi_status="1 - Fabrication Drawings - EDDI"),
+                _row(key="P2024-2", drawing_id="2026-Tanzim-1-2", eddi_status="1 - Fabrication Drawings - EDDI"),
+                _row(key="P2024-3", drawing_id="2026-Tanzim-ITP", eddi_status="4 - Engineering - EDDI"),
+            ],
+            checked=set(),
+        )
+        group = "1 - Fabrication Drawings"
+        assert board._group_pack[group].get() is False
+        assert board._group_pack_marks
+        board._group_pack[group].set(True)
+        assert board._blocks["P2024-1"].include.get() is True
+        assert board._blocks["P2024-2"].include.get() is True
+        assert board._blocks["P2024-3"].include.get() is False
+        board._blocks["P2024-2"].include.set(False)
+        assert board._group_pack[group].get() is False
+        assert board._blocks["P2024-1"].include.get() is True
+        board._blocks["P2024-2"].include.set(True)
+        assert board._group_pack[group].get() is True
+        board._group_pack[group].set(False)
+        assert board._blocks["P2024-1"].include.get() is False
+        assert board._blocks["P2024-2"].include.get() is False
+        assert board._blocks["P2024-3"].include.get() is False
+    finally:
+        root.destroy()
+
+
+def test_next_line_opens_for_pack_all_or_packed_only() -> None:
+    root = _board_root()
+    try:
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.set_rows(
+            [
+                _row(key="P2024-1", drawing_id="2026-Tanzim-1-1"),
+                _row(key="P2024-2", drawing_id="2026-Tanzim-1-2"),
+            ],
+            checked=set(),
+        )
+        one = board._next_cell(board._blocks["P2024-1"].title_next)
+        two = board._next_cell(board._blocks["P2024-2"].title_next)
+        assert one is not None and two is not None
+        board._blocks["P2024-1"].include.set(True)
+        assert one.winfo_manager() == ""
+        board.set_packed_only(True)
+        assert one.winfo_manager() == "grid"
+        assert two.winfo_manager() == ""
+        board.set_packed_only(False)
+        assert one.winfo_manager() == ""
+        board.set_pack(True)
+        assert one.winfo_manager() == "grid"
+        assert two.winfo_manager() == "grid"
+        board.set_pack(False)
+        assert one.winfo_manager() == ""
+        assert two.winfo_manager() == ""
     finally:
         root.destroy()
 
@@ -1565,7 +1624,7 @@ def test_next_widget_kinds_split_dropdown_text_and_calendar() -> None:
             assert isinstance(box, NextEntry)
             assert not isinstance(box, ttk.Combobox)
             assert getattr(box, "_doccon_calendar", None) is not None
-        assert isinstance(board._batch_fields["client_document_number"], NextEntry)
+        assert "client_document_number" not in board._batch_fields
         assert isinstance(board._batch_fields["outgoing_rev"], ttk.Combobox)
         assert isinstance(board._batch_fields["submission_date"], NextEntry)
     finally:

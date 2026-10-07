@@ -432,6 +432,20 @@ LOAD_STEPS: dict[str, tuple[int, int, str]] = {
 PAINT_LOAD_START = 74
 PAINT_LOAD_END = 94
 
+# Create transmittal checks, writes, files, then opens Outlook. Same floor/cap
+# shape as Load so a long Jira write still creeps instead of sitting still.
+CONFIRM_STEPS: dict[str, tuple[int, int, str]] = {
+    "jira_check": (8, 22, "Checking Jira"),
+    "log_check": (24, 34, "Checking the log"),
+    "jira_write": (36, 62, "Writing Jira"),
+    "file": (64, 74, "Filing the transmittal"),
+    "pdf": (76, 84, "Printing the PDF"),
+    "eddi": (86, 92, "Printing EDDI"),
+    "zip": (93, 96, "Zipping the drawings"),
+    "shop": (93, 96, "Copying shop files"),
+    "outlook": (97, 99, "Opening Outlook"),
+}
+
 
 def paint_load_percent(done: int, total: int) -> int:
     """Map painted rows into the band after Jira and before the pack restore."""
@@ -445,8 +459,9 @@ def paint_load_percent(done: int, total: int) -> int:
 class LoadButton:
     """Load control that fills left to right and names the step and percent."""
 
-    def __init__(self, parent: tk.Misc, command) -> None:
+    def __init__(self, parent: tk.Misc, command, *, label: str = "Load", width: int = 210) -> None:
         self._command = command
+        self._label = label
         self._busy = False
         self._pct = 0
         self._caption = ""
@@ -464,7 +479,7 @@ class LoadButton:
             bd=0,
             bg=self._idle_fill,
             height=height,
-            width=210,
+            width=width,
             cursor="hand2",
         )
         self._canvas.pack(fill="both", expand=True, padx=1, pady=1)
@@ -472,7 +487,7 @@ class LoadButton:
         self._title = self._canvas.create_text(
             105,
             height // 2,
-            text="Load",
+            text=label,
             fill="#FFFFFF",
             font=FONT_BOLD,
             anchor="center",
@@ -502,6 +517,9 @@ class LoadButton:
 
     def caption(self) -> str:
         return self._caption
+
+    def label(self) -> str:
+        return self._label
 
     def start(self, caption: str = "") -> None:
         self._busy = True
@@ -534,11 +552,11 @@ class LoadButton:
         self._canvas.coords(self._bar, 0, 0, bar_w, height)
         self._canvas.itemconfigure(self._bar, fill=self._bar_fill if self._busy else self._idle_fill)
         if self._busy:
-            title = f"Load  {self._pct}%"
+            title = f"{self._label}  {self._pct}%"
             title_y = height * 0.38
             caption = self._caption
         else:
-            title = "Load"
+            title = self._label
             title_y = height / 2
             caption = ""
         self._canvas.itemconfigure(self._title, text=title)

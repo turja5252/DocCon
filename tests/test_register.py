@@ -156,6 +156,15 @@ def test_parse_summary_keeps_code_tokens_then_language() -> None:
     assert title == "Inspection and Testing Plan"
 
 
+def test_parse_summary_size_after_the_id_is_description() -> None:
+    drawing_id, title = parse_summary('2026-011-1-6 48" x 36" Sump Replacement Detail')
+    assert drawing_id == "2026-011-1-6"
+    assert title == '48" x 36" Sump Replacement Detail'
+    drawing_id, title = parse_summary('2026-011-1-6 48" x 36"')
+    assert drawing_id == "2026-011-1-6"
+    assert title == '48" x 36"'
+
+
 def test_parse_summary_dash_then_language() -> None:
     drawing_id, title = parse_summary("2026-075-ITP-1-1 - Inspection and Testing Plan")
     assert drawing_id == "2026-075-ITP-1-1"

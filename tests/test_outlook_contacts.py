@@ -47,6 +47,7 @@ def test_filter_import_addresses_skips_noreply_and_roles() -> None:
 
 def test_import_outlook_stub_merges_unique(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    monkeypatch.setattr("doccon.paths.mail_formats_path", lambda: tmp_path / "mail-formats.json")
     save_settings(
         AppSettings(
             email="sarah@example.com",
@@ -67,15 +68,16 @@ def test_import_outlook_stub_merges_unique(tmp_path, monkeypatch) -> None:
     result = import_saved_emails_from_outlook(lister=fake_lister)
     assert result.added == 2
     assert result.saved_emails == ("keep@elite.com", "ada@client.test", "new@client.test")
-    loaded = load_settings()
-    assert loaded.saved_emails == result.saved_emails
-    saved = json.loads((tmp_path / "EliteIntegrity" / "DocCon" / "settings.json").read_text(encoding="utf-8"))
-    assert saved["saved_emails"] == ["keep@elite.com", "ada@client.test", "new@client.test"]
-    assert "token" not in saved
+    from doccon.pack_mail import load_saved_addresses
+
+    assert load_saved_addresses() == result.saved_emails
+    saved = json.loads((tmp_path / "mail-formats.json").read_text(encoding="utf-8"))
+    assert saved["saved_addresses"] == ["keep@elite.com", "ada@client.test", "new@client.test"]
 
 
 def test_import_outlook_failure_leaves_list_unchanged(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    monkeypatch.setattr("doccon.paths.mail_formats_path", lambda: tmp_path / "mail-formats.json")
     save_settings(AppSettings(email="sarah@example.com", saved_emails=("keep@elite.com",)))
 
     def boom() -> list[str]:
@@ -89,6 +91,7 @@ def test_import_outlook_failure_leaves_list_unchanged(tmp_path, monkeypatch) -> 
 
 def test_import_outlook_generic_failure_is_short(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    monkeypatch.setattr("doccon.paths.mail_formats_path", lambda: tmp_path / "mail-formats.json")
     save_settings(AppSettings(email="sarah@example.com", saved_emails=("keep@elite.com",)))
 
     def boom() -> list[str]:

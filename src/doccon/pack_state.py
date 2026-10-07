@@ -112,7 +112,24 @@ class ClientPack:
     shop_cc: str = ""
     field_to: str = ""
     field_cc: str = ""
+    cc_engineer: str = ""
+    cc_pm: str = ""
+    cc_pep: str = ""
+    cc_additional: str = ""
+    cc_parts_saved: bool = False
+    cc_permanent: str = ""
+    cc_permanent_saved: bool = False
+    permanent_overrides: dict[str, dict[str, str]] = field(default_factory=dict)
+    kind_cc_additional: dict[str, str] = field(default_factory=dict)
+    mail_overrides: dict[str, tuple[str, str]] = field(default_factory=dict)
     project_description: str = ""
+    client: str = ""
+    location: str = ""
+    tag: str = ""
+    po: str = ""
+    wo: str = ""
+    moc: str = ""
+    pep_fields_saved: bool = False
     selected_keys: tuple[str, ...] = ()
     located_pdfs: dict[str, LocatedPdf] = field(default_factory=dict)
     next_edits: dict[str, dict[str, str]] = field(default_factory=dict)
@@ -160,6 +177,50 @@ def _next_edits(raw: object) -> dict[str, dict[str, str]]:
         if row:
             edits[key] = row
     return edits
+
+
+def _kind_cc_additional(raw: object) -> dict[str, str]:
+    """Shop or Field additional CC, only when this job saved a difference."""
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, str] = {}
+    for key in ("shop", "field"):
+        if key in raw:
+            out[key] = str(raw.get(key) or "").strip()
+    return out
+
+
+def _permanent_overrides(raw: object) -> dict[str, dict[str, str]]:
+    """Job copies of permanent TO / CC, only for a side the operator changed."""
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, dict[str, str]] = {}
+    for key, item in raw.items():
+        name = str(key or "").strip().casefold()
+        if name not in {"client", "shop", "field"} or not isinstance(item, dict):
+            continue
+        slot: dict[str, str] = {}
+        for side in ("to", "cc"):
+            if side in item:
+                slot[side] = str(item.get(side) or "").strip()
+        if slot:
+            out[name] = slot
+    return out
+
+
+def _mail_overrides(raw: object) -> dict[str, tuple[str, str]]:
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, tuple[str, str]] = {}
+    for key, item in raw.items():
+        name = str(key or "").strip()
+        if not name or not isinstance(item, dict):
+            continue
+        subject = str(item.get("subject") or "").replace("\r\n", "\n")
+        body = str(item.get("body") or "").replace("\r\n", "\n")
+        if subject.strip() or body.strip():
+            out[name] = (subject, body)
+    return out
 
 
 def _shop_folders(raw: object) -> dict[str, str]:
@@ -248,7 +309,24 @@ def load_client_pack(job_folder: Path | None, job_number: str) -> ClientPack | N
         shop_cc=str(raw.get("shop_cc") or "").strip(),
         field_to=str(raw.get("field_to") or "").strip(),
         field_cc=str(raw.get("field_cc") or "").strip(),
+        cc_engineer=str(raw.get("cc_engineer") or "").strip(),
+        cc_pm=str(raw.get("cc_pm") or "").strip(),
+        cc_pep=str(raw.get("cc_pep") or "").strip(),
+        cc_additional=str(raw.get("cc_additional") or "").strip(),
+        cc_parts_saved=bool(raw.get("cc_parts_saved")),
+        cc_permanent=str(raw.get("cc_permanent") or "").strip(),
+        cc_permanent_saved=bool(raw.get("cc_permanent_saved")),
+        permanent_overrides=_permanent_overrides(raw.get("permanent_overrides")),
+        kind_cc_additional=_kind_cc_additional(raw.get("kind_cc_additional")),
+        mail_overrides=_mail_overrides(raw.get("mail_overrides")),
         project_description=str(raw.get("project_description") or "").strip(),
+        client=str(raw.get("client") or "").strip(),
+        location=str(raw.get("location") or "").strip(),
+        tag=str(raw.get("tag") or "").strip(),
+        po=str(raw.get("po") or "").strip(),
+        wo=str(raw.get("wo") or "").strip(),
+        moc=str(raw.get("moc") or "").strip(),
+        pep_fields_saved=any(name in raw for name in ("client", "location", "tag", "po", "wo", "moc")),
         selected_keys=tuple(str(item) for item in keys if str(item).strip()),
         located_pdfs=_located_pdfs(raw.get("located_pdfs")),
         next_edits=_next_edits(raw.get("next_edits")),
@@ -274,7 +352,27 @@ def save_client_pack(job_folder: Path, pack: ClientPack) -> Path:
         "shop_cc": pack.shop_cc,
         "field_to": pack.field_to,
         "field_cc": pack.field_cc,
+        "cc_engineer": pack.cc_engineer,
+        "cc_pm": pack.cc_pm,
+        "cc_pep": pack.cc_pep,
+        "cc_additional": pack.cc_additional,
+        "cc_parts_saved": bool(pack.cc_parts_saved),
+        "cc_permanent": pack.cc_permanent,
+        "cc_permanent_saved": bool(pack.cc_permanent_saved),
+        "permanent_overrides": {
+            key: dict(slot) for key, slot in pack.permanent_overrides.items()
+        },
+        "kind_cc_additional": dict(pack.kind_cc_additional),
+        "mail_overrides": {
+            key: {"subject": subject, "body": body} for key, (subject, body) in pack.mail_overrides.items()
+        },
         "project_description": pack.project_description,
+        "client": pack.client,
+        "location": pack.location,
+        "tag": pack.tag,
+        "po": pack.po,
+        "wo": pack.wo,
+        "moc": pack.moc,
         "selected_keys": list(pack.selected_keys),
         "located_pdfs": _dump_located_pdfs(pack.located_pdfs),
         "next_edits": {key: dict(fields) for key, fields in pack.next_edits.items()},
