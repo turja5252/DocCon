@@ -2,6 +2,30 @@
 
 Newest first. Append a dated entry when a decision is locked, a test runs, or the next step changes.
 
+## 2026-10-07 — Shipped 2.04
+
+Source and the frozen exe are 2.04. Load `2026-Tanzim`. Do not Confirm 075.
+
+## 2026-10-07 — The Load button stays up while the editors render
+
+After the light rows are painted, the button counts `Rendering 12 of 220` until Locate, Open, and the other editors are built. Then it returns to Load.
+
+## 2026-10-07 — The loader counts EDDI groups
+
+Reading EDDI groups moves the Load button as each issue type comes back (`EDDI groups 2 of 5`). The status line names that type. Fetching drawings, related issues, field lists, and matching PDFs each name themselves on the button and the status line.
+
+## 2026-10-07 — Painting draws the light list in slices
+
+Load adds the light rows a dozen at a time and moves the Load button with each slice. The rows show as they are added. Next editors fill in after the list is up.
+
+## 2026-10-07 — The drawing list is built once, then scrolling only moves it
+
+After Load, the rows below the first screen are filled in the background. Moving the list does not build them again.
+
+## 2026-10-07 — A Pack tick does not resize the list
+
+Ticking Pack writes the batch values and leaves every other row where it is. The row-height pass runs when the Next line opens (Pack all or Packed only), not on a single tick.
+
 ## 2026-10-07 — A missing job offers the numbered ones
 
 Load `2026-070` when Jira only has `2026-070-1` (or `2026-070-2`, `2026-070-3`, …) lists those job numbers. Load opens the one you pick.

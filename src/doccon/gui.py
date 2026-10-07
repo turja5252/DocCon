@@ -178,11 +178,15 @@ from doccon.theme import (
     LOAD_STEPS,
     NAVY,
     PENDING_BG,
+    RENDER_LOAD_END,
+    RENDER_LOAD_START,
     SURFACE,
     LoadButton,
     ThemeProgress,
     apply_theme,
+    eddi_load_percent,
     paint_load_percent,
+    render_load_percent,
     style_text,
 )
 from doccon.transmittal_books import adopt_transmittal_books
@@ -2521,6 +2525,7 @@ class DocConApp(tk.Tk):
                 step = LOAD_STEPS.get(name)
                 if step is not None:
                     self._post_load(gen, step[0], step[1], step[2])
+                    self._post_status(gen, step[2])
 
             def jira_work() -> None:
                 nonlocal error, rows, project, rev_options, eddi_contexts
@@ -2548,6 +2553,7 @@ class DocConApp(tk.Tk):
                         )
                     if rows:
                         self._post_load(gen, *LOAD_STEPS["options"])
+                        self._post_status(gen, LOAD_STEPS["options"][2])
                         try:
                             rev_options = fetch_rev_option_lists(
                                 settings.site, settings.email, token, rows[0].key
@@ -2555,9 +2561,23 @@ class DocConApp(tk.Tk):
                         except (JiraError, OSError, ValueError, TypeError):
                             rev_options = {}
                         self._post_load(gen, *LOAD_STEPS["eddi"])
+                        self._post_status(gen, LOAD_STEPS["eddi"][2])
+
+                        def on_eddi(done: int, total: int, label: str) -> None:
+                            caption = f"EDDI groups {done} of {total}"
+                            detail = f"Reading EDDI groups {done} of {total}"
+                            if label:
+                                detail = f"{detail} · {label}"
+                            self._post_load(gen, eddi_load_percent(done, total), LOAD_STEPS["eddi"][1], caption)
+                            self._post_status(gen, detail)
+
                         try:
                             eddi_contexts = fetch_eddi_contexts(
-                                settings.site, settings.email, token, rows
+                                settings.site,
+                                settings.email,
+                                token,
+                                rows,
+                                on_progress=on_eddi,
                             )
                         except (JiraError, OSError, ValueError, TypeError):
                             eddi_contexts = {}
@@ -3084,10 +3104,25 @@ class DocConApp(tk.Tk):
             self._paint_progress(done, count)
             self._set_status(f"Painting {done} of {count} on {job}…")
 
+        def on_render(done: int, total: int) -> None:
+            if gen != self._load_gen:
+                return
+            shown = max(done, 0)
+            self._mark_load(render_load_percent(shown, total), RENDER_LOAD_END, f"Rendering {shown} of {total}")
+            self._set_status(f"Rendering {shown} of {total} on {job}…")
+            if total == 0 or shown >= total:
+                self._complete_load(gen, job, matched, missing, folder_label, extra)
+
         def on_done() -> None:
             self._finish_load(gen, job, matched, missing, folder_label, extra)
 
-        self.board.start_rows(matched, checked=set(), on_progress=on_progress, on_done=on_done)
+        self.board.start_rows(
+            matched,
+            checked=set(),
+            on_progress=on_progress,
+            on_done=on_done,
+            on_render=on_render,
+        )
 
     def _finish_load(
         self,
@@ -3100,10 +3135,10 @@ class DocConApp(tk.Tk):
     ) -> None:
         if gen != self._load_gen:
             return
-        self._busy = False
-        self._work = ""
-        self._mark_load(*LOAD_STEPS["cover"])
-        self._set_status(f"{job}: cover dates N/A, Pack off…")
+        self._busy = True
+        self._work = "load"
+        self._mark_load(RENDER_LOAD_START, RENDER_LOAD_END, "Rendering")
+        self._set_status(f"Rendering 0 of {len(matched)} on {job}…")
         self.after(1, lambda: self._finish_cover(gen, job, matched, missing, folder_label, extra))
 
     def _finish_cover(
@@ -3119,8 +3154,28 @@ class DocConApp(tk.Tk):
             return
         self._restore_pack(self._job_folder, job, None)
         self._save_pack(quiet=True, force=True)
+        self._refresh_shop_place()
+        self._start_watcher()
+        pending = self._pending_files
+        if pending is not None:
+            self._apply_folder_files(pending)
+        self.board._schedule_mount()
+
+    def _complete_load(
+        self,
+        gen: int,
+        job: str,
+        matched: list[MatchedRow],
+        missing: int,
+        folder_label: str,
+        extra: str,
+    ) -> None:
+        if gen != self._load_gen:
+            return
         cover = self._cover_suffix()
         pep = self._pep_suffix()
+        self._busy = False
+        self._work = ""
         self._stop_progress()
         self._set_new_issue_enabled(True)
         focus = (self._create_focus_key or "").strip()
@@ -3130,11 +3185,6 @@ class DocConApp(tk.Tk):
         self._set_status(
             f"{job}: {len(matched)} drawing(s), {missing} missing PDF  |  {folder_label}{extra}{cover}{pep}"
         )
-        self._refresh_shop_place()
-        self._start_watcher()
-        pending = self._pending_files
-        if pending is not None:
-            self._apply_folder_files(pending)
 
     def _reset_locate_to_job(self, folder: Path | None) -> None:
         """First Locate… after Load starts in this job's Dropbox folder, not the last PC folder."""
@@ -3211,7 +3261,7 @@ class DocConApp(tk.Tk):
     def _note_if_busy(self) -> bool:
         if not self._busy:
             return False
-        self._set_status("Still loading this job. Clicks work again when the list is up.")
+        self._set_status("Still rendering this list.")
         return True
 
     def _new_issue(self) -> None:

@@ -31,6 +31,7 @@ from doccon.drawing_board import (
     PDF_COL_PX,
     PICK_ONLY_FIELDS,
     REV_VALUES,
+    SHELL_PAINT_BATCH,
     SHELL_ROW_PX,
     DrawingBoard,
     NextEntry,
@@ -648,6 +649,50 @@ def test_start_rows_paints_one_by_one() -> None:
         root.destroy()
 
 
+def test_load_paint_adds_light_rows_a_dozen_at_a_time() -> None:
+    root = _board_root()
+    try:
+        root.geometry("900x400")
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.pack(fill="both", expand=True)
+        seen: list[int] = []
+        rows = [_row(key=f"P2024-{n}", drawing_id=f"2026-Tanzim-1-{n}") for n in range(1, 31)]
+        board.start_rows(rows, on_progress=lambda done, _count: seen.append(done))
+        for _ in range(80):
+            if not board._paint_queue and not board._paint_after:
+                break
+            root.update()
+        assert seen
+        assert seen[-1] == 30
+        assert all(step - prev <= SHELL_PAINT_BATCH for prev, step in zip([0, *seen], seen))
+        assert all(not block.mounted for block in board._blocks.values())
+        assert str(board._canvas.itemcget(board._window, "window"))
+    finally:
+        root.destroy()
+
+
+def test_render_callback_counts_until_the_editors_are_built() -> None:
+    root = _board_root()
+    try:
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        seen: list[tuple[int, int]] = []
+        rows = [_row(key=f"P2024-{n}", drawing_id=f"2026-Tanzim-1-{n}") for n in range(1, 7)]
+        board.start_rows(rows, on_render=lambda done, total: seen.append((done, total)))
+        for _ in range(40):
+            if not board._paint_queue and not board._paint_after:
+                break
+            root.update()
+        board._last_scroll = 0.0
+        for _ in range(20):
+            if seen and seen[-1][0] == seen[-1][1] and seen[-1][1] == 6:
+                break
+            board._mount_waiting()
+        assert seen[-1] == (6, 6)
+        assert all(block.mounted for block in board._blocks.values())
+    finally:
+        root.destroy()
+
+
 def test_opening_the_edit_row_keeps_columns_under_the_headings() -> None:
     root = _board_root()
     try:
@@ -1047,6 +1092,7 @@ def test_scroll_builds_locate_on_rows_below_the_first_screen() -> None:
         board = DrawingBoard(root, on_open_pdf=lambda _key: None)
         board.pack(fill="both", expand=True)
         rows = [_row(key=f"P2024-{n}", drawing_id=f"2026-Tanzim-1-{n}") for n in range(1, 28)]
+        board._schedule_mount = lambda *args, **kwargs: None
         board.start_rows(rows)
         for _ in range(400):
             if not board._paint_queue:
@@ -1064,6 +1110,37 @@ def test_scroll_builds_locate_on_rows_below_the_first_screen() -> None:
         assert fresh.locate_btn is not None
         assert fresh.open_btn is not None
         assert fresh.preview_btn is not None
+    finally:
+        root.destroy()
+
+
+def test_scroll_does_not_build_rows_and_the_background_pass_does() -> None:
+    root = _board_root()
+    try:
+        root.geometry("900x400")
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.pack(fill="both", expand=True)
+        rows = [_row(key=f"P2024-{n}", drawing_id=f"2026-Tanzim-1-{n}") for n in range(1, 28)]
+        board._schedule_mount = lambda *args, **kwargs: None
+        board.start_rows(rows)
+        for _ in range(400):
+            if not board._paint_queue:
+                break
+            root.update()
+        root.update_idletasks()
+        assert any(not block.mounted for block in board._blocks.values())
+        board._on_yscroll("0.2", "0.5")
+        root.update_idletasks()
+        assert any(not block.mounted for block in board._blocks.values())
+        board._last_scroll = 0.0
+        for _ in range(40):
+            if all(block.mounted or block.extra for block in board._blocks.values()):
+                break
+            board._mount_waiting()
+        assert all(block.mounted or block.extra for block in board._blocks.values())
+        built = board._blocks["P2024-27"]
+        assert built.locate_btn is not None
+        assert built.open_btn is not None
     finally:
         root.destroy()
 
@@ -1446,6 +1523,77 @@ def test_next_line_opens_for_pack_all_or_packed_only() -> None:
         board.set_pack(False)
         assert one.winfo_manager() == ""
         assert two.winfo_manager() == ""
+    finally:
+        root.destroy()
+
+
+def test_pack_tick_does_not_shift_rows_below() -> None:
+    root = _board_root()
+    try:
+        root.geometry("900x500")
+        board = DrawingBoard(
+            root, on_open_pdf=lambda _key: None, cover_return_stamp=lambda: "2026-09-22"
+        )
+        board.pack(fill="both", expand=True)
+        board.set_rows(
+            [
+                _row(key="P2024-1", drawing_id="2026-Tanzim-1-1"),
+                _row(key="P2024-2", drawing_id="2026-Tanzim-1-2"),
+                _row(key="P2024-3", drawing_id="2026-Tanzim-1-3"),
+            ]
+        )
+        root.update_idletasks()
+        below = board._blocks["P2024-3"].drawing_label
+        y = below.winfo_y()
+        height = int(board._inner.grid_rowconfigure(board._blocks["P2024-1"].grid_top + 1).get("minsize") or 0)
+        board._blocks["P2024-1"].include.set(True)
+        root.update()
+        assert below.winfo_y() == y
+        assert int(board._inner.grid_rowconfigure(board._blocks["P2024-1"].grid_top + 1).get("minsize") or 0) == height
+        assert board._blocks["P2024-1"].nexts["return_request_date"].get() == "2026-09-22"
+        cell = board._next_cell(board._blocks["P2024-1"].title_next)
+        assert cell is not None and cell.winfo_manager() == ""
+    finally:
+        root.destroy()
+
+
+def test_pack_tick_on_a_shell_keeps_the_stamp_until_the_row_is_built() -> None:
+    root = _board_root()
+    try:
+        root.geometry("900x400")
+        board = DrawingBoard(
+            root, on_open_pdf=lambda _key: None, cover_return_stamp=lambda: "2026-09-22"
+        )
+        board.pack(fill="both", expand=True)
+        rows = [_row(key=f"P2024-{n}", drawing_id=f"2026-Tanzim-1-{n}") for n in range(1, 28)]
+        board._schedule_mount = lambda *args, **kwargs: None
+        board.start_rows(rows)
+        for _ in range(400):
+            if not board._paint_queue:
+                break
+            root.update()
+        root.update_idletasks()
+        if board._mount_after:
+            board.after_cancel(board._mount_after)
+            board._mount_after = ""
+        shells = [block for block in board._blocks.values() if not block.mounted]
+        assert shells
+        target = min(shells, key=lambda block: block.grid_top)
+        later = max(board._blocks.values(), key=lambda block: block.grid_top)
+        assert later.key != target.key
+        y = later.drawing_label.winfo_y()
+        target.include.set(True)
+        root.update()
+        fresh = board._blocks[target.key]
+        assert not fresh.mounted
+        assert fresh.nexts["return_request_date"].get() == "2026-09-22"
+        assert board.next_edits()[target.key]["return_request_date"] == "2026-09-22"
+        assert any(row.drawing.key == target.key for row in board.pending_rows())
+        assert later.drawing_label.winfo_y() == y
+        board._mount_block(fresh)
+        built = board._blocks[target.key]
+        assert built.mounted
+        assert built.nexts["return_request_date"].get() == "2026-09-22"
     finally:
         root.destroy()
 

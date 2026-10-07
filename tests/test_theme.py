@@ -25,8 +25,10 @@ from doccon.theme import (
     LoadButton,
     ThemeProgress,
     apply_theme,
+    eddi_load_percent,
     match_style,
     paint_load_percent,
+    render_load_percent,
 )
 
 
@@ -75,6 +77,11 @@ def test_apply_theme_and_match_styles() -> None:
         assert paint_load_percent(5, 10) == 84
         assert paint_load_percent(10, 10) == 94
         assert paint_load_percent(1, 0) == 94
+        assert eddi_load_percent(0, 4) == 62
+        assert eddi_load_percent(2, 4) == 65
+        assert eddi_load_percent(4, 4) == 68
+        assert render_load_percent(0, 10) == 94
+        assert render_load_percent(10, 10) == 99
         assert LOAD_STEPS["drawings"][0] < LOAD_STEPS["children"][0] < LOAD_STEPS["cover"][0]
         clicks: list[int] = []
         button = LoadButton(root, lambda: clicks.append(1))

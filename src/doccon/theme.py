@@ -431,6 +431,8 @@ LOAD_STEPS: dict[str, tuple[int, int, str]] = {
 }
 PAINT_LOAD_START = 74
 PAINT_LOAD_END = 94
+RENDER_LOAD_START = 94
+RENDER_LOAD_END = 99
 
 # Create transmittal checks, writes, files, then opens Outlook. Same floor/cap
 # shape as Load so a long Jira write still creeps instead of sitting still.
@@ -454,6 +456,24 @@ def paint_load_percent(done: int, total: int) -> int:
     done = max(0, min(int(done), int(total)))
     span = PAINT_LOAD_END - PAINT_LOAD_START
     return PAINT_LOAD_START + (span * done) // int(total)
+
+
+def eddi_load_percent(done: int, total: int) -> int:
+    """Map finished EDDI groups into that step's band on the Load button."""
+    floor, cap, _caption = LOAD_STEPS["eddi"]
+    if total <= 0:
+        return floor
+    done = max(0, min(int(done), int(total)))
+    return floor + ((cap - floor) * done) // int(total)
+
+
+def render_load_percent(done: int, total: int) -> int:
+    """Map built editors into the band after the light list is painted."""
+    if total <= 0:
+        return RENDER_LOAD_END
+    done = max(0, min(int(done), int(total)))
+    span = RENDER_LOAD_END - RENDER_LOAD_START
+    return RENDER_LOAD_START + (span * done) // int(total)
 
 
 class LoadButton:

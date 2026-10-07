@@ -617,6 +617,32 @@ def test_eddi_contexts_fetch_one_editmeta_per_issue_type(monkeypatch) -> None:
     assert contexts["P2024-1"] != contexts["P2024-9"]
 
 
+def test_eddi_contexts_report_each_issue_type(monkeypatch) -> None:
+    from doccon import jira_client
+
+    def fake_request(_site, _email, _token, _method, path, body=None):
+        if "P2024-9" in path:
+            return _eddi_editmeta({"value": "8 - Document Control - EDDI", "id": "10408"})
+        return _eddi_editmeta({"value": EDDI_GROUP_5, "id": "10420"})
+
+    monkeypatch.setattr(jira_client, "_request", fake_request)
+    seen: list[tuple[int, int, str]] = []
+    rows = [
+        _drawing(key="P2024-1", issue_type="Sub-task"),
+        _drawing(key="P2024-9", issue_type="Task"),
+    ]
+    jira_client.fetch_eddi_contexts(
+        "https://example.atlassian.net",
+        "a@b.c",
+        "token",
+        rows,
+        on_progress=lambda done, total, label: seen.append((done, total, label)),
+    )
+    assert [step[0] for step in seen] == [1, 2]
+    assert {step[1] for step in seen} == {2}
+    assert {step[2] for step in seen} == {"Sub-task", "Task"}
+
+
 def test_update_eddi_status_writes_by_id_and_refuses_a_foreign_option(monkeypatch) -> None:
     from doccon import jira_client
     from doccon.jira_client import parse_eddi_options

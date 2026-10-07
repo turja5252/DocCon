@@ -272,17 +272,38 @@ def _context_key(row: DrawingRow) -> str:
 
 
 def fetch_eddi_contexts(
-    site: str, email: str, token: str, rows: list[DrawingRow]
+    site: str,
+    email: str,
+    token: str,
+    rows: list[DrawingRow],
+    on_progress: Callable[[int, int, str], None] | None = None,
 ) -> dict[str, tuple[FieldOption, ...]]:
-    """That issue's own EDDI Status options, keyed by issue key. Missing context is omitted."""
+    """That issue's own EDDI Status options, keyed by issue key. Missing context is omitted.
+
+    One Jira call per issue type. ``on_progress(done, total, issue_type)`` runs as each
+    type returns, from the worker that read it.
+    """
     groups = eddi_context_groups(rows)
+    labels: dict[str, str] = {}
+    for row in rows:
+        label = (row.issue_type or "issue").strip() or "issue"
+        labels.setdefault(_context_key(row), label)
+    total = len(groups)
     by_type: dict[str, tuple[FieldOption, ...]] = {}
+    done_box = {"n": 0}
+    lock = threading.Lock()
 
     def run(context: str, issue_key: str) -> None:
         try:
             by_type[context] = fetch_eddi_options(site, email, token, issue_key)
         except (JiraError, OSError, ValueError, TypeError):
             by_type[context] = ()
+        if on_progress is None or total <= 0:
+            return
+        with lock:
+            done_box["n"] += 1
+            done = done_box["n"]
+        on_progress(done, total, labels.get(context, "issue"))
 
     threads = [
         threading.Thread(target=run, args=(context, key), daemon=True)

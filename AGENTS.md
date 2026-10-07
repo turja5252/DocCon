@@ -38,7 +38,9 @@ The summary is an ID, then optional wording. Empty description is allowed.
 
 No extra Jira status or custom trigger field. Engineer emails Sarah the pack list; she runs DocCon.
 
-**Next:** Source and the frozen exe are **2.03**. Load `2026-Tanzim`. Do not Confirm 075.
+**Next:** Source and the frozen exe are **2.04**. Load `2026-Tanzim`. Do not Confirm 075.
+
+**2.04 The Load button stays up through painting and rendering.** A Pack tick does not resize the list. The list is built once, then scrolling only moves it. Painting adds light rows a dozen at a time. The button counts EDDI groups, then Painting, then Rendering until the editors are built. Drag is not back.
 
 **2.03 The transmittal email and permanent addresses are on the console.** Client, Shop, and Field wording is in Email Format Editor. Permanent TO and CC are shared. Shop and Field CC are Permanent plus Additional. A missing job such as `2026-070` offers `2026-070-1` and the other numbered jobs. The wheel scrolls the drawing list. Drag is not back.
 
