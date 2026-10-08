@@ -635,6 +635,7 @@ class DrawingBoard(ttk.Frame):
         on_cancel_next=None,
         on_draft_change=None,
         on_no_return=None,
+        on_sync_dropbox=None,
     ) -> None:
         super().__init__(master)
         apply_theme(self)
@@ -652,6 +653,7 @@ class DrawingBoard(ttk.Frame):
         self._on_draft_change = on_draft_change
         self._on_render: Callable[[int, int], None] | None = None
         self._on_no_return = on_no_return
+        self._on_sync_dropbox = on_sync_dropbox
         self._matches: dict[str, MatchedRow] = {}
         self._blocks: dict[str, _Block] = {}
         self._focus_key = ""
@@ -736,6 +738,12 @@ class DrawingBoard(ttk.Frame):
         )
         self._packed_only_btn = ttk.Button(self._find_bar, text="Packed only", command=self._toggle_packed_only)
         self._packed_only_btn.pack(side="left", padx=(0, 8))
+        self._sync_all_btn = ttk.Button(self._find_bar, text="Sync all", command=lambda: self._sync_dropbox("all"))
+        self._sync_all_btn.pack(side="left", padx=(0, 4))
+        self._sync_packed_btn = ttk.Button(
+            self._find_bar, text="Sync packed", command=lambda: self._sync_dropbox("packed")
+        )
+        self._sync_packed_btn.pack(side="left", padx=(0, 8))
         ttk.Button(self._find_bar, text="Pack all", command=lambda: self.set_pack(True)).pack(
             side="left", padx=(4, 4)
         )
@@ -2127,6 +2135,32 @@ class DrawingBoard(ttk.Frame):
             self._packed_only_btn.configure(style="Brand.TButton" if on else "TButton")
         except tk.TclError:
             return
+
+    def _sync_dropbox(self, scope: str) -> None:
+        if self._on_sync_dropbox is not None:
+            self._on_sync_dropbox(scope)
+
+    def set_sync_busy(self, busy: bool) -> None:
+        try:
+            state = "disabled" if busy else "normal"
+            self._sync_all_btn.configure(text="Syncing…" if busy else "Sync all", state=state)
+            self._sync_packed_btn.configure(text="Syncing…" if busy else "Sync packed", state=state)
+        except tk.TclError:
+            return
+
+    def unpaired_rows(self, *, packed_only: bool) -> list[MatchedRow]:
+        """Jira rows that still have no PDF. Non Jira rows stay out of the Dropbox hunt."""
+        rows: list[MatchedRow] = []
+        for key, block in self._blocks.items():
+            if block.extra:
+                continue
+            if packed_only and not block.include.get():
+                continue
+            row = self._matches.get(key)
+            if row is None or row.pdf is not None:
+                continue
+            rows.append(row)
+        return rows
 
     def _cover_field_date(self, field: str) -> str:
         getter = self._cover_stamps.get(field)
@@ -3574,6 +3608,9 @@ class DrawingBoard(ttk.Frame):
         finally:
             self._suspend_layout = False
         self._apply_next_option_rows()
+        if not checked and self.packed_only():
+            self.set_packed_only(False)
+            return
         if self.packed_only():
             self._refresh_filter()
 

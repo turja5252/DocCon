@@ -79,6 +79,7 @@ from doccon.match import (
     match_pdf_hits,
     outgoing_rev_from_filename,
     pair_pdf,
+    pair_unmatched,
     pdf_is_email_dropped,
     scan_current_pdfs,  # noqa: F401  — tests patch this name
     scan_job_pdfs,
@@ -1461,6 +1462,7 @@ class DocConApp(tk.Tk):
             on_cancel_next=self._on_cancel_next,
             on_draft_change=self._schedule_pack_save,
             on_no_return=self._mark_cover_no_return,
+            on_sync_dropbox=self._sync_dropbox,
         )
         self.issued = self.board.batch_entry("submission_date")
         self.expected = self.board.batch_entry("return_request_date")
@@ -2674,8 +2676,6 @@ class DocConApp(tk.Tk):
     ) -> None:
         matched: list = []
         if error is None:
-            self._post_load(gen, *LOAD_STEPS["match"])
-            self._post_status(gen, f"Matching PDFs for {job}…")
             matched, _extra = match_pdf_hits(rows, [], job)
             with contextlib.suppress(OSError, ValueError, TypeError):
                 matched = apply_located_pdfs(matched, located)
@@ -2728,22 +2728,19 @@ class DocConApp(tk.Tk):
             self._set_status(f"{job}: {len(self._matches)} drawing(s), {missing} missing PDF  |  {label}")
 
     def _start_folder_files(self, gen: int, job: str, folder: Path, kind: str) -> None:
-        """PDF hunt, letter, and PEP stay off the window thread so clicks keep working."""
+        """Letter and PEP stay off the window thread. PDF matching waits for Sync all or Sync packed."""
 
         def files() -> None:
             adopted_label = ""
-            hits: list = []
             pep_path: Path | None = None
             pep_cover: PepCover | None = None
             book = BookCover()
             try:
-                self._post_status(gen, f"Scanning PDFs in {folder.name}…")
+                self._post_status(gen, f"Reading the letter for {folder.name}…")
                 adopted = adopt_transmittal_books(folder, job)
                 if adopted:
                     names = ", ".join(item.path.name for item in adopted)
                     adopted_label = f"  |  named {names}"
-                hits = scan_job_pdfs(folder)
-                self._post_folder_files(gen, job, hits, adopted_label, None, None, BookCover(), kind)
                 try:
                     pep_path = find_pep(folder, job)
                 except (OSError, PepError, ValueError):
@@ -2757,12 +2754,9 @@ class DocConApp(tk.Tk):
                     book = book_cover_for_job(folder, job, kind)
                 except (OSError, KeyError, ValueError, TypeError):
                     book = BookCover()
-                library = scan_library_pdfs(folder)
-                if library:
-                    hits = [*hits, *library]
             except Exception as exc:
                 log("WARN", "load", f"folder files {exc}")
-            self._post_folder_files(gen, job, hits, adopted_label, pep_path, pep_cover, book, kind)
+            self._post_folder_files(gen, job, [], adopted_label, pep_path, pep_cover, book, kind)
 
         threading.Thread(target=files, daemon=True).start()
 
@@ -2782,33 +2776,26 @@ class DocConApp(tk.Tk):
             self.after(0, lambda item=payload: self._apply_folder_files(item))
 
     def _apply_folder_files(self, payload: tuple) -> None:
-        gen, job, hits, adopted_label, pep_path, pep_cover, book, kind = payload
+        gen, job, _hits, adopted_label, pep_path, pep_cover, book, kind = payload
         if gen != self._load_gen or self._job_number != job:
             return
-        if self._work == "load" or not self._matches or len(self.board._blocks) < len(self._matches):
+        if not self._matches or len(self.board._blocks) < len(self._matches):
             self._pending_files = payload
             return
         self._pending_files = None
         if not isinstance(book, BookCover):
             book = BookCover()
         self._book_covers[kind] = book
-        drawings = [row.drawing for row in self._matches.values()]
-        matched, orphans = match_pdf_hits(drawings, hits, job)
-        matched = apply_located_pdfs(matched, self._located_pdfs)
-        for row in matched:
-            self._matches[row.drawing.key] = row
-            self.board.apply_pdf(row)
         if isinstance(pep_cover, PepCover):
             self._pep_cover = pep_cover
         if pep_path is not None:
             self._set_pep(pep_path)
         if self.kind.get() == kind:
             self._fill_cover_if_untouched(kind)
-        extra = f"  |  {orphans} extra PDF(s) not in Jira" if orphans else ""
         folder_name = self._job_folder.name if self._job_folder is not None else job
         missing = sum(1 for row in self._matches.values() if row.confidence == "Missing")
         self._set_status(
-            f"{job}: {len(matched)} drawing(s), {missing} missing PDF  |  {folder_name}{adopted_label}{extra}"
+            f"{job}: {len(self._matches)} drawing(s), {missing} missing PDF  |  {folder_name}{adopted_label}"
         )
 
     def _cover_text_now(self) -> tuple[str, str, str]:
@@ -2851,6 +2838,7 @@ class DocConApp(tk.Tk):
 
     def _cancel_load(self) -> None:
         self.board.cancel_paint()
+        self.board.set_sync_busy(False)
         self._pending_rows = None
         self._pending_files = None
         self._book_covers = {}
@@ -2858,7 +2846,7 @@ class DocConApp(tk.Tk):
         keep_meter = bool(self._create_wait_key) and self._progress.mode() != "idle"
         if not keep_meter:
             self._stop_progress()
-        if self._work == "load":
+        if self._work in {"load", "sync"}:
             self._busy = False
             self._work = ""
 
@@ -3261,8 +3249,89 @@ class DocConApp(tk.Tk):
     def _note_if_busy(self) -> bool:
         if not self._busy:
             return False
-        self._set_status("Still rendering this list.")
+        if self._work == "sync":
+            self._set_status("Still syncing Dropbox files.")
+        else:
+            self._set_status("Still rendering this list.")
         return True
+
+    def _sync_dropbox(self, scope: str) -> None:
+        """Walk the job folders when she asks. Sync all, or only the packed rows."""
+        if self._note_if_busy():
+            return
+        folder = self._job_folder
+        if folder is None:
+            self._set_status("Locate the job folder before syncing Dropbox files.")
+            return
+        packed_only = scope == "packed"
+        waiting = self.board.unpaired_rows(packed_only=packed_only)
+        if not waiting:
+            if packed_only:
+                self._set_status("No packed drawing is waiting for a PDF.")
+            else:
+                self._set_status("Every drawing already has a PDF.")
+            return
+        self._busy = True
+        self._work = "sync"
+        self.board.set_sync_busy(True)
+        gen = self._load_gen
+        job = self._job_number
+        keys = tuple(row.drawing.key for row in waiting)
+
+        def run() -> None:
+            hits: list = []
+            try:
+                self._post_status(gen, f"Syncing PDFs in {folder.name}…")
+                hits = scan_job_pdfs(folder)
+                library = scan_library_pdfs(folder)
+                if library:
+                    hits = [*hits, *library]
+            except Exception as exc:
+                log("WARN", "load", f"sync pdfs {exc}")
+                hits = []
+
+            def deliver(found: list = hits, wanted: tuple[str, ...] = keys) -> None:
+                self._apply_sync(gen, job, wanted, found, packed_only)
+
+            with contextlib.suppress(tk.TclError, RuntimeError):
+                self.after(0, deliver)
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _apply_sync(
+        self,
+        gen: int,
+        job: str,
+        keys: tuple[str, ...],
+        hits: list,
+        packed_only: bool,
+    ) -> None:
+        self.board.set_sync_busy(False)
+        if self._work == "sync":
+            self._busy = False
+            self._work = ""
+        if gen != self._load_gen or self._job_number != job:
+            return
+        waiting = [
+            row
+            for key in keys
+            if (row := self._matches.get(key)) is not None and row.pdf is None
+        ]
+        paired = 0
+        for row in pair_unmatched(waiting, hits, job):
+            if row.pdf is None:
+                continue
+            self._matches[row.drawing.key] = row
+            self.board.apply_pdf(row)
+            self._located_pdfs[row.drawing.key] = LocatedPdf(
+                path=str(row.pdf.path),
+                email_dropped=is_dropped_pdf_path(row.pdf.path),
+            )
+            paired += 1
+        self._schedule_pack_save()
+        which = "packed" if packed_only else "all"
+        folder_name = self._job_folder.name if self._job_folder is not None else job
+        self._set_status(f"Sync {which}: paired {paired} PDF(s) from {folder_name}.")
 
     def _new_issue(self) -> None:
         if self._note_if_busy():

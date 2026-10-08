@@ -1085,6 +1085,57 @@ def _board_root():
     return root
 
 
+def test_sync_buttons_stay_on_the_filter_row() -> None:
+    root = _board_root()
+    try:
+        seen: list[str] = []
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None, on_sync_dropbox=seen.append)
+        board.pack()
+        root.update_idletasks()
+        assert board._sync_all_btn.winfo_manager() == "pack"
+        assert board._sync_packed_btn.winfo_manager() == "pack"
+        board._sync_all_btn.invoke()
+        board._sync_packed_btn.invoke()
+        assert seen == ["all", "packed"]
+        rows = [
+            _row(key="P2024-1", drawing_id="2026-Tanzim-1-1"),
+            _row(key="P2024-2", drawing_id="2026-Tanzim-1-2"),
+        ]
+        board._schedule_mount = lambda *_args, **_kwargs: None
+        board.start_rows(rows, checked={"P2024-1"})
+        for _ in range(40):
+            if not board._paint_queue and not board._paint_after:
+                break
+            root.update()
+        assert [row.drawing.key for row in board.unpaired_rows(packed_only=False)] == ["P2024-1", "P2024-2"]
+        assert [row.drawing.key for row in board.unpaired_rows(packed_only=True)] == ["P2024-1"]
+    finally:
+        root.destroy()
+
+
+def test_pack_none_turns_packed_only_off() -> None:
+    root = _board_root()
+    try:
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        rows = [
+            _row(key="P2024-1", drawing_id="2026-Tanzim-1-1"),
+            _row(key="P2024-2", drawing_id="2026-Tanzim-1-2"),
+        ]
+        board._schedule_mount = lambda *_args, **_kwargs: None
+        board.start_rows(rows, checked={"P2024-1"})
+        for _ in range(40):
+            if not board._paint_queue and not board._paint_after:
+                break
+            root.update()
+        board.set_packed_only(True)
+        assert board.packed_only()
+        board.set_pack(False)
+        assert not board.packed_only()
+        assert all(not block.include.get() for block in board._blocks.values())
+    finally:
+        root.destroy()
+
+
 def test_scroll_builds_locate_on_rows_below_the_first_screen() -> None:
     root = _board_root()
     try:

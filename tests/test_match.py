@@ -6,10 +6,13 @@ from pathlib import Path
 
 from doccon.jobs import _is_job_folder, find_job_folder
 from doccon.match import (
+    MatchedRow,
+    PdfHit,
     attach_pdfs,
     compact_drawing_id,
     match_keys,
     outgoing_rev_from_filename,
+    pair_unmatched,
     parse_pdf_stem,
     scan_current_pdfs,
     wps_library_roots,
@@ -292,3 +295,47 @@ def test_find_job_folder_none_in_empty_env(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
     monkeypatch.setattr("doccon.jobs.Path.home", lambda: tmp_path)
     assert find_job_folder("2026-096") is None
+
+
+def test_pair_unmatched_keeps_a_file_already_on_the_row(tmp_path: Path) -> None:
+    kept = tmp_path / "kept.pdf"
+    kept.write_bytes(b"%PDF")
+    hunt = tmp_path / "2026-Tanzim-1-2 REV 0.pdf"
+    hunt.write_bytes(b"%PDF")
+    located = MatchedRow(
+        drawing=DrawingRow(
+            key="P2024-1",
+            summary="2026-Tanzim-1-1 Drawing",
+            drawing_id="2026-Tanzim-1-1",
+            title="Drawing",
+            status="To Do",
+            job_number="2026-Tanzim",
+            outgoing_rev="0",
+            purpose="",
+            parent_summary="Drawing Package",
+        ),
+        pdf=PdfHit(path=kept, drawing_id="2026-Tanzim-1-1", rev="0"),
+        confidence="High",
+    )
+    missing = MatchedRow(
+        drawing=DrawingRow(
+            key="P2024-2",
+            summary="2026-Tanzim-1-2 Drawing",
+            drawing_id="2026-Tanzim-1-2",
+            title="Drawing",
+            status="To Do",
+            job_number="2026-Tanzim",
+            outgoing_rev="",
+            purpose="",
+            parent_summary="Drawing Package",
+        ),
+        pdf=None,
+        confidence="Missing",
+    )
+    paired = pair_unmatched(
+        [located, missing],
+        [PdfHit(path=hunt, drawing_id="2026-Tanzim-1-2", rev="0")],
+        "2026-Tanzim",
+    )
+    assert paired[0].pdf is not None and paired[0].pdf.path == kept
+    assert paired[1].pdf is not None and paired[1].pdf.path == hunt

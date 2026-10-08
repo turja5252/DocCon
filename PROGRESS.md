@@ -2,6 +2,18 @@
 
 Newest first. Append a dated entry when a decision is locked, a test runs, or the next step changes.
 
+## 2026-10-08 — Shipped 2.05
+
+Source and the frozen exe are 2.05. Load does not scan job PDFs. Sync all and Sync packed pair drawings that have no file. Pack none turns Packed only off. Load `2026-Tanzim`. Do not Confirm 075.
+
+## 2026-10-08 — Pack none turns Packed only off
+
+**Pack none** clears the ticks and, when Packed only is on, turns that filter off so the full list is back.
+
+## 2026-10-08 — Sync Dropbox files is a button
+
+Load does not scan the job PDFs. **Sync all** and **Sync packed** sit on the Filter row. Each pairs drawings that have no file yet. A Locate… or Paste PDF stays. The pair is saved with the pack so the next Load does not scan again.
+
 ## 2026-10-07 — Shipped 2.04
 
 Source and the frozen exe are 2.04. Load `2026-Tanzim`. Do not Confirm 075.

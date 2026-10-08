@@ -358,6 +358,18 @@ def match_pdf_hits(
     return matched, orphans
 
 
+def pair_unmatched(
+    rows: list[MatchedRow], hits: list[PdfHit], job_number: str
+) -> list[MatchedRow]:
+    """Pair rows that have no PDF. A Locate… or paste already on the row stays."""
+    waiting = [row.drawing for row in rows if row.pdf is None]
+    if not waiting:
+        return list(rows)
+    found, _orphans = match_pdf_hits(waiting, hits, job_number)
+    by_key = {row.drawing.key: row for row in found if row.pdf is not None}
+    return [by_key.get(row.drawing.key, row) for row in rows]
+
+
 def attach_pdfs(rows: list[DrawingRow], job_folder: Path | None, job_number: str) -> tuple[list[MatchedRow], int]:
     if job_folder is None:
         return [MatchedRow(drawing=row, pdf=None, confidence="Missing") for row in rows], 0
