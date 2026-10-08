@@ -12,6 +12,7 @@ from doccon.pack_state import (
     ClientPack,
     cover_recipients,
     load_client_pack,
+    pack_cover_is_saved,
     pack_path,
     save_client_pack,
     with_cover_recipients,
@@ -55,6 +56,19 @@ def test_cover_recipients_stay_per_kind() -> None:
     assert cover_recipients(field, CLIENT) == ("client@example.com", "pm@x.com")
     assert cover_recipients(field, SHOP) == ("", "")
     assert cover_recipients(field, FIELD) == ("foreman@x.com", "")
+
+
+def test_saved_cover_skips_the_letter_read(tmp_path: Path) -> None:
+    assert pack_cover_is_saved(None) is False
+    assert pack_cover_is_saved(ClientPack(job_number="2026-Tanzim")) is False
+    assert pack_cover_is_saved(ClientPack(job_number="2026-Tanzim", to_line="a@b.com")) is True
+    blank = ClientPack(job_number="2026-Tanzim", cover_captured=True)
+    assert pack_cover_is_saved(blank) is True
+    save_client_pack(tmp_path, blank)
+    loaded = load_client_pack(tmp_path, "2026-Tanzim")
+    assert loaded is not None
+    assert loaded.cover_captured is True
+    assert pack_cover_is_saved(loaded) is True
 
 
 def test_missing_pack_is_none(tmp_path: Path) -> None:

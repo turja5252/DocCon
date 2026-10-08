@@ -2,6 +2,14 @@
 
 Newest first. Append a dated entry when a decision is locked, a test runs, or the next step changes.
 
+## 2026-10-08 — Shipped 2.06
+
+Source and the frozen exe are 2.06. Load reads the letter and the PEP only when the pack has no saved cover, then writes that cover without a Save click. The next Load uses the file. Load `2026-Tanzim`. Do not Confirm 075.
+
+## 2026-10-08 — Load reads the letter only the first time
+
+When `client-pack.json` is missing, or it has no saved cover, Load reads the letter and the PEP once and writes that cover into the pack. The next Load uses the file. Edits after that stay on Save. **Locate PEP…** still overwrites.
+
 ## 2026-10-08 — Shipped 2.05
 
 Source and the frozen exe are 2.05. Load does not scan job PDFs. Sync all and Sync packed pair drawings that have no file. Pack none turns Packed only off. Load `2026-Tanzim`. Do not Confirm 075.

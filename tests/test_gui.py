@@ -7,6 +7,7 @@ import threading
 import time
 import tkinter as tk
 from datetime import date, timedelta
+from types import SimpleNamespace
 from pathlib import Path
 from tkinter import ttk
 
@@ -1077,5 +1078,116 @@ def test_pdf_picker_starts_at_loaded_job_then_remembers(tmp_path: Path, monkeypa
         assert Path(app._picker_dir()) == nested
         app._reset_locate_to_job(other)
         assert Path(app._picker_dir()) == other
+    finally:
+        app.destroy()
+
+
+def _run_threads_now(monkeypatch: pytest.MonkeyPatch) -> None:
+    import doccon.gui as gui_mod
+
+    real = gui_mod.threading.Thread
+
+    class _Immediate(real):
+        def start(self) -> None:
+            self.run()
+
+    monkeypatch.setattr(gui_mod.threading, "Thread", _Immediate)
+
+
+def _wait_for_folder_files(app) -> None:
+    for _ in range(20):
+        app.update()
+        if app._pending_files is not None:
+            return
+
+
+def test_saved_cover_does_not_open_the_letter(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    try:
+        import doccon.gui as gui_mod
+        from doccon.gui import DocConApp
+        from doccon.pack_state import ClientPack, save_client_pack
+    except tk.TclError:
+        pytest.skip("Tk is not available")
+    save_client_pack(
+        tmp_path,
+        ClientPack(
+            job_number="2026-Tanzim",
+            to_line="client@example.com",
+            project_description="Tank",
+            pep_path=str(tmp_path / "7.0 Sales" / "PEP.xlsx"),
+        ),
+    )
+    called: list[str] = []
+    monkeypatch.setattr(gui_mod, "find_pep", lambda *_a, **_k: called.append("pep"))
+    monkeypatch.setattr(gui_mod, "load_pep", lambda *_a, **_k: called.append("load"))
+    try:
+        app = DocConApp()
+    except tk.TclError:
+        pytest.skip("Tk is not available")
+    app.withdraw()
+    _run_threads_now(monkeypatch)
+    try:
+        app._job_number = "2026-Tanzim"
+        app._job_folder = tmp_path
+        app._start_folder_files(app._load_gen, "2026-Tanzim", tmp_path, "client")
+        _wait_for_folder_files(app)
+        assert called == []
+        assert app._pending_files is not None
+        assert app._pending_files[-1] is True
+        assert app._pending_files[4] == tmp_path / "7.0 Sales" / "PEP.xlsx"
+    finally:
+        app.destroy()
+
+
+def test_missing_cover_reads_the_letter_once_and_saves_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    try:
+        import doccon.gui as gui_mod
+        from doccon.client_log import BookCover
+        from doccon.gui import DocConApp
+        from doccon.pack_state import ClientPack, load_client_pack, save_client_pack
+    except tk.TclError:
+        pytest.skip("Tk is not available")
+    save_client_pack(tmp_path, ClientPack(job_number="2026-Tanzim"))
+    called: list[str] = []
+    monkeypatch.setattr(gui_mod, "find_pep", lambda *_a, **_k: called.append("pep"))
+    monkeypatch.setattr(
+        gui_mod,
+        "book_cover_for_job",
+        lambda *_a, **_k: called.append("book") or BookCover(to_line="client@example.com"),
+    )
+    monkeypatch.setattr(gui_mod, "adopt_transmittal_books", lambda *_a, **_k: called.append("adopt") or [])
+    try:
+        app = DocConApp()
+    except tk.TclError:
+        pytest.skip("Tk is not available")
+    app.withdraw()
+    _run_threads_now(monkeypatch)
+    try:
+        app._job_number = "2026-Tanzim"
+        app._job_folder = tmp_path
+        app._start_folder_files(app._load_gen, "2026-Tanzim", tmp_path, "client")
+        _wait_for_folder_files(app)
+        assert called == ["adopt", "pep", "book"]
+        assert app._pending_files is not None
+        assert app._pending_files[-1] is False
+        app.board.selected_keys = lambda: ()
+        app.board.next_edits = lambda: {}
+        app._matches = {"a": SimpleNamespace(confidence="High")}
+        app.board._blocks["a"] = object()
+        app._apply_folder_files(app._pending_files)
+        loaded = load_client_pack(tmp_path, "2026-Tanzim")
+        assert loaded is not None
+        assert loaded.cover_captured is True
+        assert loaded.to_line == "client@example.com"
+        called.clear()
+        app._pending_files = None
+        app._matches = {}
+        app.board._blocks.clear()
+        app._start_folder_files(app._load_gen, "2026-Tanzim", tmp_path, "client")
+        _wait_for_folder_files(app)
+        assert called == []
+        assert app._pending_files[-1] is True
     finally:
         app.destroy()

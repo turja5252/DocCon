@@ -116,6 +116,7 @@ from doccon.pack_state import (
     document_no_for_file,
     extra_from_path,
     load_client_pack,
+    pack_cover_is_saved,
     save_client_pack,
     with_cover_recipients,
 )
@@ -1216,6 +1217,7 @@ class DocConApp(tk.Tk):
         self._job_number = ""
         self._pep_path: Path | None = None
         self._cover_loading = False
+        self._cover_captured = False
         self._jira_loading = False
         self._located_pdfs: dict[str, LocatedPdf] = {}
         self._pack_extras: list[PackExtra] = []
@@ -1547,7 +1549,6 @@ class DocConApp(tk.Tk):
         shop_to, shop_cc = self._shop_default_lines()
         if kind not in self._book_covers and self._job_folder is not None and self._job_number:
             self._book_covers[kind] = BookCover()
-            self._read_kind_cover_later(kind)
         chosen = pick_cover_fields(
             book=self._book_covers.get(kind, BookCover()),
             pack_to=pack_to,
@@ -1567,30 +1568,6 @@ class DocConApp(tk.Tk):
         finally:
             self._cover_loading = False
         self._cover_stamp = self._cover_text_now()
-
-    def _read_kind_cover_later(self, kind: str) -> None:
-        """Read the letter off the window thread. A Dropbox xlsm must not freeze the click."""
-        folder = self._job_folder
-        job = self._job_number
-        gen = self._load_gen
-
-        def work() -> None:
-            try:
-                book = book_cover_for_job(folder, job, kind) if folder is not None else BookCover()
-            except (OSError, KeyError, ValueError, TypeError):
-                book = BookCover()
-
-            def apply() -> None:
-                if gen != self._load_gen or self._job_number != job:
-                    return
-                self._book_covers[kind] = book
-                if self.kind.get() == kind:
-                    self._fill_cover_if_untouched(kind)
-
-            with contextlib.suppress(tk.TclError, RuntimeError):
-                self.after(0, apply)
-
-        threading.Thread(target=work, daemon=True).start()
 
     def _cover_suffix(self) -> str:
         kind = self.kind.get()
@@ -1756,6 +1733,7 @@ class DocConApp(tk.Tk):
             wo=self._job_field("wo"),
             moc=self._job_field("moc"),
             pep_fields_saved=True,
+            cover_captured=self._cover_captured or bool(existing and existing.cover_captured),
             selected_keys=self.board.selected_keys(),
             located_pdfs=dict(self._located_pdfs),
             next_edits=self.board.next_edits(),
@@ -2493,6 +2471,7 @@ class DocConApp(tk.Tk):
         self._work = "load"
         self._job_number = job
         self._job_folder = None
+        self._cover_captured = False
         self._locate_dir = ""
         self._job_project = None
         self._eddi_contexts = {}
@@ -2728,13 +2707,23 @@ class DocConApp(tk.Tk):
             self._set_status(f"{job}: {len(self._matches)} drawing(s), {missing} missing PDF  |  {label}")
 
     def _start_folder_files(self, gen: int, job: str, folder: Path, kind: str) -> None:
-        """Letter and PEP stay off the window thread. PDF matching waits for Sync all or Sync packed."""
+        """Use the saved cover. Read the letter once when the pack does not have it yet."""
 
         def files() -> None:
             adopted_label = ""
             pep_path: Path | None = None
             pep_cover: PepCover | None = None
             book = BookCover()
+            try:
+                pack = load_client_pack(folder, job)
+            except (OSError, ValueError, TypeError):
+                pack = None
+            if pack_cover_is_saved(pack):
+                remembered = Path(pack.pep_path) if pack is not None and pack.pep_path else None
+                self._post_folder_files(
+                    gen, job, [], "", remembered, None, BookCover(), kind, from_pack=True
+                )
+                return
             try:
                 self._post_status(gen, f"Reading the letter for {folder.name}…")
                 adopted = adopt_transmittal_books(folder, job)
@@ -2756,7 +2745,9 @@ class DocConApp(tk.Tk):
                     book = BookCover()
             except Exception as exc:
                 log("WARN", "load", f"folder files {exc}")
-            self._post_folder_files(gen, job, [], adopted_label, pep_path, pep_cover, book, kind)
+            self._post_folder_files(
+                gen, job, [], adopted_label, pep_path, pep_cover, book, kind, from_pack=False
+            )
 
         threading.Thread(target=files, daemon=True).start()
 
@@ -2770,13 +2761,14 @@ class DocConApp(tk.Tk):
         pep_cover: PepCover | None,
         book: BookCover,
         kind: str,
+        from_pack: bool = False,
     ) -> None:
-        payload = (gen, job, hits, adopted_label, pep_path, pep_cover, book, kind)
+        payload = (gen, job, hits, adopted_label, pep_path, pep_cover, book, kind, from_pack)
         with contextlib.suppress(tk.TclError, RuntimeError):
             self.after(0, lambda item=payload: self._apply_folder_files(item))
 
     def _apply_folder_files(self, payload: tuple) -> None:
-        gen, job, _hits, adopted_label, pep_path, pep_cover, book, kind = payload
+        gen, job, _hits, adopted_label, pep_path, pep_cover, book, kind, from_pack = payload
         if gen != self._load_gen or self._job_number != job:
             return
         if not self._matches or len(self.board._blocks) < len(self._matches):
@@ -2792,6 +2784,9 @@ class DocConApp(tk.Tk):
             self._set_pep(pep_path)
         if self.kind.get() == kind:
             self._fill_cover_if_untouched(kind)
+        if not from_pack:
+            self._cover_captured = True
+            self._save_pack(quiet=True, force=True)
         folder_name = self._job_folder.name if self._job_folder is not None else job
         missing = sum(1 for row in self._matches.values() if row.confidence == "Missing")
         self._set_status(
