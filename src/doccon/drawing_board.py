@@ -200,8 +200,8 @@ SHELL_PAINT_BATCH = 12
 # A second click on the banded row clears it, after this pause so a double-click can still edit.
 UNSELECT_MS = 280
 PAINT_SLICE_MS = 1
-# Next editors are filled after the light list is on screen. Scrolling does not build them.
-PRERENDER_BATCH = 2
+# Next editors are filled for the rows on screen. The rest wait until she scrolls to them.
+PRERENDER_BATCH = 4
 SHELL_ROW_PX = 56
 # Extra room under the last row. The scroll area was stopping one or two items short.
 SCROLL_TAIL_PX = SHELL_ROW_PX * 2
@@ -634,6 +634,21 @@ class _Block:
     edit_ids: tuple[int, ...] = ()
 
 
+@dataclass
+class _Hold:
+    """Pack tick and Next values for a drawing whose widgets are not on screen yet."""
+
+    key: str
+    group: str
+    include: tk.BooleanVar
+    nexts: dict[str, _Held]
+    drawing_id_next: _Held
+    title_next: _Held
+    status_next: _Held
+    extra: bool = False
+    shown: bool = True
+
+
 class DrawingBoard(ttk.Frame):
     def __init__(
         self,
@@ -667,6 +682,12 @@ class DrawingBoard(ttk.Frame):
         self._on_no_return = on_no_return
         self._matches: dict[str, MatchedRow] = {}
         self._blocks: dict[str, _Block] = {}
+        self._holds: dict[str, _Hold] = {}
+        self._order: list[str] = []
+        self._spacer: tk.Frame | None = None
+        self._spacer_freeze: tk.Frame | None = None
+        self._spacer_px = 0
+        self._filling = False
         self._focus_key = ""
         self._focus_painted = ""
         self._active_next: NextWidget | None = None
@@ -689,6 +710,7 @@ class DrawingBoard(ttk.Frame):
         self._paint_group: str | None = None
         self._paint_checked: set[str] | None = None
         self._paint_total = 0
+        self._paint_notified = False
         self._paint_done = 0
         self._defer_editors = False
         self._editor_count = 0
@@ -998,6 +1020,9 @@ class DrawingBoard(ttk.Frame):
     def _on_yscroll(self, first: str, last: str) -> None:
         self._vscroll.set(first, last)
         self._last_scroll = time.monotonic()
+        self._fill_shells_toward_scroll()
+        if self._defer_editors:
+            self._schedule_mount(delay=180)
 
     def _xview(self, *args) -> None:
         self._canvas.xview(*args)
@@ -1247,9 +1272,10 @@ class DrawingBoard(ttk.Frame):
             self._pin_frozen()
         finally:
             self._syncing = False
+        self._fill_shells_toward_scroll()
 
-    def _list_body_height(self) -> int:
-        """Full list height, including the last row and a little room under it."""
+    def _content_height(self) -> int:
+        """Height of the rows that exist as widgets."""
         best = 1
         for frame in (self._inner, self._freeze_inner):
             try:
@@ -1261,7 +1287,82 @@ class DrawingBoard(ttk.Frame):
                         best = max(best, int(box[1]) + int(box[3]))
             except tk.TclError:
                 continue
-        return best + SCROLL_TAIL_PX
+        return best
+
+    def _list_body_height(self) -> int:
+        """Scroll height for the whole job. A spacer stands in for rows not built yet."""
+        return self._content_height() + SCROLL_TAIL_PX
+
+    def _painted_height(self) -> int:
+        """Height of real rows, leaving out the blank that stands in for rows below."""
+        measured = self._content_height() - self._spacer_px
+        estimated = self._paint_done * (SHELL_ROW_PX // 2)
+        return max(measured, estimated, 1)
+
+    def _screen_is_painted(self) -> bool:
+        """True once the light rows cover the window and about one screen past the scroll position."""
+        try:
+            view_h = int(self._canvas.winfo_height())
+            _first, last = self._canvas.yview()
+        except tk.TclError:
+            return False
+        if view_h <= 1:
+            return False
+        need = float(last) * self._list_body_height() + view_h
+        return self._painted_height() >= need + view_h
+
+    def _layout_not_ready(self) -> bool:
+        """The window has no height yet. Stop after one batch so Load does not build every row."""
+        try:
+            view_h = int(self._canvas.winfo_height())
+        except tk.TclError:
+            return self._paint_done >= SHELL_PAINT_BATCH
+        return view_h <= 1 and self._paint_done >= SHELL_PAINT_BATCH
+
+    def _release_paint_for_load(self) -> None:
+        """The window can be used. Rows below the screen are built when she scrolls there."""
+        if self._paint_notified:
+            return
+        self._paint_notified = True
+        self._map_inner()
+        self._suspend_layout = False
+        progress = self._paint_on_progress
+        if progress is not None:
+            progress(self._paint_total, self._paint_total)
+        done = self._paint_on_done
+        self._paint_on_done = None
+        self._paint_on_progress = None
+        if done is not None:
+            done()
+
+    def _fill_shells_toward_scroll(self) -> None:
+        """Build the next light rows when the scroll position reaches them."""
+        if not self._paint_queue or self._filling:
+            return
+        self._filling = True
+        try:
+            self._fill_shells_now()
+        finally:
+            self._filling = False
+
+    def _fill_shells_now(self) -> None:
+        if not self._paint_queue:
+            return
+        try:
+            _first, last = self._canvas.yview()
+            view_h = int(self._canvas.winfo_height())
+        except tk.TclError:
+            return
+        if view_h <= 1:
+            return
+        need = float(last) * self._list_body_height() + view_h
+        if self._painted_height() >= need:
+            return
+        if self._paint_after:
+            with contextlib.suppress(tk.TclError):
+                self.after_cancel(self._paint_after)
+            self._paint_after = ""
+        self._paint_batch()
 
     def reveal_key(self, key: str) -> None:
         """Scroll so this row is on screen. Used when a Non Jira line is added at the bottom."""
@@ -2163,12 +2264,12 @@ class DrawingBoard(ttk.Frame):
     def unpaired_rows(self, *, packed_only: bool) -> list[MatchedRow]:
         """Jira rows that still have no PDF. Non Jira rows stay out of the Dropbox hunt."""
         rows: list[MatchedRow] = []
-        for key, block in self._blocks.items():
+        for block in self._states():
             if block.extra:
                 continue
             if packed_only and not block.include.get():
                 continue
-            row = self._matches.get(key)
+            row = self._matches.get(block.key)
             if row is None or row.pdf is not None:
                 continue
             rows.append(row)
@@ -2308,7 +2409,7 @@ class DrawingBoard(ttk.Frame):
         self._schedule_frozen_row_sync()
 
     def _stamp_pack_tick(self, key: str) -> None:
-        block = self._blocks.get(key)
+        block = self._state(key)
         if block is None or not block.include.get() or block.extra:
             return
         self.stamp_cover_dates_on_keys((key,))
@@ -2351,7 +2452,11 @@ class DrawingBoard(ttk.Frame):
     def _refresh_filter(self) -> None:
         packed_only = bool(self._packed_only.get())
         needle = self._filter_needle.strip()
-        if not self._blocks:
+        if self._paint_queue and (
+            needle or (packed_only and any(row.drawing.key in self._holds and self._holds[row.drawing.key].include.get() for row in self._paint_queue))
+        ):
+            self._paint_remaining_now()
+        if not self._blocks and not self._holds:
             self._filter_note.configure(text="No packed drawings" if packed_only else "Type, then Find")
             self._filter_hidden = False
             return
@@ -2518,7 +2623,12 @@ class DrawingBoard(ttk.Frame):
             for child in host.winfo_children():
                 child.destroy()
         self._blocks.clear()
+        self._holds.clear()
+        self._order.clear()
         self._matches.clear()
+        self._spacer = None
+        self._spacer_freeze = None
+        self._spacer_px = 0
         self._width_locks.clear()
         self._vlines.clear()
         self._freeze_vlines.clear()
@@ -2585,6 +2695,89 @@ class DrawingBoard(ttk.Frame):
         self._paint_group = None
         self._paint_total = len(ordered)
         self._paint_done = 0
+        self._paint_notified = False
+        self._seed_holds(ordered, checked)
+
+    def _seed_holds(self, ordered: list[MatchedRow], checked: set[str] | None) -> None:
+        """Remember every drawing before any row widget exists."""
+        self._holds = {}
+        self._order = []
+        grid = 0
+        group: str | None = None
+        for row in ordered:
+            title = eddi_group_title(row.drawing.eddi_status)
+            if title != group:
+                grid += 1
+                group = title
+            drawing = row.drawing
+            key = drawing.key
+            self._matches[key] = row
+            include = checked is None or key in checked
+            hold = _Hold(
+                key=key,
+                group=title,
+                include=self._arm_pack(include),
+                nexts={
+                    field: _Held(getattr(drawing, field) or "")
+                    for field, _title, _values, _width, _kind in FIELD_KEYS
+                },
+                drawing_id_next=_Held(drawing.drawing_id or ""),
+                title_next=_Held(drawing.title or ""),
+                status_next=_Held(drawing.status or ""),
+            )
+            hold.include.trace_add("write", lambda *_args, drawing_key=key: self._on_pack_tick(drawing_key))
+            self._holds[key] = hold
+            self._order.append(key)
+            grid += 4
+        self._jira_grid_end = grid
+        self._set_spacer()
+
+    def _set_spacer(self) -> None:
+        """Blank height for drawings that do not have widgets yet, so the scroll bar matches the job."""
+        px = len(self._paint_queue) * SHELL_ROW_PX
+        self._spacer_px = px
+        if self._jira_grid_end <= 0:
+            return
+        if self._spacer is None:
+            self._spacer = tk.Frame(self._inner, bg=BG, highlightthickness=0, bd=0)
+            self._spacer_freeze = tk.Frame(self._freeze_inner, bg=BG, highlightthickness=0, bd=0)
+            self._spacer.grid(row=self._jira_grid_end, column=0, sticky="ew")
+            self._spacer_freeze.grid(row=self._jira_grid_end, column=0, sticky="ew")
+        for frame in (self._inner, self._freeze_inner):
+            frame.rowconfigure(self._jira_grid_end, minsize=px, weight=0)
+
+    def _state(self, key: str) -> _Block | _Hold | None:
+        block = self._blocks.get(key)
+        if block is not None:
+            return block
+        return self._holds.get(key)
+
+    def _states(self):
+        """Built rows, then drawings that are still only data, then Non Jira lines."""
+        seen: set[str] = set()
+        keys = self._order or list(self._blocks)
+        for key in keys:
+            state = self._state(key)
+            if state is None:
+                continue
+            seen.add(key)
+            yield state
+        for key, block in self._blocks.items():
+            if key not in seen:
+                yield block
+
+    def _paint_remaining_now(self) -> None:
+        """Build every light row left in the queue. Used when a filter has to show them."""
+        if self._paint_after:
+            with contextlib.suppress(tk.TclError):
+                self.after_cancel(self._paint_after)
+            self._paint_after = ""
+        while self._paint_queue:
+            try:
+                self._paint_next()
+            except tk.TclError:
+                continue
+        self._finish_paint()
 
     def _schedule_paint(self) -> None:
         try:
@@ -2605,6 +2798,9 @@ class DrawingBoard(ttk.Frame):
         if self._paint_on_progress is not None:
             self._paint_on_progress(self._paint_done, self._paint_total)
         self._reveal_painted()
+        if self._paint_queue and (self._screen_is_painted() or self._layout_not_ready()):
+            self._release_paint_for_load()
+            return
         if self._paint_queue:
             self._schedule_paint()
             return
@@ -2632,9 +2828,13 @@ class DrawingBoard(ttk.Frame):
     def _paint_next(self) -> None:
         if not self._paint_queue:
             return
-        row = self._paint_queue.popleft()
+        queued = self._paint_queue.popleft()
+        row = self._matches.get(queued.drawing.key, queued)
         self._matches[row.drawing.key] = row
-        include = self._paint_checked is None or row.drawing.key in self._paint_checked
+        hold = self._holds.get(row.drawing.key)
+        include = bool(hold.include.get()) if hold is not None else (
+            self._paint_checked is None or row.drawing.key in self._paint_checked
+        )
         group = eddi_group_title(row.drawing.eddi_status)
         if group != self._paint_group:
             self._add_group_header(self._paint_grid, group)
@@ -2643,11 +2843,13 @@ class DrawingBoard(ttk.Frame):
         self._add_block(self._paint_grid, row, include=include)
         self._paint_grid += 4
         self._paint_done += 1
+        self._set_spacer()
 
     def _finish_paint(self) -> None:
         self._paint_after = ""
         self._paint_queue = deque()
-        self._jira_grid_end = self._paint_grid
+        self._jira_grid_end = max(self._jira_grid_end, self._paint_grid)
+        self._set_spacer()
         self._map_inner()
         self._suspend_layout = False
         self._frozen_passes = 0
@@ -2657,7 +2859,8 @@ class DrawingBoard(ttk.Frame):
         self._paint_on_progress = None
         self._paint_on_done = None
         self._sync_all_group_packs()
-        if done is not None:
+        if done is not None and not self._paint_notified:
+            self._paint_notified = True
             done()
         try:
             self.after_idle(self._clear_pack_status_loading)
@@ -2666,8 +2869,32 @@ class DrawingBoard(ttk.Frame):
             self._pack_status_loading = False
             self._pack_purpose_loading = False
 
+    def _row_is_near_view(self, block: _Block) -> bool:
+        """True for rows on screen, plus about one screen above and below."""
+        try:
+            view_h = int(self._canvas.winfo_height())
+        except tk.TclError:
+            return True
+        if view_h <= 1:
+            return False
+        y = self._block_top(block)
+        if y is None or (y == 0.0 and block.grid_top > 4):
+            y = float(block.grid_top) * (SHELL_ROW_PX / 4)
+        try:
+            view_top = float(self._canvas.canvasy(0))
+        except (tk.TclError, TypeError, ValueError):
+            return True
+        buffer = float(view_h)
+        return (y + SHELL_ROW_PX) >= view_top - buffer and y <= view_top + view_h + buffer
+
     def _render_progress(self) -> tuple[int, int]:
-        rows = [block for block in self._blocks.values() if not block.extra]
+        rows = [
+            block
+            for block in self._blocks.values()
+            if not block.extra and self._row_is_near_view(block)
+        ]
+        if not rows:
+            rows = [block for block in self._blocks.values() if not block.extra]
         done = sum(1 for block in rows if block.mounted)
         return done, len(rows)
 
@@ -2677,6 +2904,8 @@ class DrawingBoard(ttk.Frame):
             return
         done, total = self._render_progress()
         hook(done, total)
+        if total == 0 or done >= total:
+            self._on_render = None
 
     def _bind_overflow(self, widget: tk.Misc, get_text, min_chars: int) -> None:
         """Hover tip on clipped Now labels. Text Next boxes stay in-place (no copy window)."""
@@ -2775,7 +3004,7 @@ class DrawingBoard(ttk.Frame):
         want = bool(var.get())
         self._group_pack_guard = True
         try:
-            for block in self._blocks.values():
+            for block in self._states():
                 if block.group == group and bool(block.include.get()) != want:
                     block.include.set(want)
         finally:
@@ -2788,7 +3017,7 @@ class DrawingBoard(ttk.Frame):
         var = self._group_pack.get(group)
         if var is None:
             return
-        members = [block for block in self._blocks.values() if block.group == group]
+        members = [block for block in self._states() if block.group == group]
         if not members:
             return
         all_on = all(bool(block.include.get()) for block in members)
@@ -2827,10 +3056,11 @@ class DrawingBoard(ttk.Frame):
         """Pack, id, and the Now labels. Next editors are filled after the list is up."""
         drawing = row.drawing
         group = eddi_group_title(drawing.eddi_status)
+        hold = self._holds.get(drawing.key)
         h_top, h_top_f = self._hline(top)
         now_row = top + 1
         next_row = top + 2
-        pack = self._arm_pack(include)
+        pack = hold.include if hold is not None else self._arm_pack(include)
         pack_mark = PackMark(self._freeze_inner, pack)
         pack_mark._doccon_logical = PACK_COL_INDEX
         pack_mark.grid(
@@ -2864,9 +3094,11 @@ class DrawingBoard(ttk.Frame):
             frame.rowconfigure(now_row, minsize=SHELL_ROW_PX // 2, weight=0)
             frame.rowconfigure(next_row, minsize=edit_px, weight=0)
         h_bot, h_bot_f = self._hline(top + 3)
-        nexts: dict[str, NextWidget | _Held] = {
-            field: _Held(getattr(drawing, field) or "") for field, _t, _v, _w, _k in FIELD_KEYS
-        }
+        nexts: dict[str, NextWidget | _Held] = (
+            hold.nexts
+            if hold is not None
+            else {field: _Held(getattr(drawing, field) or "") for field, _t, _v, _w, _k in FIELD_KEYS}
+        )
         widgets: list[tk.Misc] = [
             h_top,
             h_top_f,
@@ -2887,11 +3119,11 @@ class DrawingBoard(ttk.Frame):
             originals=originals,
             nexts=nexts,
             drawing_label=drawing_label,
-            drawing_id_next=_Held(drawing.drawing_id or ""),
+            drawing_id_next=hold.drawing_id_next if hold is not None else _Held(drawing.drawing_id or ""),
             title_label=title_label,
-            title_next=_Held(drawing.title or ""),
+            title_next=hold.title_next if hold is not None else _Held(drawing.title or ""),
             status_label=status_label,
-            status_next=_Held(drawing.status or ""),
+            status_next=hold.status_next if hold is not None else _Held(drawing.status or ""),
             match_label=match_label,
             pdf_label=pdf_label,
             pdf_cell=pdf_cell,
@@ -2905,7 +3137,8 @@ class DrawingBoard(ttk.Frame):
             mounted=False,
             grid_top=top,
         )
-        pack.trace_add("write", lambda *_args, drawing_key=drawing.key: self._on_pack_tick(drawing_key))
+        if hold is None:
+            pack.trace_add("write", lambda *_args, drawing_key=drawing.key: self._on_pack_tick(drawing_key))
         self._bind_row_select(
             [
                 drawing_label,
@@ -3057,7 +3290,7 @@ class DrawingBoard(ttk.Frame):
             )
 
     def _schedule_mount(self, *, delay: int = 20) -> None:
-        """Build the remaining rows after the list is up. Scrolling does not build them."""
+        """Build Next editors for the rows on screen. The rest wait until she scrolls there."""
         if not self._defer_editors:
             return
         if self._mount_after:
@@ -3086,11 +3319,18 @@ class DrawingBoard(ttk.Frame):
         if time.monotonic() - self._last_scroll < 0.15:
             self._schedule_mount(delay=40)
             return
+        try:
+            view_h = int(self._canvas.winfo_height())
+        except tk.TclError:
+            view_h = 0
+        if view_h <= 1:
+            self._schedule_mount(delay=50)
+            return
         self._suspend_layout = True
         built = 0
         try:
             for block in list(self._blocks.values()):
-                if block.mounted or block.extra:
+                if block.mounted or block.extra or not self._row_is_near_view(block):
                     continue
                 self._mount_block(block)
                 built += 1
@@ -3098,7 +3338,10 @@ class DrawingBoard(ttk.Frame):
                     break
         finally:
             self._suspend_layout = False
-        if any(not block.mounted and not block.extra for block in self._blocks.values()):
+        if any(
+            not block.mounted and not block.extra and self._row_is_near_view(block)
+            for block in self._blocks.values()
+        ):
             self._report_render()
             self._schedule_mount(delay=1)
             return
@@ -3287,7 +3530,8 @@ class DrawingBoard(ttk.Frame):
             grid_top=top,
             edit_ids=tuple(id(widget) for widget in (pdf_actions, *next_cells)),
         )
-        pack.trace_add("write", lambda *_args, drawing_key=drawing.key: self._on_pack_tick(drawing_key))
+        if self._holds.get(drawing.key) is None:
+            pack.trace_add("write", lambda *_args, drawing_key=drawing.key: self._on_pack_tick(drawing_key))
         self._watch_next(self._blocks[drawing.key])
         if not include or not self._next_options_open(self._blocks[drawing.key]):
             self._set_edit_row_open(self._blocks[drawing.key], self._next_options_open(self._blocks[drawing.key]))
@@ -3416,7 +3660,7 @@ class DrawingBoard(ttk.Frame):
         self._group_pack_marks = marks
 
     def _paint_extra_blocks(self, items: list[PackExtra], statuses: tuple[str, ...]) -> None:
-        grid = self._jira_grid_end
+        grid = self._jira_grid_end + (1 if self._jira_grid_end else 0)
         self._add_group_header(grid, NON_JIRA_GROUP)
         grid += 1
         for item in items:
@@ -3585,7 +3829,7 @@ class DrawingBoard(ttk.Frame):
         filtering = bool(self._filter_needle.strip())
         self._suspend_layout = True
         try:
-            for block in self._blocks.values():
+            for block in self._states():
                 if filtering and not self._block_matches(block):
                     continue
                 block.include.set(checked)
@@ -3665,7 +3909,7 @@ class DrawingBoard(ttk.Frame):
         if not status_value and not updates:
             return 0
         count = 0
-        for block in self._blocks.values():
+        for block in self._states():
             if not block.include.get() or block.extra:
                 continue
             self._apply_next_to_block(block, status=status_value, fields=updates)
@@ -3682,7 +3926,7 @@ class DrawingBoard(ttk.Frame):
             return 0
         count = 0
         for key in keys:
-            block = self._blocks.get(key)
+            block = self._state(key)
             if block is None or not block.include.get():
                 continue
             self._apply_next_to_block(block, fields={field: value})
@@ -3707,16 +3951,16 @@ class DrawingBoard(ttk.Frame):
 
     def stamp_packed_cover_dates(self) -> int:
         """Re-stamp every cover date onto currently packed rows. Blank does not clear."""
-        packed = tuple(key for key, block in self._blocks.items() if block.include.get())
+        packed = tuple(block.key for block in self._states() if block.include.get())
         return self.stamp_cover_dates_on_keys(packed)
 
     def restore_packed_next_field(self, field: str) -> int:
         """Copy Now onto this Next field for packed rows only. Does not write Jira."""
         count = 0
-        for key, block in self._blocks.items():
+        for block in self._states():
             if not block.include.get():
                 continue
-            if self.restore_next_field(key, field):
+            if self.restore_next_field(block.key, field):
                 count += 1
         return count
 
@@ -3829,7 +4073,7 @@ class DrawingBoard(ttk.Frame):
             return 0
         count = 0
         for key in keys:
-            block = self._blocks.get(key)
+            block = self._state(key)
             if block is None or not block.include.get():
                 continue
             self._apply_next_to_block(block, status=value)
@@ -3919,10 +4163,10 @@ class DrawingBoard(ttk.Frame):
         text = (value or "").strip()
         if not text:
             count = 0
-            for key, block in self._blocks.items():
+            for block in self._states():
                 if not block.include.get() or block.extra:
                     continue
-                if self.restore_next_field(key, field):
+                if self.restore_next_field(block.key, field):
                     count += 1
             return count
         return self.apply_next_to_pack(fields={field: text})
@@ -3983,7 +4227,7 @@ class DrawingBoard(ttk.Frame):
             if not value:
                 continue
             for key in keys:
-                block = self._blocks.get(key)
+                block = self._state(key)
                 if block is None or not block.include.get() or block.extra:
                     continue
                 self._apply_next_to_block(block, fields={field: value})
@@ -4071,7 +4315,7 @@ class DrawingBoard(ttk.Frame):
             return 0
         count = 0
         for key in keys:
-            block = self._blocks.get(key)
+            block = self._state(key)
             if block is None or not block.include.get() or block.extra:
                 continue
             self._apply_next_to_block(block, fields={target: value})
@@ -4084,10 +4328,10 @@ class DrawingBoard(ttk.Frame):
         target = self._pack_purpose_field or "purpose"
         if not value:
             count = 0
-            for key, block in self._blocks.items():
+            for block in self._states():
                 if not block.include.get() or block.extra:
                     continue
-                if self.restore_next_field(key, target):
+                if self.restore_next_field(block.key, target):
                     count += 1
             return count
         return self.apply_next_to_pack(fields={target: value})
@@ -4134,7 +4378,7 @@ class DrawingBoard(ttk.Frame):
 
     def restore_next_field(self, key: str, field: str) -> bool:
         """Copy this field's Now value onto Next. Does not write Jira."""
-        block = self._blocks.get(key)
+        block = self._state(key)
         row = self._matches.get(key)
         if block is None or row is None:
             return False
@@ -4290,7 +4534,8 @@ class DrawingBoard(ttk.Frame):
     def next_edits(self) -> dict[str, dict[str, str]]:
         """Dirty Next fields keyed by Jira issue key. Empty when Next matches Now."""
         edits: dict[str, dict[str, str]] = {}
-        for key, block in self._blocks.items():
+        for block in self._states():
+            key = block.key
             row = self._matches.get(key)
             if row is None:
                 continue
@@ -4332,8 +4577,8 @@ class DrawingBoard(ttk.Frame):
         for ident, fields in edits.items():
             if not isinstance(fields, dict):
                 continue
-            key = ident if ident in self._blocks else by_drawing.get(str(ident).strip(), "")
-            block = self._blocks.get(key)
+            key = ident if ident in self._blocks or ident in self._holds else by_drawing.get(str(ident).strip(), "")
+            block = self._state(key)
             if block is None:
                 continue
             status = str(fields.get("status") or "")
@@ -4355,21 +4600,21 @@ class DrawingBoard(ttk.Frame):
     def current_rows(self) -> list[MatchedRow]:
         """Every listed row with Next values applied. Pack ticks do not matter."""
         rows: list[MatchedRow] = []
-        for key, block in self._blocks.items():
-            row = self._matches.get(key)
+        for block in self._states():
+            row = self._matches.get(block.key)
             if row is not None:
                 rows.append(self._with_next(row, block))
         return rows
 
     def selected_keys(self) -> tuple[str, ...]:
-        return tuple(key for key, block in self._blocks.items() if block.include.get())
+        return tuple(block.key for block in self._states() if block.include.get())
 
     def selected_rows(self) -> list[MatchedRow]:
         rows: list[MatchedRow] = []
-        for key, block in self._blocks.items():
+        for block in self._states():
             if not block.include.get():
                 continue
-            row = self._matches.get(key)
+            row = self._matches.get(block.key)
             if row is not None:
                 rows.append(self._with_next(row, block))
         return rows
@@ -4928,10 +5173,10 @@ class DrawingBoard(ttk.Frame):
 
     def pending_rows(self) -> list[MatchedRow]:
         pending: list[MatchedRow] = []
-        for key, block in self._blocks.items():
+        for block in self._states():
             if block.extra:
                 continue
-            row = self._matches.get(key)
+            row = self._matches.get(block.key)
             if row is None:
                 continue
             drawing = row.drawing

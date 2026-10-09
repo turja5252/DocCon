@@ -6,6 +6,10 @@ Newest first. Append a dated entry when a decision is locked, a test runs, or th
 
 Source and the frozen exe are 2.09. Create EDDI prints every listed Jira item in groups 1–9. A missing PDF and an unticked Pack stay on the sheet. Load `2026-Tanzim`. Do not Confirm 075.
 
+## 2026-10-09 — Render only the rows on screen
+
+Load finishes when the rows on screen exist. Rows below are not created until she scrolls to them. A 152-row job no longer builds a widget for every drawing before the button returns.
+
 ## 2026-10-09 — Create EDDI lists every Jira item
 
 Create EDDI prints every listed Jira item in groups 1–9. A missing PDF and an unticked Pack stay on the sheet. Generic and Non Jira stay off.

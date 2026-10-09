@@ -663,12 +663,15 @@ def test_load_paint_adds_light_rows_a_dozen_at_a_time() -> None:
         rows = [_row(key=f"P2024-{n}", drawing_id=f"2026-Tanzim-1-{n}") for n in range(1, 31)]
         board.start_rows(rows, on_progress=lambda done, _count: seen.append(done))
         for _ in range(80):
-            if not board._paint_queue and not board._paint_after:
+            if board._layout_not_ready() or board._screen_is_painted() or not board._paint_queue:
                 break
             root.update()
         assert seen
-        assert seen[-1] == 30
-        assert all(step - prev <= SHELL_PAINT_BATCH for prev, step in zip([0, *seen], seen))
+        assert board._paint_queue
+        assert len(board._blocks) < 30
+        steps = [n for n in seen if n < 30]
+        assert steps
+        assert all(step - prev <= SHELL_PAINT_BATCH for prev, step in zip([0, *steps], steps))
         assert all(not block.mounted for block in board._blocks.values())
         assert str(board._canvas.itemcget(board._window, "window"))
     finally:
@@ -678,7 +681,10 @@ def test_load_paint_adds_light_rows_a_dozen_at_a_time() -> None:
 def test_render_callback_counts_until_the_editors_are_built() -> None:
     root = _board_root()
     try:
+        root.geometry("900x500")
+        root.deiconify()
         board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.pack(fill="both", expand=True)
         seen: list[tuple[int, int]] = []
         rows = [_row(key=f"P2024-{n}", drawing_id=f"2026-Tanzim-1-{n}") for n in range(1, 7)]
         board.start_rows(rows, on_render=lambda done, total: seen.append((done, total)))
@@ -1166,28 +1172,51 @@ def test_scroll_builds_locate_on_rows_below_the_first_screen() -> None:
 def test_scroll_does_not_build_rows_and_the_background_pass_does() -> None:
     root = _board_root()
     try:
-        root.geometry("900x400")
+        root.geometry("900x200")
+        root.deiconify()
         board = DrawingBoard(root, on_open_pdf=lambda _key: None)
         board.pack(fill="both", expand=True)
         rows = [_row(key=f"P2024-{n}", drawing_id=f"2026-Tanzim-1-{n}") for n in range(1, 28)]
         board._schedule_mount = lambda *args, **kwargs: None
         board.start_rows(rows)
         for _ in range(400):
-            if not board._paint_queue:
+            if board._screen_is_painted() or not board._paint_queue:
                 break
             root.update()
-        root.update_idletasks()
+        root.update()
+        assert board._canvas.winfo_height() > 1
+        assert board._paint_queue
+        assert "P2024-27" not in board._blocks
+        assert len(board.current_rows()) == 27
+        board.set_pack(True)
+        assert "P2024-27" in board.selected_keys()
         assert any(not block.mounted for block in board._blocks.values())
         board._on_yscroll("0.2", "0.5")
         root.update_idletasks()
         assert any(not block.mounted for block in board._blocks.values())
         board._last_scroll = 0.0
         for _ in range(40):
-            if all(block.mounted or block.extra for block in board._blocks.values()):
+            if not any(
+                not block.mounted and not block.extra and board._row_is_near_view(block)
+                for block in board._blocks.values()
+            ):
                 break
             board._mount_waiting()
-        assert all(block.mounted or block.extra for block in board._blocks.values())
+        assert any(block.mounted for block in board._blocks.values())
+        assert "P2024-27" not in board._blocks
+        board._canvas.yview_moveto(1.0)
+        for _ in range(400):
+            board._fill_shells_toward_scroll()
+            root.update()
+            if "P2024-27" in board._blocks and not board._paint_queue:
+                break
+        board._canvas.yview_moveto(1.0)
+        root.update_idletasks()
+        shell = board._blocks["P2024-27"]
+        assert not shell.mounted
+        board._mount_block(shell)
         built = board._blocks["P2024-27"]
+        assert built.mounted
         assert built.locate_btn is not None
         assert built.open_btn is not None
     finally:
