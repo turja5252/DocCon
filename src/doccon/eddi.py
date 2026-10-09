@@ -5,10 +5,11 @@
 """EDDI snapshot: one workbook and one PDF in the job.
 
 Jira stays the register. The form is ``templates/EDDI-template.xlsm`` next to
-Elite DocCon. The job keeps a single ``EDDI-{job}.xlsm`` in ``3.0 Doc Con``.
+Elite DocCon. The job keeps a single ``EDDI 3.0 - {job}.xlsm`` in ``3.0 Doc Con``.
+An older ``EDDI-{job}.xlsm`` already in the folder is left alone.
 Each Create EDDI copies sheet Project onto a new tab named with the date,
 fills that tab from console Next values (listed items with a paired PDF, not
-only Pack), and replaces the one PDF, named ``EDDI-{job}-{date}.pdf``. The
+only Pack), and replaces the one PDF, named ``EDDI 3.0 - {job}-{date}.pdf``. The
 date is also written on that sheet, so the PDF shows it. Sheet Project stays the blank
 form. A second run the same day adds ``{date}-2``. Empty 1–9 groups are
 hidden on the new tab. Not attached to Outlook.
@@ -67,7 +68,11 @@ FIELD_PURPOSE_LIST = "IFC,IFI"
 PURPOSE_COL_WIDTH = 14
 _HEADER_RE = re.compile(r"^\s*(\d+)\.\s+")
 _ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-_DATED_LIVE = re.compile(r"^EDDI-(.+)-(\d{4}-\d{2}-\d{2})\.(xlsx|xlsm)$", re.IGNORECASE)
+EDDI_CONSOLE_PREFIX = "EDDI 3.0 - "
+_DATED_LIVE = re.compile(
+    r"^EDDI 3\.0 - (.+)-(\d{4}-\d{2}-\d{2})\.(xlsx|xlsm)$",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -173,11 +178,16 @@ def form_group_items(drawings: list[DrawingRow]) -> dict[int, list[DrawingRow]]:
     return buckets
 
 
-def find_live_eddi_book(job_folder: Path, job_number: str) -> Path:
-    """The job's EDDI form: ``EDDI-{job}.xlsm``, or the parent job's form.
+def eddi_book_stem(job: str) -> str:
+    """Console workbook name without the Excel suffix."""
+    return f"{EDDI_CONSOLE_PREFIX}{job.strip()}"
 
-    ``2026-077-1`` uses ``EDDI-2026-077-1.xlsm`` when that file exists, otherwise
-    ``EDDI-2026-077.xlsm``. Dated snapshots are not the live form.
+
+def find_live_eddi_book(job_folder: Path, job_number: str) -> Path:
+    """DocCon's EDDI form: ``EDDI 3.0 - {job}.xlsm``, or the parent job's form.
+
+    ``2026-077-1`` uses ``EDDI 3.0 - 2026-077-1.xlsm`` when that file exists,
+    otherwise ``EDDI 3.0 - 2026-077.xlsm``. An older ``EDDI-{job}.xlsm`` is not this book.
     """
     keys = job_folder_keys(job_number)
     if not keys:
@@ -185,13 +195,13 @@ def find_live_eddi_book(job_folder: Path, job_number: str) -> Path:
     folder = Path(job_folder) / DOC_CON_DIR
     for key in keys:
         for suffix in (".xlsm", ".xlsx"):
-            candidate = folder / f"EDDI-{key}{suffix}"
+            candidate = folder / f"{eddi_book_stem(key)}{suffix}"
             if not candidate.is_file() or candidate.name.startswith("~$"):
                 continue
             if is_dated_eddi_name(candidate.name, key):
                 continue
             return candidate
-    expected = " or ".join(f"EDDI-{key}.xlsm" for key in keys)
+    expected = " or ".join(f"{eddi_book_stem(key)}.xlsm" for key in keys)
     raise LogError(
         f"No {expected} in 3.0 Doc Con. Put the EDDI form there (sheet Project), then try again."
     )
@@ -306,7 +316,7 @@ def build_fill_plan(
             if bounds[3] >= PURPOSE_COLUMN_INSERTS[0]:
                 bounds[3] += len(PURPOSE_COLUMN_INSERTS)
     return FillPlan(
-        stamp=stamp or f"EDDI-{job}",
+        stamp=stamp or eddi_book_stem(job),
         inserts=inserts,
         fills=fills,
         hide=hide,
@@ -342,11 +352,11 @@ def build_fill_plan(
 
 def eddi_stamp(job: str, sheet: str) -> str:
     """Line printed on the snapshot. The date is the tab name."""
-    return f"EDDI-{job.strip()} {sheet}".strip()
+    return f"{eddi_book_stem(job)} {sheet}".strip()
 
 
 def eddi_pdf_name(job: str, sheet: str) -> str:
-    return f"EDDI-{job.strip()}-{sheet}.pdf"
+    return f"{eddi_book_stem(job)}-{sheet}.pdf"
 
 
 def _keep_one_pdf(folder: Path, job: str, keep: Path) -> None:
@@ -354,7 +364,7 @@ def _keep_one_pdf(folder: Path, job: str, keep: Path) -> None:
     if not keep.is_file():
         return
     pattern = re.compile(
-        rf"^EDDI-{re.escape(job.strip())}(?:-\d{{4}}-\d{{2}}-\d{{2}}(?:-\d+)?)?\.pdf$",
+        rf"^EDDI 3\.0 - {re.escape(job.strip())}(?:-\d{{4}}-\d{{2}}-\d{{2}}(?:-\d+)?)?\.pdf$",
         re.IGNORECASE,
     )
     for path in folder.glob("*.pdf"):
@@ -436,9 +446,11 @@ def dated_sheet_name(existing: set[str], issued: date) -> str:
     return f"{base}-{number}"
 
 
-def _add_dated_sheet(wb: Workbook, issued: date) -> str:
+def _add_dated_sheet(wb: Workbook, issued: date, source_name: str = PROJECT_SHEET) -> str:
     """Copy the blank Project form onto a new tab. Project itself stays blank."""
-    source = _project_sheet(wb)
+    if source_name not in wb.sheetnames:
+        raise LogError(f"The EDDI form has no {source_name} sheet.")
+    source = wb[source_name]
     name = dated_sheet_name(set(wb.sheetnames), issued)
     copy = wb.copy_worksheet(source)
     copy.title = name
@@ -667,7 +679,11 @@ def eddi_form_for(job_folder: Path, job_number: str) -> tuple[Path, str]:
     except LogError:
         live = None
     if live is not None:
-        book_job = live.stem[5:] if live.stem.upper().startswith("EDDI-") else job
+        book_job = (
+            live.stem[len(EDDI_CONSOLE_PREFIX):]
+            if live.stem.startswith(EDDI_CONSOLE_PREFIX)
+            else job
+        )
         return live, book_job
     form = eddi_template_path()
     if not form.is_file():
@@ -675,6 +691,78 @@ def eddi_form_for(job_folder: Path, job_number: str) -> tuple[Path, str]:
             "DocCon has no EDDI form. Put EDDI-template.xlsm in the templates folder next to Elite DocCon."
         )
     return form, job
+
+
+_FORM_IMPORT = "EDDI form"
+
+
+def _sheet_has_groups(ws: Worksheet) -> bool:
+    return bool(parse_form_groups(ws))
+
+
+def _copy_form_sheet(source: Worksheet, target: Worksheet) -> None:
+    """Copy the template form into another workbook. Styles are copied as objects."""
+    for (row, col), source_cell in source._cells.items():
+        target_cell = target.cell(column=col, row=row)
+        target_cell.value = source_cell.value
+        if source_cell.has_style:
+            target_cell.font = copy(source_cell.font)
+            target_cell.border = copy(source_cell.border)
+            target_cell.fill = copy(source_cell.fill)
+            target_cell.number_format = source_cell.number_format
+            target_cell.alignment = copy(source_cell.alignment)
+            target_cell.protection = copy(source_cell.protection)
+    for attr in ("row_dimensions", "column_dimensions"):
+        src = getattr(source, attr)
+        dest = getattr(target, attr)
+        for key, dim in src.items():
+            dest[key] = copy(dim)
+            dest[key].worksheet = target
+    for merged in list(source.merged_cells.ranges):
+        target.merge_cells(str(merged))
+    target.page_margins = copy(source.page_margins)
+    target.page_setup = copy(source.page_setup)
+    target.print_options = copy(source.print_options)
+    target.sheet_format = copy(source.sheet_format)
+    target.sheet_properties = copy(source.sheet_properties)
+    target.print_area = source.print_area
+    for dv in source.data_validations.dataValidation:
+        target.add_data_validation(copy(dv))
+    for row in _row_break_ids(source):
+        target.row_breaks.append(Break(id=row, man=True, max=ITEM_COLS))
+
+
+def _install_template_form(wb: Workbook) -> str:
+    """Bring in DocCon's grouped form when this job's book has no groups 1–9."""
+    template = eddi_template_path()
+    if not template.is_file():
+        raise LogError(
+            "DocCon has no EDDI form. Put EDDI-template.xlsm in the templates folder next to Elite DocCon."
+        )
+    src = load_workbook(template, data_only=False, keep_vba=template.suffix.casefold() == ".xlsm")
+    try:
+        if not _sheet_has_groups(_project_sheet(src)):
+            raise LogError("The EDDI form has no Project groups 1–9.")
+        if _FORM_IMPORT in wb.sheetnames:
+            del wb[_FORM_IMPORT]
+        target = wb.create_sheet(_FORM_IMPORT)
+        _copy_form_sheet(_project_sheet(src), target)
+    finally:
+        src.close()
+    return _FORM_IMPORT
+
+
+def _prepare_dated_sheet(wb: Workbook, issued: date) -> str:
+    """Dated tab from this book's Project sheet, or from the DocCon form when that sheet is not a form."""
+    source_name = PROJECT_SHEET
+    imported = False
+    if PROJECT_SHEET not in wb.sheetnames or not _sheet_has_groups(wb[PROJECT_SHEET]):
+        source_name = _install_template_form(wb)
+        imported = True
+    sheet = _add_dated_sheet(wb, issued, source_name)
+    if imported and source_name in wb.sheetnames:
+        del wb[source_name]
+    return sheet
 
 
 def snapshot_eddi(
@@ -692,14 +780,14 @@ def snapshot_eddi(
     live, book_job = eddi_form_for(job_folder, job)
     folder = Path(job_folder) / DOC_CON_DIR
     folder.mkdir(parents=True, exist_ok=True)
-    dest_book = folder / f"EDDI-{book_job}{live.suffix}"
+    dest_book = folder / f"{eddi_book_stem(book_job)}{live.suffix}"
     if not dest_book.is_file():
         shutil.copy2(live, dest_book)
     if print_pdf:
         return _snapshot_with_excel(dest_book, book_job, drawings, issued)
     wb = _open_book(dest_book)
     try:
-        sheet = _add_dated_sheet(wb, issued)
+        sheet = _prepare_dated_sheet(wb, issued)
         count = fill_project_sheet(wb[sheet], book_job, drawings, stamp=eddi_stamp(book_job, sheet))
         wb.save(dest_book)
     except OSError as exc:
@@ -738,7 +826,7 @@ def _snapshot_with_excel(
         _unblock(local_book)
         prepared = load_workbook(local_book, data_only=False, keep_vba=local_book.suffix.casefold() == ".xlsm")
         try:
-            sheet = _add_dated_sheet(prepared, issued)
+            sheet = _prepare_dated_sheet(prepared, issued)
             dest_pdf = dest_book.parent / eddi_pdf_name(job, sheet)
             local_pdf = tmp_dir / dest_pdf.name
             expand_purpose_columns(prepared[sheet])

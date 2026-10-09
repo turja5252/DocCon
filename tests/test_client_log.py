@@ -494,6 +494,50 @@ def test_field_cover_uses_settings_when_letter_and_pack_are_blank() -> None:
     assert letter.cc_line == "super@eliteintegrityservices.com"
 
 
+def test_delete_last_tab_puts_the_counter_back(tmp_path: Path) -> None:
+    from doccon.client_log import delete_last_transmittal_tab, empty_shop_workbook
+
+    wb = empty_shop_workbook()
+    wb["TRANSMITTAL"]["C2"] = 6
+    wb["TRANSMITTAL"]["I4"] = "2026-Tanzim"
+    wb.create_sheet("4")
+    wb.create_sheet("5")
+    path = tmp_path / "ST-2026-Tanzim.xlsx"
+    wb.save(path)
+    wb.close()
+    removed, nxt = delete_last_transmittal_tab(path, "2026-Tanzim", SHOP)
+    assert (removed, nxt) == (5, 5)
+    loaded = load_workbook(path)
+    try:
+        assert "5" not in loaded.sheetnames
+        assert "4" in loaded.sheetnames
+        assert loaded["TRANSMITTAL"]["C2"].value == 5
+    finally:
+        loaded.close()
+
+
+def test_delete_last_tab_stops_at_the_highest_tab_left(tmp_path: Path) -> None:
+    from doccon.client_log import delete_last_transmittal_tab, empty_shop_workbook
+
+    wb = empty_shop_workbook()
+    wb["TRANSMITTAL"]["C2"] = 5
+    wb["TRANSMITTAL"]["I4"] = "2026-Tanzim"
+    wb.create_sheet("1")
+    wb.create_sheet("2")
+    wb.create_sheet("4")
+    path = tmp_path / "ST-2026-Tanzim.xlsx"
+    wb.save(path)
+    wb.close()
+    removed, nxt = delete_last_transmittal_tab(path, "2026-Tanzim", SHOP)
+    assert (removed, nxt) == (4, 3)
+    loaded = load_workbook(path)
+    try:
+        assert loaded.sheetnames == ["TRANSMITTAL", "1", "2"]
+        assert loaded["TRANSMITTAL"]["C2"].value == 3
+    finally:
+        loaded.close()
+
+
 def test_shop_cover_uses_settings_when_letter_and_pack_are_blank() -> None:
     chosen = pick_cover_fields(
         book=BookCover(),

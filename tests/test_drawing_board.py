@@ -407,15 +407,19 @@ def test_board_groups_by_eddi_with_headers(tmp_path) -> None:
         assert "nsew" not in str(board._blocks["P2024-2"].pack_mark.grid_info().get("sticky", ""))
         board._blocks["P2024-2"].include.set(False)
         assert board._blocks["P2024-2"].pack_mark.cget("text") == ""
-        assert board._blocks["P2024-2"].locate_btn.winfo_manager() in {"grid", "pack"}
-        assert board._blocks["P2024-3"].locate_btn.winfo_manager() in {"grid", "pack"}
+        assert board._blocks["P2024-2"].locate_btn.winfo_manager() == "place"
+        assert board._blocks["P2024-3"].locate_btn.winfo_manager() == "place"
         matched_block = board._blocks["P2024-2"]
         missing_block = board._blocks["P2024-3"]
-        assert str(matched_block.open_btn.cget("text")) == "Open"
-        assert str(matched_block.preview_btn.cget("text")) == "Preview"
+        assert matched_block.open_btn._doccon_tip == "Open"
+        assert matched_block.preview_btn._doccon_tip == "Preview"
+        assert matched_block.locate_btn._doccon_tip == "Locate…"
         assert matched_block.open_btn.master is matched_block.locate_btn.master
-        cluster = list(matched_block.locate_btn.master.pack_slaves())
-        assert cluster[:3] == [matched_block.locate_btn, matched_block.open_btn, matched_block.preview_btn]
+        placed = sorted(
+            (matched_block.locate_btn, matched_block.open_btn, matched_block.preview_btn),
+            key=lambda widget: int(widget.place_info()["x"]),
+        )
+        assert placed == [matched_block.locate_btn, matched_block.open_btn, matched_block.preview_btn]
         assert "disabled" not in str(matched_block.open_btn.cget("state"))
         assert "disabled" not in str(matched_block.preview_btn.cget("state"))
         assert "disabled" in str(missing_block.open_btn.cget("state"))
@@ -1085,18 +1089,12 @@ def _board_root():
     return root
 
 
-def test_sync_buttons_stay_on_the_filter_row() -> None:
+def test_unpaired_rows_skip_drawings_that_already_have_a_file() -> None:
     root = _board_root()
     try:
-        seen: list[str] = []
-        board = DrawingBoard(root, on_open_pdf=lambda _key: None, on_sync_dropbox=seen.append)
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
         board.pack()
         root.update_idletasks()
-        assert board._sync_all_btn.winfo_manager() == "pack"
-        assert board._sync_packed_btn.winfo_manager() == "pack"
-        board._sync_all_btn.invoke()
-        board._sync_packed_btn.invoke()
-        assert seen == ["all", "packed"]
         rows = [
             _row(key="P2024-1", drawing_id="2026-Tanzim-1-1"),
             _row(key="P2024-2", drawing_id="2026-Tanzim-1-2"),

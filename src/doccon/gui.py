@@ -19,12 +19,14 @@ from doccon import APP_DISPLAY_NAME, __version__
 from doccon.client_log import (
     BookCover,
     LogError,
-    book_cover_for_job,
     cover_date_is_na,
     cover_date_stamp,
+    delete_last_transmittal_tab,
     expected_return_from_issued,
     find_book,
+    highest_filed_tab,
     inspect_book,
+    next_number_after_removing_tab,
     lines_from_extras,
     lines_from_rows,
     parse_expected_return,
@@ -116,7 +118,7 @@ from doccon.pack_state import (
     document_no_for_file,
     extra_from_path,
     load_client_pack,
-    pack_cover_is_saved,
+    pack_cover_initialized,
     save_client_pack,
     with_cover_recipients,
 )
@@ -129,7 +131,6 @@ from doccon.pep import (
     compose_cc,
     elite_addresses,
     email_line,
-    find_pep,
     load_pep,
 )
 from doccon.popups import bind_console
@@ -180,6 +181,7 @@ from doccon.theme import (
     LOAD_STEPS,
     NAVY,
     PENDING_BG,
+    PENDING_BORDER,
     RENDER_LOAD_END,
     RENDER_LOAD_START,
     SURFACE,
@@ -191,7 +193,6 @@ from doccon.theme import (
     render_load_percent,
     style_text,
 )
-from doccon.transmittal_books import adopt_transmittal_books
 from doccon.watch_inbox import POLL_MS as WATCH_POLL_MS
 from doccon.watch_inbox import InboxWatcher, plan_watch_hits
 
@@ -1218,6 +1219,7 @@ class DocConApp(tk.Tk):
         self._pep_path: Path | None = None
         self._cover_loading = False
         self._cover_captured = False
+        self._cover_initialized = False
         self._jira_loading = False
         self._located_pdfs: dict[str, LocatedPdf] = {}
         self._pack_extras: list[PackExtra] = []
@@ -1283,6 +1285,12 @@ class DocConApp(tk.Tk):
             bar, self._issue_pack, label=CREATE_TRANSMITTAL_BTN, width=250
         )
         self.send_btn.pack(side="left", padx=(8, 0))
+        ttk.Button(
+            bar,
+            text="Delete last",
+            style="Danger.TButton",
+            command=self._delete_last_transmittal,
+        ).pack(side="left", padx=(6, 0))
         ttk.Button(bar, text="Update Jira…", style="Brand.TButton", command=self._update_jira).pack(
             side="left", padx=(6, 0)
         )
@@ -1334,20 +1342,36 @@ class DocConApp(tk.Tk):
         self._expected_armed = ""
         self._explicit_no_return = False
 
-        cover = ttk.LabelFrame(self, text="Cover (this pack)", padding=4)
-        cover.pack(side="bottom", fill="x", padx=12, pady=(0, 4))
-        ttk.Label(cover, text="FROM", style="CoverHead.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 8))
+        self._cover_shell = tk.Frame(self, bg=SURFACE, padx=0, pady=0)
+        self._cover_shell.pack(side="bottom", fill="x", padx=12, pady=(0, 4))
+        cover = ttk.LabelFrame(self._cover_shell, text="Cover (this pack)", padding=8)
+        cover.pack(fill="x")
+        self.cover = cover
+        self._cover_heads: list[ttk.Label] = []
+        self._cover_head_frames: list[ttk.Frame] = []
+        from_label = ttk.Label(cover, text="FROM", style="CoverHead.TLabel")
+        from_label.grid(row=0, column=0, sticky="w", padx=(0, 8))
+        self._cover_heads.append(from_label)
         to_head = ttk.Frame(cover)
         to_head.grid(row=0, column=1, sticky="w", padx=(0, 8))
-        ttk.Label(to_head, text="TO", style="CoverHead.TLabel").pack(side="left")
+        self._cover_head_frames.append(to_head)
+        to_label = ttk.Label(to_head, text="TO", style="CoverHead.TLabel")
+        to_label.pack(side="left")
+        self._cover_heads.append(to_label)
         ttk.Button(to_head, text="Pick…", command=lambda: self._pick_cover_email("to")).pack(side="left", padx=(8, 0))
         cc_head = ttk.Frame(cover)
         cc_head.grid(row=0, column=2, sticky="w", padx=(0, 8))
-        ttk.Label(cc_head, text="CC", style="CoverHead.TLabel").pack(side="left")
+        self._cover_head_frames.append(cc_head)
+        cc_label = ttk.Label(cc_head, text="CC", style="CoverHead.TLabel")
+        cc_label.pack(side="left")
+        self._cover_heads.append(cc_label)
         ttk.Button(cc_head, text="Pick…", command=lambda: self._pick_cover_email("cc")).pack(side="left", padx=(8, 0))
         project_head = ttk.Frame(cover)
         project_head.grid(row=0, column=3, sticky="w")
-        ttk.Label(project_head, text="PROJECT", style="CoverHead.TLabel").pack(side="left")
+        self._cover_head_frames.append(project_head)
+        project_label = ttk.Label(project_head, text="PROJECT", style="CoverHead.TLabel")
+        project_label.pack(side="left")
+        self._cover_heads.append(project_label)
         ttk.Button(project_head, text="Locate PEP…", command=self._locate_pep).pack(side="left", padx=(8, 0))
         ttk.Button(project_head, text="Transmittal Editor…", command=self._edit_transmittal).pack(
             side="left", padx=(6, 0)
@@ -1464,7 +1488,6 @@ class DocConApp(tk.Tk):
             on_cancel_next=self._on_cancel_next,
             on_draft_change=self._schedule_pack_save,
             on_no_return=self._mark_cover_no_return,
-            on_sync_dropbox=self._sync_dropbox,
         )
         self.issued = self.board.batch_entry("submission_date")
         self.expected = self.board.batch_entry("return_request_date")
@@ -1704,6 +1727,21 @@ class DocConApp(tk.Tk):
             load_client_pack(self._job_folder, self._current_job()) if self._job_folder else None
         )
         base = existing or ClientPack(job_number=self._current_job())
+        pep = self._pep_cover
+        if pep is not None and not base.cc_parts_saved:
+            cc_engineer, cc_pm, cc_pep, cc_parts_saved = (
+                pep.engineer_line,
+                pep.pm_line,
+                pep.pep_cc,
+                True,
+            )
+        else:
+            cc_engineer, cc_pm, cc_pep, cc_parts_saved = (
+                base.cc_engineer,
+                base.cc_pm,
+                base.cc_pep,
+                base.cc_parts_saved,
+            )
         pack = ClientPack(
             job_number=self._current_job(),
             pep_path=str(self._pep_path) if self._pep_path else "",
@@ -1715,11 +1753,11 @@ class DocConApp(tk.Tk):
             shop_cc=base.shop_cc,
             field_to=base.field_to,
             field_cc=base.field_cc,
-            cc_engineer=base.cc_engineer,
-            cc_pm=base.cc_pm,
-            cc_pep=base.cc_pep,
+            cc_engineer=cc_engineer,
+            cc_pm=cc_pm,
+            cc_pep=cc_pep,
             cc_additional=base.cc_additional,
-            cc_parts_saved=base.cc_parts_saved,
+            cc_parts_saved=cc_parts_saved,
             cc_permanent=base.cc_permanent,
             cc_permanent_saved=base.cc_permanent_saved,
             permanent_overrides={key: dict(slot) for key, slot in base.permanent_overrides.items()},
@@ -1734,6 +1772,7 @@ class DocConApp(tk.Tk):
             moc=self._job_field("moc"),
             pep_fields_saved=True,
             cover_captured=self._cover_captured or bool(existing and existing.cover_captured),
+            cover_initialized=self._cover_initialized or bool(existing and existing.cover_initialized),
             selected_keys=self.board.selected_keys(),
             located_pdfs=dict(self._located_pdfs),
             next_edits=self.board.next_edits(),
@@ -1834,12 +1873,17 @@ class DocConApp(tk.Tk):
             if not quiet:
                 messagebox.showinfo("Save", "Load a job first.")
             return False
+        was_initialized = self._cover_initialized
+        if not quiet:
+            self._cover_initialized = True
         try:
             dest = save_client_pack(folder, self._pack_from_console())
         except OSError as exc:
+            self._cover_initialized = was_initialized
             messagebox.showerror("Save", str(exc))
             return False
         if not quiet:
+            self._paint_cover_attention()
             messagebox.showinfo("Save", f"Saved {dest.relative_to(folder)}")
         return True
 
@@ -1947,15 +1991,8 @@ class DocConApp(tk.Tk):
                 "TO needs at least one email address. Type it on Cover, or Locate PEP.",
             )
             return None
-        pep: PepCover | None = None
-        path = self._pep_path if self._pep_path is not None and self._pep_path.is_file() else None
-        if path is not None:
-            try:
-                pep = load_pep(path)
-            except PepError:
-                pep = None
         folder = self._job_folder or Path(".")
-        cover_path = pep.path if pep is not None else folder / "console-cover"
+        cover_path = self._pep_path if self._pep_path is not None else folder / "console-cover"
         return PepCover(
             path=cover_path,
             from_address=DOC_CONTROL_FROM,
@@ -1995,16 +2032,6 @@ class DocConApp(tk.Tk):
             self.pep_label.configure(text="PEP: not found — Locate PEP…")
             return
         self.pep_label.configure(text=f"PEP: {path.name}")
-
-    def _discover_pep(self, folder: Path | None, job: str) -> None:
-        if folder is None or not job:
-            self._set_pep(None)
-            return
-        try:
-            found = find_pep(folder, job)
-        except (OSError, PepError, ValueError):
-            found = None
-        self._set_pep(found)
 
     def _current_job(self) -> str:
         return (self._job_number or self.job.get()).strip()
@@ -2177,24 +2204,40 @@ class DocConApp(tk.Tk):
         if kind != CLIENT:
             return cc
         parts = self._client_cc_parts(pep, pack)
-        composed = compose_cc(
+        return compose_cc(
             parts["permanent"],
             parts["engineering"],
             parts["pm"],
             parts["pep"],
             parts["additional"],
+            cc,
         )
-        return composed or cc
+
+    def _paint_cover_attention(self) -> None:
+        """Yellow cover strip until this job's cover has been located or saved."""
+        pending = bool(self._job_number) and not self._cover_initialized
+        if hasattr(self, "_cover_shell"):
+            self._cover_shell.configure(
+                bg=PENDING_BORDER if pending else SURFACE,
+                padx=8 if pending else 0,
+                pady=8 if pending else 0,
+            )
+        if hasattr(self, "cover"):
+            self.cover.configure(
+                style="Attention.TLabelframe" if pending else "TLabelframe",
+                text="Cover — Locate PEP or Save this pack" if pending else "Cover (this pack)",
+            )
+        for label in getattr(self, "_cover_heads", ()):
+            label.configure(style="Attention.TLabel" if pending else "CoverHead.TLabel")
+        for frame in getattr(self, "_cover_head_frames", ()):
+            frame.configure(style="Attention.TFrame" if pending else "TFrame")
+        if hasattr(self, "cover_hint"):
+            self.cover_hint.configure(style="AttentionMuted.TLabel" if pending else "Muted.TLabel")
+        if hasattr(self, "pep_label"):
+            self.pep_label.configure(style="AttentionMuted.TLabel" if pending else "Muted.TLabel")
 
     def _edit_transmittal(self) -> None:
         pep = self._pep_cover
-        if pep is None and self._pep_path is not None and self._pep_path.is_file():
-            try:
-                pep = load_pep(self._pep_path)
-            except PepError:
-                pep = None
-            else:
-                self._pep_cover = pep
         pack = load_client_pack(self._job_folder, self._job_number) if self._job_folder else None
         self._set_job_fields_from(pep, pack)
         if not self._text_value(self.project_box).strip() and pep is not None and pep.project_description:
@@ -2361,6 +2404,7 @@ class DocConApp(tk.Tk):
             for key, slots in (kind_cc or {}).items()
             if email_line(slots.get("additional", "")) != default_additional
         }
+        self._cover_initialized = True
         pack = self._pack_from_console()
         for key, (to_line, cc_line) in covers.items():
             pack = with_cover_recipients(pack, key, to_line, cc_line)
@@ -2387,6 +2431,7 @@ class DocConApp(tk.Tk):
             messagebox.showerror("Transmittal Editor", str(exc))
             return
         self._cover_stamp = self._cover_text_now()
+        self._paint_cover_attention()
         self._set_status("Transmittal editor saved.")
 
     def _locate_pep(self) -> None:
@@ -2404,8 +2449,10 @@ class DocConApp(tk.Tk):
             messagebox.showerror("PEP", str(exc))
             return
         self._set_pep(cover.path)
+        self._cover_initialized = True
         self._apply_cover_fields(cover)
         self._save_pack(quiet=True)
+        self._paint_cover_attention()
         self._refresh_cover_hint()
         messagebox.showinfo(
             "PEP",
@@ -2442,7 +2489,7 @@ class DocConApp(tk.Tk):
             self._load_status.configure(text=text)
 
     def _load(self) -> None:
-        if self._work in {"confirm", "eddi", "jira", "create"}:
+        if self._work in {"confirm", "eddi", "jira", "create", "delete"}:
             return
         job = self.job.get().strip()
         if not job:
@@ -2472,6 +2519,8 @@ class DocConApp(tk.Tk):
         self._job_number = job
         self._job_folder = None
         self._cover_captured = False
+        self._cover_initialized = False
+        self._paint_cover_attention()
         self._locate_dir = ""
         self._job_project = None
         self._eddi_contexts = {}
@@ -2707,46 +2756,16 @@ class DocConApp(tk.Tk):
             self._set_status(f"{job}: {len(self._matches)} drawing(s), {missing} missing PDF  |  {label}")
 
     def _start_folder_files(self, gen: int, job: str, folder: Path, kind: str) -> None:
-        """Use the saved cover. Read the letter once when the pack does not have it yet."""
+        """Fill the cover from the saved pack. Never open a PEP or a letter on Load."""
 
         def files() -> None:
-            adopted_label = ""
-            pep_path: Path | None = None
-            pep_cover: PepCover | None = None
-            book = BookCover()
             try:
                 pack = load_client_pack(folder, job)
             except (OSError, ValueError, TypeError):
                 pack = None
-            if pack_cover_is_saved(pack):
-                remembered = Path(pack.pep_path) if pack is not None and pack.pep_path else None
-                self._post_folder_files(
-                    gen, job, [], "", remembered, None, BookCover(), kind, from_pack=True
-                )
-                return
-            try:
-                self._post_status(gen, f"Reading the letter for {folder.name}…")
-                adopted = adopt_transmittal_books(folder, job)
-                if adopted:
-                    names = ", ".join(item.path.name for item in adopted)
-                    adopted_label = f"  |  named {names}"
-                try:
-                    pep_path = find_pep(folder, job)
-                except (OSError, PepError, ValueError):
-                    pep_path = None
-                if pep_path is not None:
-                    try:
-                        pep_cover = load_pep(pep_path)
-                    except PepError:
-                        pep_cover = None
-                try:
-                    book = book_cover_for_job(folder, job, kind)
-                except (OSError, KeyError, ValueError, TypeError):
-                    book = BookCover()
-            except Exception as exc:
-                log("WARN", "load", f"folder files {exc}")
+            remembered = Path(pack.pep_path) if pack is not None and pack.pep_path else None
             self._post_folder_files(
-                gen, job, [], adopted_label, pep_path, pep_cover, book, kind, from_pack=False
+                gen, job, [], "", remembered, None, BookCover(), kind, from_pack=True
             )
 
         threading.Thread(target=files, daemon=True).start()
@@ -2784,6 +2803,9 @@ class DocConApp(tk.Tk):
             self._set_pep(pep_path)
         if self.kind.get() == kind:
             self._fill_cover_if_untouched(kind)
+        saved = load_client_pack(self._job_folder, job) if self._job_folder else None
+        self._cover_initialized = pack_cover_initialized(saved)
+        self._paint_cover_attention()
         if not from_pack:
             self._cover_captured = True
             self._save_pack(quiet=True, force=True)
@@ -2833,7 +2855,6 @@ class DocConApp(tk.Tk):
 
     def _cancel_load(self) -> None:
         self.board.cancel_paint()
-        self.board.set_sync_busy(False)
         self._pending_rows = None
         self._pending_files = None
         self._book_covers = {}
@@ -3168,6 +3189,7 @@ class DocConApp(tk.Tk):
         self._set_status(
             f"{job}: {len(matched)} drawing(s), {missing} missing PDF  |  {folder_label}{extra}{cover}{pep}"
         )
+        self._sync_dropbox("all", automatic=True)
 
     def _reset_locate_to_job(self, folder: Path | None) -> None:
         """First Locate… after Load starts in this job's Dropbox folder, not the last PC folder."""
@@ -3246,29 +3268,27 @@ class DocConApp(tk.Tk):
             return False
         if self._work == "sync":
             self._set_status("Still syncing Dropbox files.")
+        elif self._work == "delete":
+            self._set_status("Still deleting that transmittal tab.")
         else:
             self._set_status("Still rendering this list.")
         return True
 
-    def _sync_dropbox(self, scope: str) -> None:
-        """Walk the job folders when she asks. Sync all, or only the packed rows."""
+    def _sync_dropbox(self, scope: str, *, automatic: bool = False) -> None:
+        """Pair drawings that have no file. Load runs this for every row."""
         if self._note_if_busy():
             return
         folder = self._job_folder
         if folder is None:
-            self._set_status("Locate the job folder before syncing Dropbox files.")
+            if not automatic:
+                self._set_status("Locate the job folder before syncing Dropbox files.")
             return
         packed_only = scope == "packed"
         waiting = self.board.unpaired_rows(packed_only=packed_only)
         if not waiting:
-            if packed_only:
-                self._set_status("No packed drawing is waiting for a PDF.")
-            else:
-                self._set_status("Every drawing already has a PDF.")
             return
         self._busy = True
         self._work = "sync"
-        self.board.set_sync_busy(True)
         gen = self._load_gen
         job = self._job_number
         keys = tuple(row.drawing.key for row in waiting)
@@ -3301,7 +3321,6 @@ class DocConApp(tk.Tk):
         hits: list,
         packed_only: bool,
     ) -> None:
-        self.board.set_sync_busy(False)
         if self._work == "sync":
             self._busy = False
             self._work = ""
@@ -3324,9 +3343,8 @@ class DocConApp(tk.Tk):
             )
             paired += 1
         self._schedule_pack_save()
-        which = "packed" if packed_only else "all"
         folder_name = self._job_folder.name if self._job_folder is not None else job
-        self._set_status(f"Sync {which}: paired {paired} PDF(s) from {folder_name}.")
+        self._set_status(f"Paired {paired} PDF(s) from {folder_name}.")
 
     def _new_issue(self) -> None:
         if self._note_if_busy():
@@ -3523,9 +3541,6 @@ class DocConApp(tk.Tk):
         if not self.board.current_rows():
             messagebox.showinfo("EDDI", "Load a job first.")
             return
-        if cover_date_is_na(self.issued.get()):
-            messagebox.showinfo("EDDI", "Pick a Submission Date.")
-            return
         try:
             issued = parse_issued_date(self.issued.get())
         except LogError as exc:
@@ -3661,6 +3676,92 @@ class DocConApp(tk.Tk):
             f"Jira has been updated.\n\nWrote {len(rows)} item(s). The list now shows what was written.",
         )
 
+    def _delete_last_transmittal(self) -> None:
+        if self._note_if_busy():
+            return
+        kind = self.kind.get()
+        label = LABELS.get(kind, LABELS[CLIENT])
+        if kind == INCOMING:
+            messagebox.showinfo(label, "Incoming does not file a transmittal letter.")
+            return
+        job = self._current_job()
+        folder = self._ensure_job_folder(job) if job else None
+        if not job:
+            messagebox.showinfo(label, "Enter a Job Number and click Load first.")
+            return
+        if folder is None:
+            messagebox.showerror(
+                label,
+                f"No Dropbox job folder for {job}. Check Current Jobs, then Load again.",
+            )
+            return
+        try:
+            book = find_book(folder, job, kind)
+        except (LogError, OSError) as exc:
+            messagebox.showerror(label, str(exc))
+            return
+        if book is None:
+            messagebox.showinfo(label, "This job has no transmittal book yet.")
+            return
+        try:
+            info = inspect_book(book, job, kind)
+        except (LogError, OSError) as exc:
+            messagebox.showerror(label, str(exc))
+            return
+        removed = highest_filed_tab(info.filed_tabs)
+        if removed is None:
+            messagebox.showinfo(label, f"{book.name} has no filed transmittal tab.")
+            return
+        new_next = next_number_after_removing_tab(info.filed_tabs, removed)
+        prefix = PREFIX.get(kind, "CT")
+        if not messagebox.askyesno(
+            "Delete last transmittal?",
+            (
+                f"Delete tab {removed} in {book.name}.\n"
+                f"The next number on the TRANSMITTAL sheet becomes {new_next}.\n\n"
+                f"The PDF and zip ({prefix}-{info.job_number}-{removed}) stay in the folder. "
+                "Delete those files yourself."
+            ),
+        ):
+            return
+        self._busy = True
+        self._work = "delete"
+        self._set_status(f"Deleting tab {removed} in {book.name}…")
+
+        def work() -> None:
+            error: str | None = None
+            try:
+                delete_last_transmittal_tab(book, job, kind)
+            except (LogError, OSError) as exc:
+                error = str(exc)
+            except Exception as exc:
+                error = str(exc)
+            self.after(
+                0,
+                lambda e=error, n=removed, nxt=new_next, name=book.name: self._transmittal_tab_deleted(
+                    e, n, nxt, name
+                ),
+            )
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _transmittal_tab_deleted(self, error: str | None, removed: int, new_next: int, book_name: str) -> None:
+        self._busy = False
+        self._work = ""
+        if error:
+            self._set_status("Delete failed.")
+            messagebox.showerror("Delete last transmittal", error)
+            return
+        self._set_status(f"Deleted tab {removed} in {book_name}. Next number is {new_next}.")
+        messagebox.showinfo(
+            "Delete last transmittal",
+            (
+                f"Deleted tab {removed} in {book_name}.\n"
+                f"The next number is {new_next}.\n\n"
+                "The PDF and zip are still in the folder. Delete those files yourself."
+            ),
+        )
+
     def _issue_pack(self) -> None:
         if self._note_if_busy():
             return
@@ -3704,7 +3805,7 @@ class DocConApp(tk.Tk):
         except (LogError, OSError) as exc:
             messagebox.showerror(label, str(exc))
             return
-        if cover_date_is_na(self.issued.get()):
+        if kind == CLIENT and cover_date_is_na(self.issued.get()):
             messagebox.showinfo(label, "Pick a Submission Date.")
             return
         try:

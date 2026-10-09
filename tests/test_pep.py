@@ -69,6 +69,34 @@ def test_email_line_keeps_addresses_only() -> None:
     ) == "sarah.chan@eliteintegrityservices.com; ShopIFC@eliteintegrityservices.com"
 
 
+def test_shifted_pep_reads_the_cc_under_transmittal_recipients(tmp_path: Path) -> None:
+    path = tmp_path / "pep.xlsx"
+    wb = empty_pep_workbook()
+    ws = wb["C-109.5"]
+    ws["A1"] = "2026-079"
+    ws["C11"] = "Plains"
+    ws["A50"] = "Final Data Book:"
+    ws["C50"] = "E-Copy"
+    ws["D50"] = "not-the-transmittal@example.com"
+    ws["A51"] = "Transmittal Recipients:"
+    ws["C51"] = "Main:"
+    ws["D51"] = "main@client.com"
+    ws["C52"] = "CC's:"
+    ws["D52"] = "cc@client.com"
+    ws["A53"] = "Data Book Recipients:"
+    ws["C53"] = "Main:"
+    ws["D53"] = "book@client.com"
+    ws["C54"] = "CC's:"
+    ws["D54"] = "bookcc@client.com"
+    wb.save(path)
+    wb.close()
+    cover = load_pep(path)
+    assert cover.to_line == "main@client.com"
+    assert cover.pep_cc == "cc@client.com"
+    assert "book@client.com" not in cover.cc_line
+    assert "not-the-transmittal@example.com" not in cover.to_line
+
+
 def test_cc_keeps_emails_from_pep_cells(tmp_path: Path) -> None:
     path = _write_pep(
         tmp_path / "pep.xlsx",

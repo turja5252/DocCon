@@ -159,14 +159,17 @@ def eddi_group_ok(row: DrawingRow) -> bool:
 
 def test_find_live_book_ignores_dated_leftover(tmp_path: Path) -> None:
     folder = tmp_path / "2026-Tanzim" / "3.0 Doc Con"
-    leftover = folder / "EDDI-2026-Tanzim-2026-09-08.xlsx"
+    leftover = folder / "EDDI 3.0 - 2026-Tanzim-2026-09-08.xlsx"
     leftover.parent.mkdir(parents=True)
     leftover.write_bytes(b"old-custom-list")
-    live = _project_fixture(folder / "EDDI-2026-Tanzim.xlsx")
+    old_book = folder / "EDDI-2026-Tanzim.xlsx"
+    old_book.write_bytes(b"older-index")
+    live = _project_fixture(folder / "EDDI 3.0 - 2026-Tanzim.xlsx")
     found = find_live_eddi_book(tmp_path / "2026-Tanzim", "2026-Tanzim")
     assert found == live
     assert is_dated_eddi_name(leftover.name, "2026-Tanzim")
     assert not is_dated_eddi_name(live.name, "2026-Tanzim")
+    assert old_book.read_bytes() == b"older-index"
 
 
 def test_snapshot_uses_doccon_form_when_the_job_has_none(tmp_path: Path) -> None:
@@ -176,12 +179,12 @@ def test_snapshot_uses_doccon_form_when_the_job_has_none(tmp_path: Path) -> None
     job_folder = tmp_path / "2026-Tanzim"
     (job_folder / "3.0 Doc Con").mkdir(parents=True)
     snap = snapshot_eddi(job_folder, "2026-Tanzim", [_drawing()], date(2026, 10, 6), print_pdf=False)
-    assert snap.book.name == "EDDI-2026-Tanzim.xlsm"
-    assert snap.pdf.name == "EDDI-2026-Tanzim-2026-10-06.pdf"
+    assert snap.book.name == "EDDI 3.0 - 2026-Tanzim.xlsm"
+    assert snap.pdf.name == "EDDI 3.0 - 2026-Tanzim-2026-10-06.pdf"
     assert snap.sheet == "2026-10-06"
     again = snapshot_eddi(job_folder, "2026-Tanzim", [_drawing()], date(2026, 10, 6), print_pdf=False)
     assert again.book == snap.book
-    assert again.pdf.name == "EDDI-2026-Tanzim-2026-10-06-2.pdf"
+    assert again.pdf.name == "EDDI 3.0 - 2026-Tanzim-2026-10-06-2.pdf"
     assert again.sheet == "2026-10-06-2"
     wb = load_workbook(snap.book, keep_vba=True)
     assert wb.sheetnames[0] == "Project"
@@ -196,16 +199,18 @@ def test_newer_pdf_is_the_only_eddi_pdf(tmp_path: Path) -> None:
 
     folder = tmp_path / "3.0 Doc Con"
     folder.mkdir()
-    old = folder / "EDDI-2026-Tanzim-2026-09-01.pdf"
-    plain = folder / "EDDI-2026-Tanzim.pdf"
+    old = folder / "EDDI 3.0 - 2026-Tanzim-2026-09-01.pdf"
+    plain = folder / "EDDI 3.0 - 2026-Tanzim.pdf"
+    earlier = folder / "EDDI-2026-Tanzim-2026-09-01.pdf"
     other = folder / "CT-2026-Tanzim-1.pdf"
-    keep = folder / "EDDI-2026-Tanzim-2026-10-06.pdf"
-    for path, body in ((old, b"old"), (plain, b"plain"), (other, b"ct"), (keep, b"new")):
+    keep = folder / "EDDI 3.0 - 2026-Tanzim-2026-10-06.pdf"
+    for path, body in ((old, b"old"), (plain, b"plain"), (earlier, b"earlier"), (other, b"ct"), (keep, b"new")):
         path.write_bytes(body)
     _keep_one_pdf(folder, "2026-Tanzim", keep)
     assert keep.read_bytes() == b"new"
     assert not old.exists()
     assert not plain.exists()
+    assert earlier.read_bytes() == b"earlier"
     assert other.is_file()
 
 
@@ -213,13 +218,13 @@ def test_find_live_book_missing_raises(tmp_path: Path) -> None:
     folder = tmp_path / "2026-Tanzim" / "3.0 Doc Con"
     folder.mkdir(parents=True)
     (folder / "EDDI-2026-Tanzim-2026-09-08.xlsx").write_bytes(b"leftover")
-    with pytest.raises(LogError, match="EDDI-2026-Tanzim.xlsm"):
+    with pytest.raises(LogError, match="EDDI 3.0 - 2026-Tanzim.xlsm"):
         find_live_eddi_book(tmp_path / "2026-Tanzim", "2026-Tanzim")
 
 
 def test_find_live_book_uses_parent_job_form(tmp_path: Path) -> None:
     folder = tmp_path / "2026-077" / "3.0 Doc Con"
-    live = _project_fixture(folder / "EDDI-2026-077.xlsx")
+    live = _project_fixture(folder / "EDDI 3.0 - 2026-077.xlsx")
     (folder / "EDDI-2026-077-2026-09-08.xlsx").write_bytes(b"dated")
     found = find_live_eddi_book(tmp_path / "2026-077", "2026-077-1")
     assert found == live
@@ -237,7 +242,7 @@ def test_find_live_book_uses_parent_job_form(tmp_path: Path) -> None:
 
 def test_snapshot_fills_project_form_not_custom_list(tmp_path: Path) -> None:
     job_folder = tmp_path / "2026-Tanzim"
-    live = _project_fixture(job_folder / "3.0 Doc Con" / "EDDI-2026-Tanzim.xlsx")
+    live = _project_fixture(job_folder / "3.0 Doc Con" / "EDDI 3.0 - 2026-Tanzim.xlsx")
     drawings = [
         _drawing(
             client_document_number="CNRL-1",
@@ -287,7 +292,7 @@ def test_snapshot_fills_project_form_not_custom_list(tmp_path: Path) -> None:
     assert snap.book == live
     assert snap.sheet == "2026-09-10"
     assert snap.updated_rows == 5
-    assert snap.note.startswith("EDDI: EDDI-2026-Tanzim-2026-09-10.pdf tab 2026-09-10")
+    assert snap.note.startswith("EDDI: EDDI 3.0 - 2026-Tanzim-2026-09-10.pdf tab 2026-09-10")
 
     wb = load_workbook(snap.book)
     assert wb.sheetnames[0] == "Project"
@@ -295,7 +300,7 @@ def test_snapshot_fills_project_form_not_custom_list(tmp_path: Path) -> None:
     assert "EDDI" not in wb.sheetnames
     ws = wb["2026-09-10"]
     assert ws["A1"].value == "ELITE DRAWING & DOCUMENT INDEX"
-    assert str(ws["A2"].value) == "EDDI-2026-Tanzim 2026-09-10"
+    assert str(ws["A2"].value) == "EDDI 3.0 - 2026-Tanzim 2026-09-10"
     groups = parse_form_groups(ws)
     assert [group.number for group in groups] == list(range(1, 10))
     assert ws["A3"].value == "DOCUMENT NUMBER"
@@ -388,7 +393,7 @@ def test_snapshot_fills_project_form_not_custom_list(tmp_path: Path) -> None:
 
 def test_snapshot_leaves_live_template_untouched(tmp_path: Path) -> None:
     job_folder = tmp_path / "2026-Tanzim"
-    live = _project_fixture(job_folder / "3.0 Doc Con" / "EDDI-2026-Tanzim.xlsx")
+    live = _project_fixture(job_folder / "3.0 Doc Con" / "EDDI 3.0 - 2026-Tanzim.xlsx")
     leftover = job_folder / "3.0 Doc Con" / "EDDI-202X-XXX.xlsm"
     leftover.write_bytes(b"template")
     snapshot_eddi(job_folder, "2026-Tanzim", [_drawing()], date(2026, 9, 10), print_pdf=False)
@@ -400,7 +405,7 @@ def test_snapshot_leaves_live_template_untouched(tmp_path: Path) -> None:
 
 def test_snapshot_hides_empty_groups_and_drops_stranded_break(tmp_path: Path) -> None:
     job_folder = tmp_path / "2026-Tanzim"
-    _project_fixture(job_folder / "3.0 Doc Con" / "EDDI-2026-Tanzim.xlsx")
+    _project_fixture(job_folder / "3.0 Doc Con" / "EDDI 3.0 - 2026-Tanzim.xlsx")
     drawings = [
         _drawing(
             key="P2024-3",
@@ -439,7 +444,7 @@ def test_snapshot_includes_matched_pdf_only(tmp_path: Path) -> None:
     from doccon.match import MatchedRow, PdfHit
 
     job_folder = tmp_path / "2026-Tanzim"
-    _project_fixture(job_folder / "3.0 Doc Con" / "EDDI-2026-Tanzim.xlsx")
+    _project_fixture(job_folder / "3.0 Doc Con" / "EDDI 3.0 - 2026-Tanzim.xlsx")
     pdf = tmp_path / "2026-Tanzim-1-1 REV A.pdf"
     pdf.write_bytes(b"%PDF")
     matched = MatchedRow(
@@ -473,7 +478,7 @@ def test_snapshot_excel_uses_local_temp_not_dropbox(tmp_path: Path, monkeypatch)
     monkeypatch.setenv("TEMP", str(tmp_path / "Temp"))
     monkeypatch.setattr("doccon.eddi.os.name", "nt")
     job_folder = tmp_path / "Dropbox" / "2026-Tanzim"
-    _project_fixture(job_folder / "3.0 Doc Con" / "EDDI-2026-Tanzim.xlsx")
+    _project_fixture(job_folder / "3.0 Doc Con" / "EDDI 3.0 - 2026-Tanzim.xlsx")
     seen: dict[str, Path] = {}
 
     def fake_fill(workbook, dest_pdf, payload):
@@ -500,7 +505,7 @@ def test_snapshot_keeps_book_when_pdf_print_fails(tmp_path: Path, monkeypatch) -
     monkeypatch.setenv("TEMP", str(tmp_path / "Temp"))
     monkeypatch.setattr("doccon.eddi.os.name", "nt")
     job_folder = tmp_path / "2026-Tanzim"
-    _project_fixture(job_folder / "3.0 Doc Con" / "EDDI-2026-Tanzim.xlsx")
+    _project_fixture(job_folder / "3.0 Doc Con" / "EDDI 3.0 - 2026-Tanzim.xlsx")
 
     def fake_fill(workbook, dest_pdf, payload):
         Path(workbook).write_bytes(b"filled-xlsm")
@@ -518,7 +523,7 @@ def test_new_template_keeps_rev_then_submitted_to(tmp_path: Path) -> None:
     """Tanzim's EDDI form is Rev, Submitted to Shop/Field For, Date. Do not insert again."""
     from doccon.eddi import fill_project_sheet
 
-    path = _project_fixture(tmp_path / "EDDI-2026-Tanzim.xlsx")
+    path = _project_fixture(tmp_path / "EDDI 3.0 - 2026-Tanzim.xlsx")
     wb = load_workbook(path)
     ws = wb.active
     ws["J4"] = "REV"
@@ -559,3 +564,29 @@ def test_copy_out_uses_unique_name_when_pdf_locked(tmp_path: Path, monkeypatch) 
     assert written.name == "EDDI-2026-Tanzim-2026-09-15-2.pdf"
     assert written.read_bytes() == b"%PDF-new"
     assert dest.read_bytes() == b"old"
+
+
+def test_job_book_without_groups_uses_the_doccon_form(tmp_path: Path) -> None:
+    folder = tmp_path / "3.0 Doc Con"
+    folder.mkdir(parents=True)
+    book = folder / "EDDI-2026-Tanzim.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Project"
+    ws["A5"] = "2026-Tanzim-1-1"
+    wb.save(book)
+    wb.close()
+    snap = snapshot_eddi(tmp_path, "2026-Tanzim", [], date(2026, 10, 9), print_pdf=False)
+    assert snap.book.name == "EDDI 3.0 - 2026-Tanzim.xlsm"
+    loaded = load_workbook(snap.book)
+    old = load_workbook(book)
+    try:
+        headers = [
+            str(loaded[snap.sheet].cell(row, 1).value or "")
+            for row in range(1, 80)
+        ]
+        assert any(text.startswith("1. FABRICATION") for text in headers)
+        assert old["Project"]["A5"].value == "2026-Tanzim-1-1"
+    finally:
+        loaded.close()
+        old.close()

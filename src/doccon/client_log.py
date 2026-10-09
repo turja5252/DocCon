@@ -754,6 +754,57 @@ def _is_filed_tab(name: str) -> bool:
     return bool(re.fullmatch(r"\d+", name.strip()))
 
 
+def highest_filed_tab(names: tuple[str, ...] | list[str]) -> int | None:
+    """Largest numbered history tab. The TRANSMITTAL sheet is not one of these."""
+    numbers = [int(name) for name in names if _is_filed_tab(name)]
+    return max(numbers) if numbers else None
+
+
+def next_number_after_removing_tab(names: tuple[str, ...] | list[str], removed: int) -> int:
+    """The front-page counter after that tab is gone: one past the highest tab still there."""
+    left = [int(name) for name in names if _is_filed_tab(name) and int(name) != removed]
+    return max(left) + 1 if left else 1
+
+
+def delete_last_transmittal_tab(path: Path, job_number: str, kind: str = CLIENT) -> tuple[int, int]:
+    """Delete the latest numbered tab and set the counter. Does not delete the PDF or the zip."""
+    info = inspect_book(path, job_number, kind)
+    removed = highest_filed_tab(info.filed_tabs)
+    if removed is None:
+        raise LogError(f"{path.name} has no filed transmittal tab.")
+    new_next = next_number_after_removing_tab(info.filed_tabs, removed)
+    layout = layout_for(kind)
+    if path.suffix.casefold() == ".xlsm" and os.name == "nt":
+        from doccon.excel_pdf import delete_transmittal_tab_with_excel
+
+        delete_transmittal_tab_with_excel(
+            path,
+            tab=str(removed),
+            number_cell=layout.number_cell,
+            next_number=new_next,
+        )
+    else:
+        _delete_tab_openpyxl(path, str(removed), layout.number_cell, new_next)
+    return removed, new_next
+
+
+def _delete_tab_openpyxl(path: Path, tab: str, number_cell: str, next_number: int) -> None:
+    keep_vba = path.suffix.casefold() == ".xlsm"
+    wb = load_workbook(path, data_only=False, keep_vba=keep_vba)
+    try:
+        if WORKING_SHEET not in wb.sheetnames:
+            raise LogError(f"{path.name} has no {WORKING_SHEET} tab.")
+        if tab not in wb.sheetnames:
+            raise LogError(f"{path.name} has no tab {tab}.")
+        del wb[tab]
+        wb[WORKING_SHEET][number_cell] = next_number
+        wb.save(path)
+    except OSError as exc:
+        raise LogError(f"Could not write {path.name}. Close it if it is open in Excel.\n{exc}") from exc
+    finally:
+        wb.close()
+
+
 def empty_client_workbook() -> Workbook:
     """Minimal TRANSMITTAL layout for tests (not the Elite branded book)."""
     wb = Workbook()

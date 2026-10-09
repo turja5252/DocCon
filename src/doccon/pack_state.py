@@ -131,6 +131,7 @@ class ClientPack:
     moc: str = ""
     pep_fields_saved: bool = False
     cover_captured: bool = False
+    cover_initialized: bool = False
     selected_keys: tuple[str, ...] = ()
     located_pdfs: dict[str, LocatedPdf] = field(default_factory=dict)
     next_edits: dict[str, dict[str, str]] = field(default_factory=dict)
@@ -329,6 +330,7 @@ def load_client_pack(job_folder: Path | None, job_number: str) -> ClientPack | N
         moc=str(raw.get("moc") or "").strip(),
         pep_fields_saved=any(name in raw for name in ("client", "location", "tag", "po", "wo", "moc")),
         cover_captured=bool(raw.get("cover_captured")),
+        cover_initialized=bool(raw.get("cover_initialized")),
         selected_keys=tuple(str(item) for item in keys if str(item).strip()),
         located_pdfs=_located_pdfs(raw.get("located_pdfs")),
         next_edits=_next_edits(raw.get("next_edits")),
@@ -376,6 +378,7 @@ def save_client_pack(job_folder: Path, pack: ClientPack) -> Path:
         "wo": pack.wo,
         "moc": pack.moc,
         "cover_captured": bool(pack.cover_captured),
+        "cover_initialized": bool(pack.cover_initialized),
         "selected_keys": list(pack.selected_keys),
         "located_pdfs": _dump_located_pdfs(pack.located_pdfs),
         "next_edits": {key: dict(fields) for key, fields in pack.next_edits.items()},
@@ -385,6 +388,29 @@ def save_client_pack(job_folder: Path, pack: ClientPack) -> Path:
     }
     dest.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     return dest
+
+
+def pack_cover_initialized(pack: ClientPack | None) -> bool:
+    """The operator located a PEP or saved the cover. Load does not open a PEP."""
+    if pack is None:
+        return False
+    if pack.cover_initialized or pack.cover_captured:
+        return True
+    return any(
+        (
+            (pack.to_line or "").strip(),
+            (pack.cc_line or "").strip(),
+            (pack.project_description or "").strip(),
+            (pack.pep_path or "").strip(),
+        )
+    )
+
+
+def pack_recipients_saved(pack: ClientPack | None) -> bool:
+    """True when this pack already has a TO or CC to show on the cover."""
+    if pack is None:
+        return False
+    return bool(pack.cc_parts_saved or (pack.to_line or "").strip() or (pack.cc_line or "").strip())
 
 
 def pack_cover_is_saved(pack: ClientPack | None) -> bool:

@@ -2,6 +2,50 @@
 
 Newest first. Append a dated entry when a decision is locked, a test runs, or the next step changes.
 
+## 2026-10-09 — Shipped 2.08
+
+Source and the frozen exe are 2.08. Load pairs drawings that have no file and does not open a PEP. Locate PEP or Save initializes the cover; until then the cover strip is yellow. Create EDDI writes `EDDI 3.0 - {job}`. Delete last removes the latest transmittal tab and resets the counter. Load `2026-Tanzim`. Do not Confirm 075.
+
+## 2026-10-09 — Load pairs PDFs again
+
+Load pairs every drawing that has no file, after the list is on screen. **Sync all** and **Sync packed** are off the Filter row. The pair does not change Outgoing Rev.
+
+## 2026-10-09 — Right-click paste on text boxes
+
+Cut, Copy, Paste, and Select all are on the right-click menu for text boxes, including the email fields in Settings. A Next cell still puts Now back on right-click.
+
+## 2026-10-09 — Delete last transmittal tab
+
+**Delete last** removes the highest numbered tab in the current CT, ST, or FT book and sets the TRANSMITTAL counter to one past the highest tab still there. The PDF and zip stay in the folder.
+
+## 2026-10-09 — Row PDF actions are icons
+
+Locate, Rename, Open, and Preview on a drawing row are small marks. Hover shows the word. Rename still appears only for an email-dropped copy.
+
+## 2026-10-09 — Console EDDI is named EDDI 3.0
+
+Create EDDI writes `EDDI 3.0 - {job}.xlsm` and `EDDI 3.0 - {job}-{date}.pdf` in `3.0 Doc Con`. An older `EDDI-{job}` workbook stays where it is.
+
+## 2026-10-09 — PEP is located, not hunted
+
+Load does not open a PEP or a letter. **Locate PEP…** or **Save** initializes the cover. Until then the cover strip is yellow. Create EDDI uses DocCon's form when the job book has no groups 1–9. Shop and Field do not ask for a Submission Date.
+
+## 2026-10-08 — Shipped 2.07
+
+Source and the frozen exe are 2.07. Create EDDI prints with a blank Date issued. A pack with no TO or CC yet takes those from that job’s PEP. **4 From PEP** is the CC line under Transmittal Recipients. Load `2026-Tanzim`. Do not Confirm 075.
+
+## 2026-10-08 — From PEP reads the CC line on this job’s form
+
+**4 From PEP** reads the CC line under Transmittal Recipients in the job folder PEP. A form with an extra row no longer puts the Main address in that box.
+
+## 2026-10-08 — Cover TO and CC show the PEP recipients
+
+The transmittal editor was showing the PEP TO and the From PEP list while the cover boxes stayed empty. A saved pack with no TO or CC yet reads that one PEP, puts those addresses on the cover, and saves them. Opening the editor does the same.
+
+## 2026-10-08 — Create EDDI does not wait for Date issued
+
+**Create EDDI** prints from the list as it stands. A blank Date issued uses today on the dated tab. It does not write Jira.
+
 ## 2026-10-08 — Shipped 2.06
 
 Source and the frozen exe are 2.06. Load reads the letter and the PEP only when the pack has no saved cover, then writes that cover without a Save click. The next Load uses the file. Load `2026-Tanzim`. Do not Confirm 075.

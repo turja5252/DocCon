@@ -505,8 +505,6 @@ def test_load_shows_progress_before_rows(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(gui_mod, "fetch_rev_option_lists", lambda *_a, **_k: {})
     monkeypatch.setattr(gui_mod, "resolve_job_folder", lambda _job: tmp_path)
     monkeypatch.setattr(gui_mod, "scan_current_pdfs", lambda _folder: [])
-    monkeypatch.setattr(gui_mod, "adopt_transmittal_books", lambda *_a, **_k: [])
-    monkeypatch.setattr(gui_mod, "find_pep", lambda *_a, **_k: None)
     monkeypatch.setattr(gui_mod, "load_client_pack", lambda *_a, **_k: None)
     monkeypatch.setattr(gui_mod, "save_client_pack", lambda *_a, **_k: None)
     try:
@@ -687,8 +685,6 @@ def test_load_saves_current_job_before_switch(tmp_path: Path, monkeypatch) -> No
     monkeypatch.setattr(gui_mod, "fetch_rev_option_lists", lambda *_a, **_k: {})
     monkeypatch.setattr(gui_mod, "resolve_job_folder", lambda _job: tmp_path)
     monkeypatch.setattr(gui_mod, "scan_current_pdfs", lambda _folder: [])
-    monkeypatch.setattr(gui_mod, "adopt_transmittal_books", lambda *_a, **_k: [])
-    monkeypatch.setattr(gui_mod, "find_pep", lambda *_a, **_k: None)
     monkeypatch.setattr(gui_mod, "load_client_pack", lambda *_a, **_k: None)
     monkeypatch.setattr(gui_mod, "save_client_pack", lambda *_a, **_k: None)
     monkeypatch.setattr(app, "_settings", lambda: None)
@@ -896,8 +892,6 @@ def test_load_many_rows_finishes_without_per_row_drop(tmp_path: Path, monkeypatc
     monkeypatch.setattr(gui_mod, "fetch_rev_option_lists", lambda *_a, **_k: {})
     monkeypatch.setattr(gui_mod, "resolve_job_folder", lambda _job: tmp_path)
     monkeypatch.setattr(gui_mod, "scan_current_pdfs", lambda _folder: [])
-    monkeypatch.setattr(gui_mod, "adopt_transmittal_books", lambda *_a, **_k: [])
-    monkeypatch.setattr(gui_mod, "find_pep", lambda *_a, **_k: None)
     monkeypatch.setattr(gui_mod, "load_client_pack", lambda *_a, **_k: None)
     monkeypatch.setattr(gui_mod, "save_client_pack", lambda *_a, **_k: None)
     monkeypatch.setattr(app, "_settings", lambda: None)
@@ -948,6 +942,31 @@ def _label_texts(widget) -> list[str]:
         with contextlib.suppress(tk.TclError):
             stack.extend(current.winfo_children())
     return texts
+
+
+def test_right_click_on_a_text_box_offers_paste() -> None:
+    try:
+        from doccon.gui import DocConApp
+    except tk.TclError:
+        pytest.skip("Tk is not available")
+    try:
+        app = DocConApp()
+    except tk.TclError:
+        pytest.skip("Tk is not available")
+    app.withdraw()
+    box = ttk.Entry(app)
+    box.pack()
+    try:
+        app.update_idletasks()
+        from doccon import theme as theme_mod
+
+        assert app.bind_class("TEntry", "<Button-3>")
+        assert app.bind_class("Text", "<Button-3>")
+        assert theme_mod._EDIT_MENU is not None
+        assert "Paste" in theme_mod._EDIT_MENU._doccon_labels
+        assert "Copy" in theme_mod._EDIT_MENU._doccon_labels
+    finally:
+        app.destroy()
 
 
 def test_console_has_paste_pdf_and_no_pdf_from_outlook_button() -> None:
@@ -1118,7 +1137,6 @@ def test_saved_cover_does_not_open_the_letter(tmp_path: Path, monkeypatch: pytes
         ),
     )
     called: list[str] = []
-    monkeypatch.setattr(gui_mod, "find_pep", lambda *_a, **_k: called.append("pep"))
     monkeypatch.setattr(gui_mod, "load_pep", lambda *_a, **_k: called.append("load"))
     try:
         app = DocConApp()
@@ -1139,25 +1157,19 @@ def test_saved_cover_does_not_open_the_letter(tmp_path: Path, monkeypatch: pytes
         app.destroy()
 
 
-def test_missing_cover_reads_the_letter_once_and_saves_it(
+def test_missing_cover_does_not_open_a_pep(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     try:
         import doccon.gui as gui_mod
-        from doccon.client_log import BookCover
         from doccon.gui import DocConApp
         from doccon.pack_state import ClientPack, load_client_pack, save_client_pack
+        from doccon.theme import PENDING_BORDER
     except tk.TclError:
         pytest.skip("Tk is not available")
     save_client_pack(tmp_path, ClientPack(job_number="2026-Tanzim"))
     called: list[str] = []
-    monkeypatch.setattr(gui_mod, "find_pep", lambda *_a, **_k: called.append("pep"))
-    monkeypatch.setattr(
-        gui_mod,
-        "book_cover_for_job",
-        lambda *_a, **_k: called.append("book") or BookCover(to_line="client@example.com"),
-    )
-    monkeypatch.setattr(gui_mod, "adopt_transmittal_books", lambda *_a, **_k: called.append("adopt") or [])
+    monkeypatch.setattr(gui_mod, "load_pep", lambda *_a, **_k: called.append("pep"))
     try:
         app = DocConApp()
     except tk.TclError:
@@ -1169,9 +1181,9 @@ def test_missing_cover_reads_the_letter_once_and_saves_it(
         app._job_folder = tmp_path
         app._start_folder_files(app._load_gen, "2026-Tanzim", tmp_path, "client")
         _wait_for_folder_files(app)
-        assert called == ["adopt", "pep", "book"]
+        assert called == []
         assert app._pending_files is not None
-        assert app._pending_files[-1] is False
+        assert app._pending_files[-1] is True
         app.board.selected_keys = lambda: ()
         app.board.next_edits = lambda: {}
         app._matches = {"a": SimpleNamespace(confidence="High")}
@@ -1179,15 +1191,115 @@ def test_missing_cover_reads_the_letter_once_and_saves_it(
         app._apply_folder_files(app._pending_files)
         loaded = load_client_pack(tmp_path, "2026-Tanzim")
         assert loaded is not None
-        assert loaded.cover_captured is True
-        assert loaded.to_line == "client@example.com"
-        called.clear()
-        app._pending_files = None
-        app._matches = {}
-        app.board._blocks.clear()
+        assert loaded.to_line == ""
+        assert loaded.cover_initialized is False
+        assert app._cover_shell.cget("bg") == PENDING_BORDER
+        assert app.cover.cget("style") == "Attention.TLabelframe"
+    finally:
+        app.destroy()
+
+
+def test_create_eddi_uses_today_when_date_issued_is_blank(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    try:
+        import doccon.gui as gui_mod
+        from doccon.gui import DocConApp
+    except tk.TclError:
+        pytest.skip("Tk is not available")
+    infos: list[str] = []
+    seen: dict[str, object] = {}
+    monkeypatch.setattr(gui_mod.messagebox, "showinfo", lambda _t, message, **_k: infos.append(message))
+    monkeypatch.setattr(gui_mod.messagebox, "showerror", lambda _t, message, **_k: infos.append(message))
+    monkeypatch.setattr(gui_mod.messagebox, "askyesno", lambda *_a, **_k: True)
+    monkeypatch.setattr(gui_mod, "eddi_print_drawings", lambda rows: list(rows))
+
+    def _snap(_folder, _job, _drawings, issued):
+        seen["issued"] = issued
+        return SimpleNamespace(note="EDDI printed")
+
+    monkeypatch.setattr(gui_mod, "snapshot_eddi", _snap)
+    try:
+        app = DocConApp()
+    except tk.TclError:
+        pytest.skip("Tk is not available")
+    app.withdraw()
+    _run_threads_now(monkeypatch)
+    try:
+        app._job_number = "2026-Tanzim"
+        app._job_folder = tmp_path
+        app.job.delete(0, "end")
+        app.job.insert(0, "2026-Tanzim")
+        app.issued.delete(0, "end")
+        app.board.current_rows = lambda: [SimpleNamespace()]
+        app._print_eddi()
+        app.update()
+        assert "Pick a Submission Date." not in infos
+        assert seen["issued"] == date.today()
+    finally:
+        app.destroy()
+
+
+def test_saved_cover_without_recipients_reads_that_pep(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    try:
+        import doccon.gui as gui_mod
+        from doccon.gui import DocConApp
+        from doccon.pack_state import ClientPack, load_client_pack, save_client_pack
+        from doccon.pep import PepCover
+    except tk.TclError:
+        pytest.skip("Tk is not available")
+    pep_file = tmp_path / "pep.xlsx"
+    pep_file.write_bytes(b"")
+    save_client_pack(
+        tmp_path,
+        ClientPack(
+            job_number="2026-Tanzim",
+            project_description="Tank",
+            cover_captured=True,
+            pep_path=str(pep_file),
+        ),
+    )
+    cover = PepCover(
+        path=pep_file,
+        from_address="doc.control@eliteintegrityservices.com",
+        to_line="to@client.com",
+        cc_line="cc@client.com",
+        project_description="Tank",
+        client="Client",
+        site="",
+        tank_tag="",
+        po="",
+        wo="",
+        pm_line="pm@eliteintegrityservices.com",
+        engineer_line="eng@eliteintegrityservices.com",
+        pep_cc="cc@client.com",
+    )
+    called: list[str] = []
+    monkeypatch.setattr(gui_mod, "load_pep", lambda *_a, **_k: called.append("load") or cover)
+    try:
+        app = DocConApp()
+    except tk.TclError:
+        pytest.skip("Tk is not available")
+    app.withdraw()
+    _run_threads_now(monkeypatch)
+    try:
+        app._job_number = "2026-Tanzim"
+        app._job_folder = tmp_path
+        app.kind.set("client")
         app._start_folder_files(app._load_gen, "2026-Tanzim", tmp_path, "client")
         _wait_for_folder_files(app)
         assert called == []
+        assert app._pending_files is not None
         assert app._pending_files[-1] is True
+        app.board.selected_keys = lambda: ()
+        app.board.next_edits = lambda: {}
+        app._matches = {"a": SimpleNamespace(confidence="High")}
+        app.board._blocks["a"] = object()
+        app._apply_folder_files(app._pending_files)
+        assert app._email_value(app.to_box) == ""
+        assert "cc@client.com" not in app._email_value(app.cc_box)
+        assert app._cover_initialized is True
     finally:
         app.destroy()

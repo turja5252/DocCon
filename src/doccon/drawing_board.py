@@ -251,6 +251,19 @@ PACK_COL_PX = 40
 JIRA_ID_COL_PX = 156
 DESC_COL_PX = 180
 PDF_COL_PX = 188
+# Segoe MDL2 Assets. Hover still says Locate, Rename, Open, Preview.
+PDF_ACTION_GLYPH = {
+    "locate": "\uE8B7",
+    "rename": "\uE70F",
+    "open": "\uE8A7",
+    "preview": "\uE7B3",
+}
+PDF_ACTION_TIP = {
+    "locate": "Locate…",
+    "rename": "Rename…",
+    "open": "Open",
+    "preview": "Preview",
+}
 
 
 def no_return_status(status: str) -> bool:
@@ -635,7 +648,6 @@ class DrawingBoard(ttk.Frame):
         on_cancel_next=None,
         on_draft_change=None,
         on_no_return=None,
-        on_sync_dropbox=None,
     ) -> None:
         super().__init__(master)
         apply_theme(self)
@@ -653,7 +665,6 @@ class DrawingBoard(ttk.Frame):
         self._on_draft_change = on_draft_change
         self._on_render: Callable[[int, int], None] | None = None
         self._on_no_return = on_no_return
-        self._on_sync_dropbox = on_sync_dropbox
         self._matches: dict[str, MatchedRow] = {}
         self._blocks: dict[str, _Block] = {}
         self._focus_key = ""
@@ -738,12 +749,6 @@ class DrawingBoard(ttk.Frame):
         )
         self._packed_only_btn = ttk.Button(self._find_bar, text="Packed only", command=self._toggle_packed_only)
         self._packed_only_btn.pack(side="left", padx=(0, 8))
-        self._sync_all_btn = ttk.Button(self._find_bar, text="Sync all", command=lambda: self._sync_dropbox("all"))
-        self._sync_all_btn.pack(side="left", padx=(0, 4))
-        self._sync_packed_btn = ttk.Button(
-            self._find_bar, text="Sync packed", command=lambda: self._sync_dropbox("packed")
-        )
-        self._sync_packed_btn.pack(side="left", padx=(0, 8))
         ttk.Button(self._find_bar, text="Pack all", command=lambda: self.set_pack(True)).pack(
             side="left", padx=(4, 4)
         )
@@ -1793,6 +1798,25 @@ class DrawingBoard(ttk.Frame):
         for block in self._blocks.values():
             self._reflow_actions(block)
 
+    def _pdf_action_button(self, parent: tk.Misc, kind: str, command=None) -> ttk.Button:
+        """A small mark for Locate, Rename, Open, or Preview. Hover shows the word."""
+        button = ttk.Button(
+            parent,
+            text=PDF_ACTION_GLYPH[kind],
+            style="Icon.TButton",
+            width=2,
+            command=command,
+        )
+        tip = PDF_ACTION_TIP[kind]
+        button._doccon_tip = tip
+        button.bind(
+            "<Enter>",
+            lambda _event, widget=button, label=tip: self._schedule_tip(widget, label, 0),
+            add="+",
+        )
+        button.bind("<Leave>", lambda _event: self._hide_tip(), add="+")
+        return button
+
     def _reflow_actions(self, block: _Block) -> None:
         """Lay Locate / Open / Preview inside the PDF column. Do not widen it."""
         button = block.locate_btn
@@ -2133,18 +2157,6 @@ class DrawingBoard(ttk.Frame):
         on = bool(self._packed_only.get())
         try:
             self._packed_only_btn.configure(style="Brand.TButton" if on else "TButton")
-        except tk.TclError:
-            return
-
-    def _sync_dropbox(self, scope: str) -> None:
-        if self._on_sync_dropbox is not None:
-            self._on_sync_dropbox(scope)
-
-    def set_sync_busy(self, busy: bool) -> None:
-        try:
-            state = "disabled" if busy else "normal"
-            self._sync_all_btn.configure(text="Syncing…" if busy else "Sync all", state=state)
-            self._sync_packed_btn.configure(text="Syncing…" if busy else "Sync packed", state=state)
         except tk.TclError:
             return
 
@@ -3164,33 +3176,17 @@ class DrawingBoard(ttk.Frame):
         self._place(pdf_cell, now_row, PDF_COL_INDEX)
         pdf_label.bind("<Double-1>", lambda _event, key=drawing.key: self._on_open_pdf(key))
         pdf_actions = ttk.Frame(self._inner, style="Board.TFrame")
-        locate_btn = ttk.Button(
-            pdf_actions,
-            text="Locate…",
-            style="Locate.TButton",
-            width=8,
-            command=lambda key=drawing.key: self._on_locate_pdf(key),
+        locate_btn = self._pdf_action_button(
+            pdf_actions, "locate", lambda key=drawing.key: self._on_locate_pdf(key)
         )
-        rename_btn = ttk.Button(
-            pdf_actions,
-            text="Rename…",
-            style="Locate.TButton",
-            width=8,
-            command=lambda key=drawing.key: self._rename_pdf(key),
+        rename_btn = self._pdf_action_button(
+            pdf_actions, "rename", lambda key=drawing.key: self._rename_pdf(key)
         )
-        open_btn = ttk.Button(
-            pdf_actions,
-            text="Open",
-            style="Locate.TButton",
-            width=5,
-            command=lambda key=drawing.key: self._on_open_pdf(key),
+        open_btn = self._pdf_action_button(
+            pdf_actions, "open", lambda key=drawing.key: self._on_open_pdf(key)
         )
-        preview_btn = ttk.Button(
-            pdf_actions,
-            text="Preview",
-            style="Locate.TButton",
-            width=7,
-            command=lambda key=drawing.key: self._preview_pdf(key),
+        preview_btn = self._pdf_action_button(
+            pdf_actions, "preview", lambda key=drawing.key: self._preview_pdf(key)
         )
         shop_folder = self._make_shop_picker(pdf_actions)
         pdf_state = "normal" if row.pdf else "disabled"
@@ -3484,27 +3480,15 @@ class DrawingBoard(ttk.Frame):
         self._place(pdf_cell, now_row, PDF_COL_INDEX)
         pdf_label.bind("<Double-1>", lambda _event, extra_key=key: self._on_open_pdf(extra_key))
         pdf_actions = ttk.Frame(self._inner, style="Board.TFrame")
-        locate_btn = ttk.Button(
-            pdf_actions,
-            text="Locate…",
-            style="Locate.TButton",
-            width=8,
-            command=lambda extra_key=key: self._on_locate_pdf(extra_key),
+        locate_btn = self._pdf_action_button(
+            pdf_actions, "locate", lambda extra_key=key: self._on_locate_pdf(extra_key)
         )
-        rename_btn = ttk.Button(pdf_actions, text="Rename…", style="Locate.TButton", width=8)
-        open_btn = ttk.Button(
-            pdf_actions,
-            text="Open",
-            style="Locate.TButton",
-            width=5,
-            command=lambda extra_key=key: self._on_open_pdf(extra_key),
+        rename_btn = self._pdf_action_button(pdf_actions, "rename")
+        open_btn = self._pdf_action_button(
+            pdf_actions, "open", lambda extra_key=key: self._on_open_pdf(extra_key)
         )
-        preview_btn = ttk.Button(
-            pdf_actions,
-            text="Preview",
-            style="Locate.TButton",
-            width=7,
-            command=lambda extra_key=key: self._preview_pdf(extra_key),
+        preview_btn = self._pdf_action_button(
+            pdf_actions, "preview", lambda extra_key=key: self._preview_pdf(extra_key)
         )
         shop_folder = self._make_shop_picker(pdf_actions)
         pdf_state = "normal" if Path(item.path).is_file() else "disabled"

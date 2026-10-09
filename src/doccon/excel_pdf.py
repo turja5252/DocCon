@@ -926,6 +926,137 @@ def _read_last_step(path: Path | None) -> str:
         return ""
 
 
+def delete_transmittal_tab_with_excel(
+    path: Path,
+    *,
+    tab: str,
+    number_cell: str,
+    next_number: int,
+) -> None:
+    """Remove one numbered tab and write the next number. The PDF and zip are left alone."""
+    if os.name != "nt":
+        raise LogError("Deleting a transmittal tab in an .xlsm needs Excel on Windows.")
+    source = Path(path).resolve()
+    tmp_dir = doccon_temp_dir("ct-delete-")
+    log("INFO", "file", f"delete tab {tab} {describe_path(source)}")
+    try:
+        local_book = copy_workbook_local(source, tmp_dir)
+    except OSError as exc:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise LogError(operator_excel_message(_exception_text(exc), stage="open")) from None
+    payload = {
+        "path": str(local_book),
+        "lock": _TEMPLATE_LOCK,
+        "tab": str(tab),
+        "number_cell": number_cell,
+        "next_number": int(next_number),
+    }
+    script_path = tmp_dir / "delete.ps1"
+    pid_path = tmp_dir / "office.pid"
+    fail_path = tmp_dir / "office.err"
+    payload_path = tmp_dir / "payload.json"
+    try:
+        payload_path.write_text(json.dumps(payload), encoding="utf-8")
+        _write_delete_tab_script(script_path, payload_path, pid_path, fail_path)
+        completed = _run_office_script(
+            script_path, pid_path, timeout_s=_FILE_TIMEOUT_S, fail_path=fail_path
+        )
+        if completed.returncode != 0:
+            raise _transmittal_excel_error(
+                _office_error_text(completed, fail_path, fallback="Excel could not delete that transmittal tab.")
+            )
+        try:
+            place_file(local_book, source, unique_if_locked=False)
+        except OSError as exc:
+            if _is_sharing_violation(exc):
+                raise LogError(
+                    with_log_details(
+                        "Could not write the transmittal book.\n"
+                        "Close that workbook in Excel if it is open, then try again."
+                    )
+                ) from None
+            raise
+    except LogError:
+        raise
+    except Exception as exc:
+        raise LogError(operator_excel_message(_exception_text(exc), stage="file")) from None
+    finally:
+        _kill_process_tree(_read_pid_file(pid_path))
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def _write_delete_tab_script(
+    script_path: Path,
+    payload_path: Path,
+    pid_path: Path,
+    fail_path: Path | None = None,
+) -> None:
+    fail = Path(fail_path) if fail_path else Path(str(pid_path) + ".err")
+    script_path.write_text(
+        (
+            "$ErrorActionPreference = 'Stop'\n"
+            f"$payloadPath = {_ps_lit(str(payload_path))}\n"
+            f"$pidPath = {_ps_lit(str(pid_path))}\n"
+            f"$failPath = {_ps_lit(str(fail))}\n"
+            f"$diagPath = {_ps_lit(str(fail.with_suffix('.hops')))}\n"
+            f"$stepPath = {_ps_lit(str(fail.with_suffix('.step')))}\n"
+            "$p = Get-Content -Raw -Encoding UTF8 $payloadPath | ConvertFrom-Json\n"
+            "$excel = $null\n"
+            "$wb = $null\n"
+            "$saved = $false\n"
+            "$ownedPid = 0\n"
+            "$stage = 'start'\n"
+            "$before = @{}\n"
+            "Get-Process excel -ErrorAction SilentlyContinue | ForEach-Object { $before[$_.Id] = $true }\n"
+            + _PS_WRITE_HOP
+            + _PS_WRITE_FAIL
+            + _PS_OPEN_BOOK
+            + "function Unlock-Book($book, $lock) {\n"
+            "  if (-not $book.ProtectStructure -and -not $book.ProtectWindows) { return }\n"
+            "  if ($lock) { try { $book.Unprotect($lock) } catch {} }\n"
+            "  if ($book.ProtectStructure -or $book.ProtectWindows) {\n"
+            "    try { $book.Unprotect([string]::Empty) } catch {}\n"
+            "  }\n"
+            "}\n"
+            "function Unlock-Sheet($sheet, $lock) {\n"
+            "  if (-not $sheet.ProtectContents) { return }\n"
+            "  if ($lock) { try { $sheet.Unprotect($lock) } catch {} }\n"
+            "  if ($sheet.ProtectContents) { try { $sheet.Unprotect([string]::Empty) } catch {} }\n"
+            "}\n"
+            "try {\n"
+            + _PS_START_EXCEL
+            + "  $excel.DisplayAlerts = $false\n"
+            "  $stage = 'open'\n"
+            "  try { Unblock-File -LiteralPath ([string]$p.path) } catch {}\n"
+            "  $wb = Open-DocConBook $excel ([string]$p.path) $false\n"
+            "  $stage = 'delete'\n"
+            "  $protectBook = [bool]$wb.ProtectStructure\n"
+            "  Unlock-Book $wb $p.lock\n"
+            "  $ws = $wb.Worksheets.Item('TRANSMITTAL')\n"
+            "  Unlock-Sheet $ws $p.lock\n"
+            "  $tab = $wb.Worksheets.Item([string]$p.tab)\n"
+            "  Unlock-Sheet $tab $p.lock\n"
+            "  $ws.Activate()\n"
+            "  $tab.Delete()\n"
+            "  $ws.Range([string]$p.number_cell).Value = [int]$p.next_number\n"
+            "  try { $ws.Protect($p.lock, $true, $true, $true, $false, $true) } catch {}\n"
+            "  foreach ($sheet in @($wb.Worksheets)) {\n"
+            "    if ($sheet.Name -match '^\\d+$') {\n"
+            "      try { $sheet.Protect($p.lock, $true, $true, $true, $false, $true) } catch {}\n"
+            "    }\n"
+            "  }\n"
+            "  if ($protectBook) { try { $wb.Protect($p.lock, $true, $false) } catch {} }\n"
+            "  $wb.Save()\n"
+            "  $saved = $true\n"
+            + _ps_catch_stage()
+            + "} finally {\n"
+            + _PS_QUIT_EXCEL
+            + "}\n"
+        ),
+        encoding="utf-8",
+    )
+
+
 def file_client_with_excel(
     path: Path,
     *,

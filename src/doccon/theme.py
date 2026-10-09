@@ -43,6 +43,70 @@ FONT_BOLD = ("Segoe UI", 10, "bold")
 FONT_TITLE = ("Segoe UI", 14, "bold")
 
 
+_EDIT_MENU: tk.Menu | None = None
+
+
+def install_text_edit_menu(root: tk.Misc) -> None:
+    """Right-click Cut, Copy, Paste, and Select all on text boxes."""
+    global _EDIT_MENU
+    if _EDIT_MENU is not None:
+        try:
+            if _EDIT_MENU.winfo_exists():
+                return
+        except tk.TclError:
+            _EDIT_MENU = None
+    menu = tk.Menu(root.winfo_toplevel(), tearoff=0)
+    menu._doccon_labels = ("Cut", "Copy", "Paste", "Select all")
+    _EDIT_MENU = menu
+
+    def _editable(widget: tk.Misc) -> bool:
+        try:
+            state = str(widget.cget("state"))
+        except tk.TclError:
+            return True
+        return state not in {"disabled", "readonly"}
+
+    def _select_all(widget: tk.Misc) -> None:
+        if isinstance(widget, tk.Text):
+            widget.tag_add("sel", "1.0", "end-1c")
+            widget.mark_set("insert", "1.0")
+            widget.see("insert")
+            return
+        with contextlib.suppress(tk.TclError):
+            widget.selection_range(0, "end")
+            widget.icursor("end")
+
+    def _show(event: tk.Event) -> str:
+        widget = event.widget
+        try:
+            widget.focus_set()
+        except tk.TclError:
+            return "break"
+        can_edit = _editable(widget)
+        menu.delete(0, "end")
+        menu.add_command(
+            label="Cut",
+            state=tk.NORMAL if can_edit else tk.DISABLED,
+            command=lambda target=widget: target.event_generate("<<Cut>>"),
+        )
+        menu.add_command(label="Copy", command=lambda target=widget: target.event_generate("<<Copy>>"))
+        menu.add_command(
+            label="Paste",
+            state=tk.NORMAL if can_edit else tk.DISABLED,
+            command=lambda target=widget: target.event_generate("<<Paste>>"),
+        )
+        menu.add_separator()
+        menu.add_command(label="Select all", command=lambda target=widget: _select_all(target))
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+        return "break"
+
+    for cls in ("Entry", "TEntry", "Text"):
+        root.bind_class(cls, "<Button-3>", _show)
+
+
 def apply_theme(root: tk.Misc) -> ttk.Style:
     style = ttk.Style(root)
     try:
@@ -57,6 +121,7 @@ def apply_theme(root: tk.Misc) -> ttk.Style:
     root.option_add("*TCombobox*Listbox.font", FONT)
     root.option_add("*TCombobox*Listbox.background", SURFACE)
     root.option_add("*TCombobox*Listbox.foreground", TEXT)
+    install_text_edit_menu(root)
 
     style.configure(".", background=BG, foreground=TEXT, font=FONT, borderwidth=0)
     style.configure("TFrame", background=BG)
@@ -103,6 +168,21 @@ def apply_theme(root: tk.Misc) -> ttk.Style:
         padding=8,
     )
     style.configure("TLabelframe.Label", background=BG, foreground=NAVY, font=FONT_BOLD)
+    style.configure(
+        "Attention.TLabelframe",
+        background=PENDING_BG,
+        foreground=TEXT,
+        bordercolor=PENDING_BORDER,
+        lightcolor=PENDING_BORDER,
+        darkcolor=PENDING_BORDER,
+        relief="solid",
+        borderwidth=4,
+        padding=8,
+    )
+    style.configure("Attention.TLabelframe.Label", background=PENDING_BG, foreground=TEXT, font=FONT_BOLD)
+    style.configure("Attention.TFrame", background=PENDING_BG)
+    style.configure("Attention.TLabel", background=PENDING_BG, foreground=TEXT, font=FONT_BOLD)
+    style.configure("AttentionMuted.TLabel", background=PENDING_BG, foreground=TEXT, font=FONT_SMALL)
 
     style.configure(
         "TButton",
@@ -305,6 +385,24 @@ def apply_theme(root: tk.Misc) -> ttk.Style:
         bordercolor=[("disabled", BORDER), ("active", ACCENT), ("pressed", "#0B5F5A")],
         lightcolor=[("disabled", BORDER), ("active", "#5EEAD4"), ("pressed", ACCENT)],
         darkcolor=[("disabled", BORDER), ("active", ACCENT), ("pressed", "#0B5F5A")],
+    )
+    style.configure(
+        "Icon.TButton",
+        background=SURFACE,
+        foreground=NAVY,
+        font=("Segoe MDL2 Assets", 12),
+        padding=(2, 1),
+        bordercolor="#9FB3C8",
+        lightcolor="#FFFFFF",
+        darkcolor="#9FB3C8",
+        borderwidth=1,
+        anchor="center",
+    )
+    style.map(
+        "Icon.TButton",
+        background=[("disabled", "#EEF2F6"), ("active", FOCUS_BG), ("pressed", "#D0D9E3")],
+        foreground=[("disabled", MUTED)],
+        bordercolor=[("disabled", BORDER), ("active", ACCENT), ("pressed", "#0B5F5A")],
     )
     style.configure(
         "TRadiobutton",

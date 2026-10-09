@@ -13,6 +13,7 @@ from doccon.pack_state import (
     cover_recipients,
     load_client_pack,
     pack_cover_is_saved,
+    pack_recipients_saved,
     pack_path,
     save_client_pack,
     with_cover_recipients,
@@ -69,6 +70,9 @@ def test_saved_cover_skips_the_letter_read(tmp_path: Path) -> None:
     assert loaded is not None
     assert loaded.cover_captured is True
     assert pack_cover_is_saved(loaded) is True
+    assert pack_recipients_saved(None) is False
+    assert pack_recipients_saved(blank) is False
+    assert pack_recipients_saved(ClientPack(job_number="2026-Tanzim", to_line="a@b.com")) is True
 
 
 def test_missing_pack_is_none(tmp_path: Path) -> None:

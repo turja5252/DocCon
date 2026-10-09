@@ -177,10 +177,11 @@ def _load_excel(path: Path) -> PepCover:
         tank = _cell_text(ws["C15"].value)
         po = _cell_text(ws["C13"].value)
         wo = _cell_text(ws["C14"].value)
-        to_line = _format_emails(_cell_text(ws["D50"].value))
-        cc_emails = _format_emails(_cell_text(ws["D51"].value))
-        pm_line = _format_emails(_cell_text(ws["C35"].value))
-        engineer_line = _format_emails(_cell_text(ws["I35"].value))
+        to_raw, cc_raw = _transmittal_recipient_cells(ws)
+        to_line = _format_emails(to_raw)
+        cc_emails = _format_emails(cc_raw)
+        pm_line = _format_emails(_labeled_value(ws, "elite project manager", "C35"))
+        engineer_line = _format_emails(_labeled_value(ws, "elite project engineer", "I35"))
         cc_line = compose_cc(cc_emails, pm_line, engineer_line)
         job_cell = _cell_text(ws["A1"].value)
         if job_cell.lower().startswith("insert elite job number") and not client and not to_line:
@@ -350,6 +351,57 @@ def _format_emails(text: str) -> str:
             found.add(key)
             seen.append(addr)
     return "; ".join(seen)
+
+
+def _norm_label(value: object) -> str:
+    text = _cell_text(value).casefold().replace("'", "").replace("’", "")
+    return text.rstrip(":").strip()
+
+
+def _find_label(ws, prefix: str, *, start: int = 1, end: int = 90) -> tuple[int, int] | None:
+    want = prefix.casefold().rstrip(":")
+    for row in range(start, end + 1):
+        for col in range(1, 12):
+            text = _norm_label(ws.cell(row, col).value)
+            if text == want or text.startswith(want):
+                return row, col
+    return None
+
+
+def _value_beside(ws, row: int, col: int) -> str:
+    for next_col in range(col + 1, 13):
+        text = _cell_text(ws.cell(row, next_col).value)
+        if text:
+            return text
+    return ""
+
+
+def _labeled_value(ws, prefix: str, fallback: str) -> str:
+    found = _find_label(ws, prefix)
+    if found is None:
+        return _cell_text(ws[fallback].value)
+    return _value_beside(ws, found[0], found[1])
+
+
+def _transmittal_recipient_cells(ws) -> tuple[str, str]:
+    """Main and CC under Transmittal Recipients, wherever that block sits on the form."""
+    found = _find_label(ws, "transmittal recipients")
+    if found is None:
+        return _cell_text(ws["D50"].value), _cell_text(ws["D51"].value)
+    start, _col = found
+    to_raw = ""
+    cc_raw = ""
+    for offset in range(0, 4):
+        row = start + offset
+        if offset and _norm_label(ws.cell(row, 1).value).startswith("data book"):
+            break
+        for col in range(1, 8):
+            label = _norm_label(ws.cell(row, col).value)
+            if label == "main" and not to_raw:
+                to_raw = _value_beside(ws, row, col)
+            if label in {"cc", "ccs"} and not cc_raw:
+                cc_raw = _value_beside(ws, row, col)
+    return to_raw, cc_raw
 
 
 def _cell_text(value: object) -> str:
