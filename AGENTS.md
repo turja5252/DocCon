@@ -38,7 +38,9 @@ The summary is an ID, then optional wording. Empty description is allowed.
 
 No extra Jira status or custom trigger field. Engineer emails Sarah the pack list; she runs DocCon.
 
-**Next:** Source and the frozen exe are **2.09**. Load `2026-Tanzim`. Do not Confirm 075.
+**Next:** Source and the frozen exe are **2.10**. Load `2026-Tanzim`. Do not Confirm 075.
+
+**2.10 The drawing list is drawn until Pack.** Unpacked rows are text, with a pack box on the row and on the EDDI chapter banner. Pack, Pack all, and that chapter box open the full Next editor. A long description grows the editor so the Next boxes stay visible. Column rules stay lined up with the headings. Drag is not back.
 
 **2.09 Create EDDI lists every Jira item in groups 1–9.** A missing PDF and an unticked Pack stay on the sheet. Generic and Non Jira stay off. Drag is not back.
 

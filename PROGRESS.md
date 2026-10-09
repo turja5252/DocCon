@@ -2,6 +2,14 @@
 
 Newest first. Append a dated entry when a decision is locked, a test runs, or the next step changes.
 
+## 2026-10-09 — Shipped 2.10
+
+Source and the frozen exe are 2.10. The drawing list is drawn until Pack. Pack, Pack all, and the EDDI chapter box open the full Next editor. Load `2026-Tanzim`. Do not Confirm 075.
+
+## 2026-10-09 — Draw the list until Pack
+
+Load draws each drawing as text, with a pack box on the row and on the EDDI chapter banner, and no Open / Preview marks. Selecting a row keeps that same picture and only adds a thin line. Pack, Pack all, and the chapter box bring back the full Next editor. A long description grows that editor so the Next line stays inside the row. Column width and Columns… still redraw the sheet. The way back is `67ab396`.
+
 ## 2026-10-09 — Shipped 2.09
 
 Source and the frozen exe are 2.09. Create EDDI prints every listed Jira item in groups 1–9. A missing PDF and an unticked Pack stay on the sheet. Load `2026-Tanzim`. Do not Confirm 075.

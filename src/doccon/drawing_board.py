@@ -54,6 +54,7 @@ from doccon.theme import (
     BAD,
     BG,
     BORDER,
+    FOCUS_BG,
     FONT,
     FONT_BOLD,
     FONT_SMALL,
@@ -203,6 +204,11 @@ PAINT_SLICE_MS = 1
 # Next editors are filled for the rows on screen. The rest wait until she scrolls to them.
 PRERENDER_BATCH = 4
 SHELL_ROW_PX = 56
+# Unpacked rows are drawn text. Pack builds the real editor.
+DRAW_ROW_PX = 36
+DRAW_GROUP_PX = 24
+# The packed editor's requested height stops just short of the Next boxes.
+EDITOR_PAD_PX = 28
 # Extra room under the last row. The scroll area was stopping one or two items short.
 SCROLL_TAIL_PX = SHELL_ROW_PX * 2
 FROZEN_SYNC_MAX = 4
@@ -688,6 +694,19 @@ class DrawingBoard(ttk.Frame):
         self._spacer_freeze: tk.Frame | None = None
         self._spacer_px = 0
         self._filling = False
+        self._drawn_mode = False
+        self._drawing_sheet = False
+        self._sheet_height = 0
+        self._draw_y: dict[str, int] = {}
+        self._draw_h: dict[str, int] = {}
+        self._draw_group_y: list[tuple[int, str]] = []
+        self._frozen_draw: dict[int, tuple[float, float]] = {}
+        self._row_frames: list[tk.Misc] = []
+        self._row_windows: dict[str, tuple[int, int]] = {}
+        self._materialize_queue: deque[str] = deque()
+        self._materialize_after = ""
+        self._materializing = False
+        self._row_frame_pair: dict[str, tuple[tk.Frame, tk.Frame]] = {}
         self._focus_key = ""
         self._focus_painted = ""
         self._active_next: NextWidget | None = None
@@ -946,6 +965,7 @@ class DrawingBoard(ttk.Frame):
         self._header.bind("<Configure>", lambda _event: self._sync_scroll())
         self._inner.bind("<Configure>", lambda _event: self._schedule_frozen_row_sync())
         self._freeze_inner.bind("<Configure>", lambda _event: self._schedule_frozen_row_sync())
+        self._canvas.bind("<Button-1>", self._press_drawn, add="+")
         self._canvas.bind("<Configure>", lambda event: self._sync_scroll(event.width))
         self._header_canvas.bind("<Configure>", lambda event: self._sync_scroll(event.width))
         self._wheel_bind = self.bind_all("<MouseWheel>", self._wheel_list, add="+")
@@ -1020,6 +1040,8 @@ class DrawingBoard(ttk.Frame):
     def _on_yscroll(self, first: str, last: str) -> None:
         self._vscroll.set(first, last)
         self._last_scroll = time.monotonic()
+        if self._drawn_mode:
+            return
         self._fill_shells_toward_scroll()
         if self._defer_editors:
             self._schedule_mount(delay=180)
@@ -1093,6 +1115,7 @@ class DrawingBoard(ttk.Frame):
             self._header_canvas.coords(self._freeze_header_window, self._header_canvas.canvasx(0), 0)
             self._canvas.tag_raise(self._freeze_window)
             self._header_canvas.tag_raise(self._freeze_header_window)
+        self._pin_drawn_frozen()
 
     def _schedule_frozen_row_sync(self) -> None:
         """Match freeze-pane row heights after wrap has a real requested size."""
@@ -1291,6 +1314,8 @@ class DrawingBoard(ttk.Frame):
 
     def _list_body_height(self) -> int:
         """Scroll height for the whole job. A spacer stands in for rows not built yet."""
+        if self._drawn_mode and self._sheet_height:
+            return self._sheet_height + SCROLL_TAIL_PX
         return self._content_height() + SCROLL_TAIL_PX
 
     def _painted_height(self) -> int:
@@ -1324,7 +1349,8 @@ class DrawingBoard(ttk.Frame):
         if self._paint_notified:
             return
         self._paint_notified = True
-        self._map_inner()
+        if not self._drawn_mode:
+            self._map_inner()
         self._suspend_layout = False
         progress = self._paint_on_progress
         if progress is not None:
@@ -1487,6 +1513,8 @@ class DrawingBoard(ttk.Frame):
             self._size_frozen()
             self._pin_frozen()
             self._schedule_frozen_row_sync()
+        if self._drawn_mode:
+            self._draw_sheet()
         self._sync_scroll()
 
     def _wrap_px(self, col: int) -> int:
@@ -1978,6 +2006,8 @@ class DrawingBoard(ttk.Frame):
 
     def _place_vlines(self) -> None:
         """Thin vertical rules, the same weight as the lines between rows."""
+        if self._materializing:
+            return
         self._place_vline_set(self._inner, self._vlines, len(self._col_px))
         self._place_vline_set(self._freeze_inner, self._freeze_vlines, FROZEN_COLS)
         for _title, label in self._group_headers:
@@ -2348,6 +2378,25 @@ class DrawingBoard(ttk.Frame):
         return False
 
     def _on_pack_tick(self, key: str = "") -> None:
+        if self._drawn_mode and key:
+            hold = self._holds.get(key)
+            if hold is None:
+                self._notify_draft()
+                return
+            if hold.include.get():
+                if key not in self._blocks:
+                    self._stamp_pack_tick(key)
+                    if key not in self._materialize_queue:
+                        self._materialize_queue.append(key)
+                    if not self._suspend_layout:
+                        self._schedule_materialize()
+            else:
+                if key in self._blocks:
+                    self._release_drawn_editor(key)
+                if not self._suspend_layout:
+                    self._draw_sheet()
+            self._notify_draft()
+            return
         if key:
             block = self._blocks.get(key)
             if block is not None and not block.extra:
@@ -2452,7 +2501,7 @@ class DrawingBoard(ttk.Frame):
     def _refresh_filter(self) -> None:
         packed_only = bool(self._packed_only.get())
         needle = self._filter_needle.strip()
-        if self._paint_queue and (
+        if not self._drawn_mode and self._paint_queue and (
             needle or (packed_only and any(row.drawing.key in self._holds and self._holds[row.drawing.key].include.get() for row in self._paint_queue))
         ):
             self._paint_remaining_now()
@@ -2468,6 +2517,17 @@ class DrawingBoard(ttk.Frame):
         any_hidden = False
         self._suspend_layout = True
         try:
+            if self._drawn_mode:
+                for key, hold in self._holds.items():
+                    if key in self._blocks:
+                        continue
+                    show = self._block_matches(hold)
+                    if show:
+                        shown += 1
+                        visible_groups.add(hold.group)
+                    else:
+                        any_hidden = True
+                    hold.shown = show
             for block in self._blocks.values():
                 show = self._block_matches(block)
                 if show:
@@ -2519,6 +2579,8 @@ class DrawingBoard(ttk.Frame):
         self._sync_frozen_rows()
         self._sync_scroll()
         self._schedule_frozen_row_sync()
+        if self._drawn_mode:
+            self._draw_sheet()
 
     def _draw_header(self) -> None:
         for host in (self._header, self._freeze_header):
@@ -2606,6 +2668,10 @@ class DrawingBoard(ttk.Frame):
             with contextlib.suppress(tk.TclError):
                 self.after_cancel(self._mount_after)
             self._mount_after = ""
+        if self._materialize_after:
+            with contextlib.suppress(tk.TclError):
+                self.after_cancel(self._materialize_after)
+            self._materialize_after = ""
         self._on_render = None
         self._paint_queue = deque()
         self._paint_on_progress = None
@@ -2622,6 +2688,7 @@ class DrawingBoard(ttk.Frame):
         for host in (self._inner, self._freeze_inner):
             for child in host.winfo_children():
                 child.destroy()
+        self._clear_sheet()
         self._blocks.clear()
         self._holds.clear()
         self._order.clear()
@@ -2646,7 +2713,480 @@ class DrawingBoard(ttk.Frame):
         self._refresh_filter()
         self._sync_scroll()
 
+    def _clear_sheet(self) -> None:
+        with contextlib.suppress(tk.TclError):
+            self._canvas.delete("sheet")
+            self._canvas.delete("row_win")
+        for frame in self._row_frames:
+            with contextlib.suppress(tk.TclError):
+                frame.destroy()
+        self._row_frames.clear()
+        self._row_windows.clear()
+        self._row_frame_pair.clear()
+        self._draw_y.clear()
+        self._draw_h.clear()
+        self._draw_group_y.clear()
+        self._frozen_draw.clear()
+        self._sheet_height = 0
+        self._materialize_queue.clear()
+
+    def _clip_draw(self, text: str, px: int) -> str:
+        shown = (text or "").replace("\n", " ").strip()
+        room = max(1, (px - 8) // 7)
+        if len(shown) <= room:
+            return shown
+        return shown[: max(room - 1, 1)] + "…"
+
+    def _now_draw_text(self, key: str, logical: int) -> str:
+        row = self._matches.get(key)
+        hold = self._holds.get(key)
+        if row is None:
+            return ""
+        drawing = row.drawing
+        if logical == PACK_COL_INDEX:
+            return "✓" if hold is not None and hold.include.get() else ""
+        if logical == DRAWING_COL_INDEX:
+            return drawing.drawing_id or drawing.key
+        if logical == DESC_COL_INDEX:
+            return drawing.title or "—"
+        if logical == STATUS_COL_INDEX:
+            return drawing.status or ""
+        if logical == MATCH_COL_INDEX:
+            return row.confidence or ""
+        if logical == PDF_COL_INDEX:
+            return pdf_address_text(row)
+        field_index = logical - FIELD_COL_START
+        if 0 <= field_index < len(FIELD_KEYS):
+            return getattr(drawing, FIELD_KEYS[field_index][0]) or ""
+        return ""
+
+    def _draw_sheet(self) -> None:
+        """Paint unpacked rows as text. Packed rows keep the real editor."""
+        if not self._drawn_mode or self._drawing_sheet:
+            return
+        self._drawing_sheet = True
+        try:
+            self._canvas.delete("sheet")
+            self._frozen_draw.clear()
+            self._draw_y.clear()
+            self._draw_h.clear()
+            self._draw_group_y.clear()
+            origins: dict[int, int] = {}
+            cursor = 0
+            for logical in self._display_order():
+                origins[logical] = cursor
+                cursor += self._shown_px(logical)
+            y = 4
+            group: str | None = None
+            frozen_w = self._frozen_width()
+            for key in self._order:
+                hold = self._holds.get(key)
+                if hold is None or not hold.shown:
+                    continue
+                if hold.group != group:
+                    self._draw_group_y.append((y, hold.group))
+                    self._draw_group_band(y, hold.group, origins)
+                    y += DRAW_GROUP_PX
+                    group = hold.group
+                self._draw_y[key] = y
+                height = self._row_draw_height(key, hold)
+                self._draw_h[key] = height
+                if key in self._row_windows:
+                    self._place_row_window(key, y, frozen_w)
+                else:
+                    self._draw_one_row(key, y, height, origins, frozen_w)
+                y += height
+            self._sheet_height = max(y, 1)
+            self._draw_column_rules(self._sheet_height, origins)
+            with contextlib.suppress(tk.TclError):
+                self._canvas.itemconfigure(self._window, state="hidden")
+                self._canvas.itemconfigure(self._freeze_window, state="hidden")
+                self._canvas.configure(
+                    scrollregion=(0, 0, max(self._shown_span(), 1), self._sheet_height + SCROLL_TAIL_PX)
+                )
+                self._canvas.tag_lower("colrule")
+                self._canvas.tag_raise("frozen_draw")
+                self._canvas.tag_raise("frozen_win")
+            self._pin_drawn_frozen()
+        finally:
+            self._drawing_sheet = False
+
+    def _draw_group_band(self, y: int, title: str, origins: dict[int, int]) -> None:
+        span = max(self._shown_span(), 1)
+        self._canvas.create_rectangle(
+            0, y, span, y + DRAW_GROUP_PX, fill=HEADER_BG, outline="", tags=("sheet", "group")
+        )
+        packed = self._group_all_packed(title)
+        index = len(self._draw_group_y) - 1
+        self._draw_pack_box(f"g{index}", y - 4, origins, packed, tag=f"gpack:{index}")
+        title_x = self._shown_px(PACK_COL_INDEX) + 8
+        text = self._canvas.create_text(
+            title_x, y + 4, text=title, anchor="nw", fill=TEXT, font=FONT_BOLD, tags=("sheet", "frozen_draw")
+        )
+        self._frozen_draw[text] = (title_x, y + 4)
+
+    def _draw_column_rules(self, height: int, origins: dict[int, int]) -> None:
+        """Vertical rules at the same edges as the column headings."""
+        for logical in self._display_order():
+            px = self._shown_px(logical)
+            if px <= 0:
+                continue
+            edge = origins[logical] + px
+            line = self._canvas.create_line(
+                edge,
+                0,
+                edge,
+                height,
+                fill=BORDER,
+                width=1,
+                tags=("sheet", "colrule"),
+            )
+            if logical < FROZEN_COLS:
+                self._frozen_draw[line] = (edge, 0, edge, height)
+
+    def _text_block_height(self, text: str, px: int) -> int:
+        if px <= 16:
+            return 18
+        item = self._canvas.create_text(
+            0,
+            -4000,
+            text=text or "—",
+            anchor="nw",
+            width=max(px - 12, 8),
+            font=FONT,
+        )
+        box = self._canvas.bbox(item)
+        self._canvas.delete(item)
+        if not box:
+            return 18
+        return max(18, int(box[3] - box[1]))
+
+    def _frame_content_height(self, frame: tk.Misc) -> int:
+        try:
+            cols, rows = frame.grid_size()
+            if cols > 0 and rows > 0:
+                box = frame.grid_bbox(0, 0, cols - 1, rows - 1)
+                if box:
+                    return int(box[1]) + int(box[3])
+            return int(frame.winfo_reqheight())
+        except tk.TclError:
+            return 0
+
+    def _row_draw_height(self, key: str, hold: _Hold | None) -> int:
+        """Tall enough for a wrapped description, or for the real editor once packed."""
+        pair = self._row_frame_pair.get(key)
+        if pair is not None:
+            content = max(self._frame_content_height(pair[0]), self._frame_content_height(pair[1]))
+            if content > 0:
+                return content + EDITOR_PAD_PX
+        del hold
+        text_h = self._text_block_height(self._now_draw_text(key, DESC_COL_INDEX), self._shown_px(DESC_COL_INDEX))
+        return max(DRAW_ROW_PX, text_h + 16)
+
+    def _group_all_packed(self, group: str) -> bool:
+        members = [state for state in self._states() if state.group == group and state.shown]
+        return bool(members) and all(bool(state.include.get()) for state in members)
+
+    def _draw_one_row(self, key: str, y: int, height: int, origins: dict[int, int], frozen_w: int) -> None:
+        span = max(self._shown_span(), 1)
+        band = self._canvas.create_rectangle(
+            0, y, span, y + height, fill=BG, outline="", tags=("sheet", f"draw:{key}", f"band:{key}")
+        )
+        del band
+        selected = ACCENT if key == self._focus_key else ""
+        self._canvas.create_rectangle(
+            1,
+            y + 1,
+            span - 1,
+            y + height - 1,
+            fill="",
+            outline=selected,
+            width=1,
+            tags=("sheet", f"draw:{key}", f"sel:{key}"),
+        )
+        row = self._matches.get(key)
+        hold = self._holds.get(key)
+        self._draw_pack_box(key, y, origins, hold is not None and hold.include.get())
+        for logical in self._display_order():
+            if logical == PACK_COL_INDEX:
+                continue
+            px = self._shown_px(logical)
+            if px <= 0:
+                continue
+            raw = self._now_draw_text(key, logical)
+            wrapped = logical == DESC_COL_INDEX
+            text = raw if wrapped else self._clip_draw(raw, px)
+            color = TEXT
+            if logical == MATCH_COL_INDEX and row is not None:
+                if row.confidence == "High":
+                    color = OK
+                elif row.confidence == "Missing":
+                    color = BAD
+            text_kw: dict[str, object] = {}
+            if wrapped:
+                text_kw["width"] = max(px - 12, 8)
+            item = self._canvas.create_text(
+                origins[logical] + 6,
+                y + 8,
+                text=text,
+                anchor="nw",
+                fill=color,
+                font=FONT,
+                tags=("sheet", f"draw:{key}", "frozen_draw" if logical < FROZEN_COLS else "scroll_draw"),
+                **text_kw,
+            )
+            if logical < FROZEN_COLS:
+                self._frozen_draw[item] = (origins[logical] + 6, y + 8)
+
+    def _draw_pack_box(
+        self, key: str, y: int, origins: dict[int, int], checked: bool, *, tag: str = ""
+    ) -> None:
+        """A real pack box. Open, Rename, and Preview stay off until the editor is built."""
+        x = origins.get(PACK_COL_INDEX, 0) + 10
+        top = y + 8
+        size = 16
+        box_tag = tag or f"pack:{key}"
+        rect = self._canvas.create_rectangle(
+            x,
+            top,
+            x + size,
+            top + size,
+            outline="#102A43",
+            width=1,
+            fill="#D1FAE5" if checked else SURFACE,
+            tags=("sheet", f"draw:{key}", box_tag, "frozen_draw"),
+        )
+        self._frozen_draw[rect] = (x, top, x + size, top + size)
+        if not checked:
+            return
+        mark = self._canvas.create_text(
+            x + 1,
+            top - 2,
+            text="✓",
+            anchor="nw",
+            fill=OK,
+            font=FONT_BOLD,
+            tags=("sheet", f"draw:{key}", box_tag, "frozen_draw"),
+        )
+        self._frozen_draw[mark] = (x + 1, top - 2)
+
+    def _place_row_window(self, key: str, y: int, frozen_w: int) -> None:
+        frozen_id, scroll_id = self._row_windows[key]
+        span = max(self._shown_span() - frozen_w, 1)
+        height = self._row_draw_height(key, self._holds.get(key))
+        with contextlib.suppress(tk.TclError):
+            self._canvas.coords(scroll_id, frozen_w, y)
+            self._canvas.itemconfigure(scroll_id, width=span, height=height)
+            self._canvas.itemconfigure(frozen_id, width=frozen_w, height=height)
+            shift = float(self._canvas.canvasx(0))
+            self._canvas.coords(frozen_id, shift, y)
+
+    def _pin_drawn_frozen(self) -> None:
+        if not self._drawn_mode:
+            return
+        try:
+            shift = float(self._canvas.canvasx(0))
+        except tk.TclError:
+            return
+        for item, base in list(self._frozen_draw.items()):
+            moved = list(base)
+            for index in range(0, len(moved), 2):
+                moved[index] = moved[index] + shift
+            with contextlib.suppress(tk.TclError):
+                self._canvas.coords(item, *moved)
+        for key, (frozen_id, _scroll_id) in self._row_windows.items():
+            y = self._draw_y.get(key)
+            if y is None:
+                continue
+            with contextlib.suppress(tk.TclError):
+                self._canvas.coords(frozen_id, shift, y)
+                self._canvas.tag_raise(frozen_id)
+
+    def _drawn_group_at(self, canvas_y: float) -> str:
+        for top, title in self._draw_group_y:
+            if top <= canvas_y < top + DRAW_GROUP_PX:
+                return title
+        return ""
+
+    def _toggle_drawn_group(self, group: str) -> None:
+        """Pack or unpack every drawing under this EDDI chapter banner."""
+        members = [state for state in self._states() if state.group == group and state.shown]
+        if not members:
+            return
+        want = not all(bool(state.include.get()) for state in members)
+        self._suspend_layout = True
+        try:
+            for state in members:
+                if bool(state.include.get()) != want:
+                    state.include.set(want)
+        finally:
+            self._suspend_layout = False
+        self._schedule_materialize()
+        if self._drawn_mode:
+            self._draw_sheet()
+
+    def _drawn_key_at(self, canvas_y: float) -> str:
+        for key, top in self._draw_y.items():
+            height = self._draw_h.get(key, DRAW_ROW_PX)
+            if top <= canvas_y < top + height:
+                return key
+        return ""
+
+    def _press_drawn(self, event: tk.Event) -> str | None:
+        if not self._drawn_mode:
+            return None
+        try:
+            canvas_y = float(self._canvas.canvasy(event.y))
+            canvas_x = float(self._canvas.canvasx(event.x))
+        except tk.TclError:
+            return None
+        group = self._drawn_group_at(canvas_y)
+        if group and int(getattr(event, "x", 0)) <= max(self._shown_px(PACK_COL_INDEX), 28):
+            self._toggle_drawn_group(group)
+            return "break"
+        key = self._drawn_key_at(canvas_y)
+        if not key or key in self._blocks:
+            return None
+        on_pack = int(getattr(event, "x", 0)) <= max(self._shown_px(PACK_COL_INDEX), 28)
+        if not on_pack:
+            for item in self._canvas.find_overlapping(canvas_x, canvas_y, canvas_x, canvas_y):
+                if any(tag.startswith("pack:") for tag in self._canvas.gettags(item)):
+                    on_pack = True
+                    break
+        if on_pack:
+            hold = self._holds.get(key)
+            if hold is not None:
+                hold.include.set(not bool(hold.include.get()))
+            return "break"
+        self._set_focus(key)
+        return "break"
+
+    def _style_drawn_focus(self) -> None:
+        """The selected row keeps the same picture. Only a thin line marks it."""
+        for key in self._draw_y:
+            with contextlib.suppress(tk.TclError):
+                self._canvas.itemconfigure(f"sel:{key}", outline=ACCENT if key == self._focus_key else "")
+
+    def _schedule_materialize(self) -> None:
+        if not self._materialize_queue or self._materialize_after:
+            return
+        try:
+            self._materialize_after = self.after_idle(self._materialize_some)
+        except tk.TclError:
+            self._materialize_after = ""
+
+    def _materialize_some(self) -> None:
+        self._materialize_after = ""
+        built = 0
+        while self._materialize_queue and built < 2:
+            key = self._materialize_queue.popleft()
+            hold = self._holds.get(key)
+            if hold is None or key in self._blocks or not hold.include.get():
+                continue
+            self._materialize_drawn(key)
+            built += 1
+        if self._materialize_queue:
+            self._schedule_materialize()
+            return
+        if self._drawn_mode:
+            self._draw_sheet()
+
+    def _materialize_drawn(self, key: str) -> None:
+        """Turn one drawn row into the real Next editor."""
+        if key in self._blocks:
+            return
+        row = self._matches.get(key)
+        if row is None:
+            return
+        y = self._draw_y.get(key, 0)
+        scroll = tk.Frame(self._canvas, bg=BG, highlightthickness=0, bd=0)
+        freeze = tk.Frame(self._canvas, bg=BG, highlightthickness=0, bd=0)
+        self._row_frames.extend((scroll, freeze))
+        self._row_frame_pair[key] = (scroll, freeze)
+        order = self._display_order()
+        for pos, logical in enumerate(order):
+            px = self._shown_px(logical)
+            if logical < FROZEN_COLS:
+                freeze.columnconfigure(pos, minsize=px, weight=0)
+            else:
+                scroll.columnconfigure(pos, minsize=px, weight=0)
+        old_inner, old_freeze = self._inner, self._freeze_inner
+        self._inner, self._freeze_inner = scroll, freeze
+        self._materializing = True
+        try:
+            self._add_block(0, row, include=True, force=True)
+        finally:
+            self._materializing = False
+            self._inner, self._freeze_inner = old_inner, old_freeze
+        with contextlib.suppress(tk.TclError):
+            self.update_idletasks()
+        height = self._row_draw_height(key, self._holds.get(key))
+        frozen_w = self._frozen_width()
+        span = max(self._shown_span() - frozen_w, 1)
+        frozen_id = self._canvas.create_window(
+            (0, y),
+            window=freeze,
+            anchor="nw",
+            width=frozen_w,
+            height=height,
+            tags=("row_win", "frozen_win", f"win:{key}"),
+        )
+        scroll_id = self._canvas.create_window(
+            (frozen_w, y),
+            window=scroll,
+            anchor="nw",
+            width=span,
+            height=height,
+            tags=("row_win", f"win:{key}"),
+        )
+        self._row_windows[key] = (frozen_id, scroll_id)
+        with contextlib.suppress(tk.TclError):
+            self._canvas.delete(f"draw:{key}")
+            self._canvas.tag_raise("frozen_win")
+
+    def _release_drawn_editor(self, key: str) -> None:
+        """Pack off returns the row to the drawn sheet."""
+        block = self._blocks.get(key)
+        hold = self._holds.get(key)
+        if hold is not None and block is not None:
+            hold.drawing_id_next = _Held(block.drawing_id_next.get())
+            hold.title_next = _Held(block.title_next.get())
+            hold.status_next = _Held(block.status_next.get())
+            hold.nexts = {
+                field: _Held(block.nexts[field].get()) for field, _t, _v, _w, _k in FIELD_KEYS if field in block.nexts
+            }
+        self._blocks.pop(key, None)
+        for item in self._row_windows.pop(key, ()):
+            with contextlib.suppress(tk.TclError):
+                self._canvas.delete(item)
+        pair = self._row_frame_pair.pop(key, None)
+        if pair is not None:
+            for frame in pair:
+                if frame in self._row_frames:
+                    self._row_frames.remove(frame)
+                with contextlib.suppress(tk.TclError):
+                    frame.destroy()
+
+    def _follow_hold(self, key: str) -> None:
+        """Keep saved Next on the editor that just replaced the drawn row."""
+        hold = self._holds.get(key)
+        block = self._blocks.get(key)
+        if hold is None or block is None or hold.drawing_id_next is block.drawing_id_next:
+            return
+        block.drawing_id_next.set(hold.drawing_id_next.get())
+        block.title_next.set(hold.title_next.get())
+        block.status_next.set(hold.status_next.get())
+        for field, box in list(hold.nexts.items()):
+            widget = block.nexts.get(field)
+            if widget is not None and widget is not box:
+                widget.set(box.get())
+        hold.drawing_id_next = block.drawing_id_next
+        hold.title_next = block.title_next
+        hold.status_next = block.status_next
+        hold.nexts = block.nexts
+
     def set_rows(self, rows: list[MatchedRow], *, checked: set[str] | None = None) -> None:
+        self._drawn_mode = False
         self._defer_editors = False
         self._begin_rows(rows, checked=checked)
         while self._paint_queue:
@@ -2663,14 +3203,17 @@ class DrawingBoard(ttk.Frame):
         on_render=None,
     ) -> None:
         self._defer_editors = True
+        self._drawn_mode = True
         self._begin_rows(rows, checked=checked)
         self._on_render = on_render
         self._paint_on_progress = on_progress
         self._paint_on_done = on_done
-        if not self._paint_queue:
+        self._paint_queue.clear()
+        self._draw_sheet()
+        if not self._order:
             self._finish_paint()
             return
-        self._schedule_paint()
+        self._release_paint_for_load()
 
     def _begin_rows(self, rows: list[MatchedRow], *, checked: set[str] | None = None) -> None:
         self._pack_status_loading = True
@@ -3291,6 +3834,13 @@ class DrawingBoard(ttk.Frame):
 
     def _schedule_mount(self, *, delay: int = 20) -> None:
         """Build Next editors for the rows on screen. The rest wait until she scrolls there."""
+        if self._drawn_mode:
+            total = len(self._order)
+            hook = self._on_render
+            if hook is not None:
+                self._on_render = None
+                hook(total, total)
+            return
         if not self._defer_editors:
             return
         if self._mount_after:
@@ -3363,7 +3913,8 @@ class DrawingBoard(ttk.Frame):
         h_top, h_top_f = self._hline(top)
         now_row = top + 1
         next_row = top + 2
-        pack = self._arm_pack(include)
+        held = self._holds.get(drawing.key)
+        pack = held.include if held is not None else self._arm_pack(include)
         pack_mark = PackMark(self._freeze_inner, pack)
         pack_mark._doccon_logical = PACK_COL_INDEX
         pack_mark.grid(
@@ -3539,6 +4090,7 @@ class DrawingBoard(ttk.Frame):
         if drawing.key == self._focus_key:
             self._focus_painted = drawing.key
             self._style_row_focus(self._blocks[drawing.key])
+        self._follow_hold(drawing.key)
 
     def _make_shop_picker(self, parent: tk.Misc) -> ttk.Combobox:
         from doccon.shop_place import ROOT_FOLDER
@@ -3836,6 +4388,9 @@ class DrawingBoard(ttk.Frame):
         finally:
             self._suspend_layout = False
         self._apply_next_option_rows()
+        self._schedule_materialize()
+        if self._drawn_mode and not self._materialize_queue:
+            self._draw_sheet()
         if not checked and self.packed_only():
             self.set_packed_only(False)
             return
@@ -4654,6 +5209,8 @@ class DrawingBoard(ttk.Frame):
             if block is not None:
                 self._style_row_focus(block)
         self._focus_painted = token
+        if self._drawn_mode:
+            self._style_drawn_focus()
 
     def _style_row_focus(self, block: _Block) -> None:
         """Band the focused drawing so the operator sees where Ctrl+V will land.
@@ -4692,7 +5249,7 @@ class DrawingBoard(ttk.Frame):
         Includes a Non Jira row. A Pack tick still is not a click.
         """
         key = (self._focus_key or "").strip()
-        return key if key and key in self._blocks else ""
+        return key if key and (key in self._blocks or key in self._holds) else ""
 
     def focused_row(self) -> MatchedRow | None:
         if self._focus_key:
@@ -4807,6 +5364,8 @@ class DrawingBoard(ttk.Frame):
         self._matches[drawing.key] = row
         block = self._blocks.get(drawing.key)
         if block is None:
+            if self._drawn_mode:
+                self._draw_sheet()
             return
         if not block.mounted:
             block.match_label.configure(text=row.confidence, style=match_style(row.confidence))
