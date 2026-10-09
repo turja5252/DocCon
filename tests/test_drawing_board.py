@@ -1142,6 +1142,13 @@ def test_scroll_builds_locate_on_rows_below_the_first_screen() -> None:
         assert board._canvas.find_withtag("draw:P2024-27")
         board._holds["P2024-27"].include.set(True)
         root.update()
+        assert "P2024-27" not in board._blocks
+        assert board._canvas.find_withtag("draw:P2024-27")
+        board.set_pack(True)
+        for _ in range(40):
+            root.update()
+            if "P2024-27" in board._blocks and not board._materialize_queue:
+                break
         fresh = board._blocks["P2024-27"]
         assert fresh.mounted
         assert fresh.locate_btn is not None
@@ -1660,12 +1667,18 @@ def test_pack_tick_on_a_shell_keeps_the_stamp_until_the_row_is_built() -> None:
         root.update()
         board._holds["P2024-1"].include.set(True)
         root.update()
+        assert "P2024-1" not in board._blocks
+        assert board._holds["P2024-1"].nexts["return_request_date"].get() == "2026-09-22"
+        assert board._canvas.find_withtag("draw:P2024-1")
+        board.set_pack(True)
+        for _ in range(40):
+            root.update()
+            if "P2024-1" in board._blocks and not board._materialize_queue:
+                break
         built = board._blocks["P2024-1"]
         assert built.mounted
         assert built.nexts["return_request_date"].get() == "2026-09-22"
         assert board.next_edits()["P2024-1"]["return_request_date"] == "2026-09-22"
-        assert any(row.drawing.key == "P2024-1" for row in board.pending_rows())
-        assert "P2024-27" not in board._blocks
     finally:
         root.destroy()
 

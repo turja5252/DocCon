@@ -2,6 +2,10 @@
 
 Newest first. Append a dated entry when a decision is locked, a test runs, or the next step changes.
 
+## 2026-10-09 — Shipped 2.11
+
+Source and the frozen exe are 2.11. A single pack stays on the drawn sheet. Pack all and Packed only open the full Next editor. Row lines run across every column, empty Jira fields show a dash, and sideways scrolling disappears under JIRA ID. Load `2026-Tanzim`. Do not Confirm 075.
+
 ## 2026-10-09 — Shipped 2.10
 
 Source and the frozen exe are 2.10. The drawing list is drawn until Pack. Pack, Pack all, and the EDDI chapter box open the full Next editor. Load `2026-Tanzim`. Do not Confirm 075.

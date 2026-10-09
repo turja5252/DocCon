@@ -56,6 +56,7 @@ from doccon.theme import (
     BORDER,
     FOCUS_BG,
     FONT,
+    MUTED,
     FONT_BOLD,
     FONT_SMALL,
     NAVY_MID,
@@ -700,7 +701,8 @@ class DrawingBoard(ttk.Frame):
         self._draw_y: dict[str, int] = {}
         self._draw_h: dict[str, int] = {}
         self._draw_group_y: list[tuple[int, str]] = []
-        self._frozen_draw: dict[int, tuple[float, float]] = {}
+        self._frozen_draw: dict[int, tuple[float, ...]] = {}
+        self._frozen_shield: int | None = None
         self._row_frames: list[tk.Misc] = []
         self._row_windows: dict[str, tuple[int, int]] = {}
         self._materialize_queue: deque[str] = deque()
@@ -1113,7 +1115,8 @@ class DrawingBoard(ttk.Frame):
         with contextlib.suppress(tk.TclError):
             self._canvas.coords(self._freeze_window, self._canvas.canvasx(0), 0)
             self._header_canvas.coords(self._freeze_header_window, self._header_canvas.canvasx(0), 0)
-            self._canvas.tag_raise(self._freeze_window)
+            if not self._drawn_mode:
+                self._canvas.tag_raise(self._freeze_window)
             self._header_canvas.tag_raise(self._freeze_header_window)
         self._pin_drawn_frozen()
 
@@ -2278,6 +2281,13 @@ class DrawingBoard(ttk.Frame):
             self._packed_only.set(wanted)
         self._style_packed_only()
         self._apply_next_option_rows()
+        if self._drawn_mode:
+            if wanted:
+                self._queue_drawn_editors()
+                self._schedule_materialize()
+            else:
+                self._release_all_drawn_editors()
+                self._draw_sheet()
         if refresh:
             self._refresh_filter()
 
@@ -2386,12 +2396,15 @@ class DrawingBoard(ttk.Frame):
             if hold.include.get():
                 if key not in self._blocks:
                     self._stamp_pack_tick(key)
+                if self._editor_mode() and key not in self._blocks:
                     if key not in self._materialize_queue:
                         self._materialize_queue.append(key)
                     if not self._suspend_layout:
                         self._schedule_materialize()
+                elif not self._suspend_layout:
+                    self._draw_sheet()
             else:
-                if key in self._blocks:
+                if key in self._row_frame_pair:
                     self._release_drawn_editor(key)
                 if not self._suspend_layout:
                     self._draw_sheet()
@@ -2727,6 +2740,7 @@ class DrawingBoard(ttk.Frame):
         self._draw_h.clear()
         self._draw_group_y.clear()
         self._frozen_draw.clear()
+        self._frozen_shield = None
         self._sheet_height = 0
         self._materialize_queue.clear()
 
@@ -2748,17 +2762,21 @@ class DrawingBoard(ttk.Frame):
         if logical == DRAWING_COL_INDEX:
             return drawing.drawing_id or drawing.key
         if logical == DESC_COL_INDEX:
-            return drawing.title or "—"
+            return self._or_dash(drawing.title)
         if logical == STATUS_COL_INDEX:
-            return drawing.status or ""
+            return self._or_dash(drawing.status)
         if logical == MATCH_COL_INDEX:
-            return row.confidence or ""
+            return self._or_dash(row.confidence)
         if logical == PDF_COL_INDEX:
-            return pdf_address_text(row)
+            return self._or_dash(pdf_address_text(row))
         field_index = logical - FIELD_COL_START
         if 0 <= field_index < len(FIELD_KEYS):
-            return getattr(drawing, FIELD_KEYS[field_index][0]) or ""
+            return self._or_dash(getattr(drawing, FIELD_KEYS[field_index][0]))
         return ""
+
+    def _or_dash(self, value: object) -> str:
+        text = "" if value is None else str(value).strip()
+        return text or "-"
 
     def _draw_sheet(self) -> None:
         """Paint unpacked rows as text. Packed rows keep the real editor."""
@@ -2767,6 +2785,7 @@ class DrawingBoard(ttk.Frame):
         self._drawing_sheet = True
         try:
             self._canvas.delete("sheet")
+            self._frozen_shield = None
             self._frozen_draw.clear()
             self._draw_y.clear()
             self._draw_h.clear()
@@ -2795,27 +2814,38 @@ class DrawingBoard(ttk.Frame):
                     self._place_row_window(key, y, frozen_w)
                 else:
                     self._draw_one_row(key, y, height, origins, frozen_w)
+                self._draw_h_rule(y + height, frozen_w)
                 y += height
             self._sheet_height = max(y, 1)
             self._draw_column_rules(self._sheet_height, origins)
+            self._draw_frozen_shield(self._sheet_height, frozen_w)
             with contextlib.suppress(tk.TclError):
                 self._canvas.itemconfigure(self._window, state="hidden")
                 self._canvas.itemconfigure(self._freeze_window, state="hidden")
                 self._canvas.configure(
                     scrollregion=(0, 0, max(self._shown_span(), 1), self._sheet_height + SCROLL_TAIL_PX)
                 )
-                self._canvas.tag_lower("colrule")
-                self._canvas.tag_raise("frozen_draw")
-                self._canvas.tag_raise("frozen_win")
+                self._raise_frozen_cover()
             self._pin_drawn_frozen()
         finally:
             self._drawing_sheet = False
 
     def _draw_group_band(self, y: int, title: str, origins: dict[int, int]) -> None:
         span = max(self._shown_span(), 1)
+        frozen_w = self._frozen_width()
         self._canvas.create_rectangle(
             0, y, span, y + DRAW_GROUP_PX, fill=HEADER_BG, outline="", tags=("sheet", "group")
         )
+        cover = self._canvas.create_rectangle(
+            0,
+            y,
+            frozen_w,
+            y + DRAW_GROUP_PX,
+            fill=HEADER_BG,
+            outline="",
+            tags=("sheet", "frozen_draw"),
+        )
+        self._frozen_draw[cover] = (0, y, frozen_w, y + DRAW_GROUP_PX)
         packed = self._group_all_packed(title)
         index = len(self._draw_group_y) - 1
         self._draw_pack_box(f"g{index}", y - 4, origins, packed, tag=f"gpack:{index}")
@@ -2824,6 +2854,20 @@ class DrawingBoard(ttk.Frame):
             title_x, y + 4, text=title, anchor="nw", fill=TEXT, font=FONT_BOLD, tags=("sheet", "frozen_draw")
         )
         self._frozen_draw[text] = (title_x, y + 4)
+        self._draw_h_rule(y + DRAW_GROUP_PX, frozen_w)
+
+    def _draw_h_rule(self, y: int, frozen_w: int) -> None:
+        """Light row rule, same color as the editor. The frozen piece stays under JIRA ID."""
+        span = max(self._shown_span(), 1)
+        if frozen_w > 1:
+            left = self._canvas.create_line(
+                0, y, frozen_w, y, fill=BORDER, width=1, tags=("sheet", "rowrule", "frozen_draw")
+            )
+            self._frozen_draw[left] = (0, y, frozen_w, y)
+        if span > frozen_w:
+            self._canvas.create_line(
+                frozen_w, y, span, y, fill=BORDER, width=1, tags=("sheet", "rowrule", "scroll_draw")
+            )
 
     def _draw_column_rules(self, height: int, origins: dict[int, int]) -> None:
         """Vertical rules at the same edges as the column headings."""
@@ -2839,10 +2883,23 @@ class DrawingBoard(ttk.Frame):
                 height,
                 fill=BORDER,
                 width=1,
-                tags=("sheet", "colrule"),
+                tags=("sheet", "colrule", "frozen_draw" if logical < FROZEN_COLS else "scroll_draw"),
             )
             if logical < FROZEN_COLS:
                 self._frozen_draw[line] = (edge, 0, edge, height)
+
+    def _draw_frozen_shield(self, height: int, frozen_w: int) -> None:
+        """Opaque cover so sideways scrolling text disappears under Pack and JIRA ID."""
+        self._frozen_shield = self._canvas.create_rectangle(
+            0, 0, frozen_w, height, fill=BG, outline="", tags=("sheet", "frozen_shield")
+        )
+
+    def _raise_frozen_cover(self) -> None:
+        self._canvas.tag_raise("rowrule")
+        self._canvas.tag_raise("colrule")
+        self._canvas.tag_raise("frozen_shield")
+        self._canvas.tag_raise("frozen_draw")
+        self._canvas.tag_raise("frozen_win")
 
     def _text_block_height(self, text: str, px: int) -> int:
         if px <= 16:
@@ -2889,20 +2946,8 @@ class DrawingBoard(ttk.Frame):
 
     def _draw_one_row(self, key: str, y: int, height: int, origins: dict[int, int], frozen_w: int) -> None:
         span = max(self._shown_span(), 1)
-        band = self._canvas.create_rectangle(
-            0, y, span, y + height, fill=BG, outline="", tags=("sheet", f"draw:{key}", f"band:{key}")
-        )
-        del band
-        selected = ACCENT if key == self._focus_key else ""
         self._canvas.create_rectangle(
-            1,
-            y + 1,
-            span - 1,
-            y + height - 1,
-            fill="",
-            outline=selected,
-            width=1,
-            tags=("sheet", f"draw:{key}", f"sel:{key}"),
+            0, y, span, y + height, fill=BG, outline="", tags=("sheet", f"draw:{key}", f"band:{key}")
         )
         row = self._matches.get(key)
         hold = self._holds.get(key)
@@ -2916,8 +2961,10 @@ class DrawingBoard(ttk.Frame):
             raw = self._now_draw_text(key, logical)
             wrapped = logical == DESC_COL_INDEX
             text = raw if wrapped else self._clip_draw(raw, px)
-            color = TEXT
-            if logical == MATCH_COL_INDEX and row is not None:
+            color = MUTED if text == "-" else TEXT
+            if logical == DRAWING_COL_INDEX and key == self._focus_key:
+                color = ACCENT
+            if logical == MATCH_COL_INDEX and row is not None and text != "-":
                 if row.confidence == "High":
                     color = OK
                 elif row.confidence == "Missing":
@@ -2932,7 +2979,12 @@ class DrawingBoard(ttk.Frame):
                 anchor="nw",
                 fill=color,
                 font=FONT,
-                tags=("sheet", f"draw:{key}", "frozen_draw" if logical < FROZEN_COLS else "scroll_draw"),
+                tags=(
+                    "sheet",
+                    f"draw:{key}",
+                    "frozen_draw" if logical < FROZEN_COLS else "scroll_draw",
+                    *( (f"idtext:{key}",) if logical == DRAWING_COL_INDEX else () ),
+                ),
                 **text_kw,
             )
             if logical < FROZEN_COLS:
@@ -2994,13 +3046,17 @@ class DrawingBoard(ttk.Frame):
                 moved[index] = moved[index] + shift
             with contextlib.suppress(tk.TclError):
                 self._canvas.coords(item, *moved)
+        if self._frozen_shield is not None:
+            with contextlib.suppress(tk.TclError):
+                self._canvas.coords(
+                    self._frozen_shield, shift, 0, shift + self._frozen_width(), self._sheet_height
+                )
         for key, (frozen_id, _scroll_id) in self._row_windows.items():
             y = self._draw_y.get(key)
             if y is None:
                 continue
             with contextlib.suppress(tk.TclError):
                 self._canvas.coords(frozen_id, shift, y)
-                self._canvas.tag_raise(frozen_id)
 
     def _drawn_group_at(self, canvas_y: float) -> str:
         for top, title in self._draw_group_y:
@@ -3021,8 +3077,10 @@ class DrawingBoard(ttk.Frame):
                     state.include.set(want)
         finally:
             self._suspend_layout = False
-        self._schedule_materialize()
-        if self._drawn_mode:
+        if self._drawn_mode and self._editor_mode():
+            self._queue_drawn_editors()
+            self._schedule_materialize()
+        elif self._drawn_mode:
             self._draw_sheet()
 
     def _drawn_key_at(self, canvas_y: float) -> str:
@@ -3062,10 +3120,23 @@ class DrawingBoard(ttk.Frame):
         return "break"
 
     def _style_drawn_focus(self) -> None:
-        """The selected row keeps the same picture. Only a thin line marks it."""
+        """Selecting a row only recolors its JIRA ID. The row height stays put."""
         for key in self._draw_y:
             with contextlib.suppress(tk.TclError):
-                self._canvas.itemconfigure(f"sel:{key}", outline=ACCENT if key == self._focus_key else "")
+                self._canvas.itemconfigure(f"idtext:{key}", fill=ACCENT if key == self._focus_key else TEXT)
+
+    def _editor_mode(self) -> bool:
+        """The full Next editor is Pack all or Packed only. A single tick stays on the sheet."""
+        return bool(self._packed_only.get()) or bool(self._pack_all_options)
+
+    def _queue_drawn_editors(self) -> None:
+        for key, hold in self._holds.items():
+            if hold.include.get() and key not in self._blocks and key not in self._materialize_queue:
+                self._materialize_queue.append(key)
+
+    def _release_all_drawn_editors(self) -> None:
+        for key in list(self._row_frame_pair):
+            self._release_drawn_editor(key)
 
     def _schedule_materialize(self) -> None:
         if not self._materialize_queue or self._materialize_after:
