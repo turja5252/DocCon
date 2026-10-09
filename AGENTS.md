@@ -38,7 +38,9 @@ The summary is an ID, then optional wording. Empty description is allowed.
 
 No extra Jira status or custom trigger field. Engineer emails Sarah the pack list; she runs DocCon.
 
-**Next:** Source and the frozen exe are **2.08**. Load `2026-Tanzim`. Do not Confirm 075.
+**Next:** Source and the frozen exe are **2.09**. Load `2026-Tanzim`. Do not Confirm 075.
+
+**2.09 Create EDDI lists every Jira item in groups 1–9.** A missing PDF and an unticked Pack stay on the sheet. Generic and Non Jira stay off. Drag is not back.
 
 **2.08 Load pairs PDFs, and the cover waits for Locate PEP or Save.** Load does not open a PEP. Until the cover is saved the strip is yellow. Create EDDI writes `EDDI 3.0 - {job}`. Delete last removes the latest transmittal tab and sets the counter back. Drag is not back.
 

@@ -8,8 +8,8 @@ Jira stays the register. The form is ``templates/EDDI-template.xlsm`` next to
 Elite DocCon. The job keeps a single ``EDDI 3.0 - {job}.xlsm`` in ``3.0 Doc Con``.
 An older ``EDDI-{job}.xlsm`` already in the folder is left alone.
 Each Create EDDI copies sheet Project onto a new tab named with the date,
-fills that tab from console Next values (listed items with a paired PDF, not
-only Pack), and replaces the one PDF, named ``EDDI 3.0 - {job}-{date}.pdf``. The
+fills that tab from console Next values (every Jira item in groups 1–9, not
+only Pack, and not only rows with a PDF), and replaces the one PDF, named ``EDDI 3.0 - {job}-{date}.pdf``. The
 date is also written on that sheet, so the PDF shows it. Sheet Project stays the blank
 form. A second run the same day adds ``{date}-2``. Empty 1–9 groups are
 hidden on the new tab. Not attached to Outlook.
@@ -143,8 +143,8 @@ def row_has_eddi_pdf(row: MatchedRow) -> bool:
 
 
 def eddi_print_drawings(rows: list[MatchedRow]) -> list[DrawingRow]:
-    """EDDI snapshot rows: paired PDF only. Caller still skips Generic / ungrouped."""
-    return [row.drawing for row in rows if row_has_eddi_pdf(row)]
+    """Every Jira row. Pack and a missing PDF do not drop a line. Generic stays off the form."""
+    return [row.drawing for row in rows if not is_generic_eddi(row.drawing.eddi_status)]
 
 
 def grouped_eddi_items(drawings: list[DrawingRow]) -> list[tuple[str, list[DrawingRow]]]:

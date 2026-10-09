@@ -2,6 +2,14 @@
 
 Newest first. Append a dated entry when a decision is locked, a test runs, or the next step changes.
 
+## 2026-10-09 — Shipped 2.09
+
+Source and the frozen exe are 2.09. Create EDDI prints every listed Jira item in groups 1–9. A missing PDF and an unticked Pack stay on the sheet. Load `2026-Tanzim`. Do not Confirm 075.
+
+## 2026-10-09 — Create EDDI lists every Jira item
+
+Create EDDI prints every listed Jira item in groups 1–9. A missing PDF and an unticked Pack stay on the sheet. Generic and Non Jira stay off.
+
 ## 2026-10-09 — Shipped 2.08
 
 Source and the frozen exe are 2.08. Load pairs drawings that have no file and does not open a PEP. Locate PEP or Save initializes the cover; until then the cover strip is yellow. Create EDDI writes `EDDI 3.0 - {job}`. Delete last removes the latest transmittal tab and resets the counter. Load `2026-Tanzim`. Do not Confirm 075.

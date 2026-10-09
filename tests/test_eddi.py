@@ -463,15 +463,15 @@ def test_snapshot_includes_matched_pdf_only(tmp_path: Path) -> None:
         confidence="Missing",
     )
     drawings = eddi_print_drawings([matched, missing])
-    assert [row.drawing_id for row in drawings] == ["2026-Tanzim-1-1"]
+    assert [row.drawing_id for row in drawings] == ["2026-Tanzim-1-1", "2026-Tanzim-1-2"]
     snap = snapshot_eddi(job_folder, "2026-Tanzim", drawings, date(2026, 9, 11), print_pdf=False)
-    assert snap.updated_rows == 1
+    assert snap.updated_rows == 2
     wb = load_workbook(snap.book)
     filled = wb["2026-09-11"]
     values = [filled.cell(row, 1).value for row in range(1, filled.max_row + 1)]
     wb.close()
     assert "2026-Tanzim-1-1" in values
-    assert "2026-Tanzim-1-2" not in values
+    assert "2026-Tanzim-1-2" in values
 
 
 def test_snapshot_excel_uses_local_temp_not_dropbox(tmp_path: Path, monkeypatch) -> None:

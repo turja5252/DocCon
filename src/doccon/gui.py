@@ -3523,6 +3523,16 @@ class DocConApp(tk.Tk):
             self._create_focus_key = ""
             self._set_new_issue_enabled(bool(self._job_number))
 
+    def _eddi_rows(self) -> list:
+        """Jira rows for the EDDI snapshot. Non Jira lines stay off the form."""
+        rows = []
+        for row in self.board.current_rows():
+            block = self.board._blocks.get(row.drawing.key)
+            if block is not None and block.extra:
+                continue
+            rows.append(row)
+        return rows
+
     def _print_eddi(self) -> None:
         if self._note_if_busy():
             return
@@ -3537,7 +3547,7 @@ class DocConApp(tk.Tk):
                 f"No Dropbox job folder for {job}. Check Current Jobs, then Load again.",
             )
             return
-        drawings = eddi_print_drawings(self.board.current_rows())
+        drawings = eddi_print_drawings(self._eddi_rows())
         if not self.board.current_rows():
             messagebox.showinfo("EDDI", "Load a job first.")
             return
@@ -3549,9 +3559,10 @@ class DocConApp(tk.Tk):
         if not messagebox.askyesno(
             "EDDI?",
             (
-                f"Print a dated copy of the EDDI form for {job} "
-                f"({len(drawings)} row(s) with a matched PDF; "
-                "Missing and Generic are omitted).\n"
+                f"Print a dated EDDI for {job} ({len(drawings)} Jira item(s)).\n"
+                "Every listed item in groups 1–9 is included. "
+                "A missing PDF or an unticked Pack does not leave a row off. "
+                "Generic and Non Jira are omitted.\n"
                 "Fills a snapshot in 3.0 Doc Con from the latest Next values. "
                 "Does not change the live EDDI book.\n"
                 "Does not file a transmittal, write Jira, or open Outlook."
@@ -3819,7 +3830,7 @@ class DocConApp(tk.Tk):
             return
         packed_keys = {row.drawing.key for row in rows}
         jira_rows = [row for row in self.board.pending_rows() if row.drawing.key in packed_keys]
-        eddi_drawings = eddi_print_drawings(self.board.current_rows())
+        eddi_drawings = eddi_print_drawings(self._eddi_rows())
         originals = {
             row.drawing.key: self._matches[row.drawing.key].drawing
             for row in jira_rows
