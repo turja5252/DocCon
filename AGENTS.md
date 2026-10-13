@@ -38,9 +38,11 @@ The summary is an ID, then optional wording. Empty description is allowed.
 
 No extra Jira status or custom trigger field. Engineer emails Sarah the pack list; she runs DocCon.
 
-**Next:** Source and the frozen exe are **2.12**. Load `2026-Tanzim`. Do not Confirm 075.
+**Next:** Source and the frozen exe are **2.13**. Load `2026-Tanzim`. Do not Confirm 075.
 
-**2.12 Field copies into the field folder, and the EDDI description wraps.** Create transmittal on Field copies each packed PDF into `{job} Field Construction Folder/2.0 IFC Drawings & Transmittals` and attaches only the FT form. ST and FT on the identity row glow yellow until that folder is found, then green. A group 1–9 row with only an ID and description stays off the EDDI sheet. A long description wraps and the row grows. Drag is not back.
+**2.13 The field folder is the job’s 8.0 folder.** Any folder in the job whose name starts with `8.0` is the field folder. `2.0 IFC Drawings & Transmittals` is inside it. Two `8.0` folders and no single `2.0` stay yellow for Locate. Drag is not back.
+
+**2.12 Field copies into the field folder, and the EDDI description wraps.** Create transmittal on Field copies each packed PDF into the job’s `8.0…` folder, then `2.0 IFC Drawings & Transmittals`, and attaches only the FT form. ST and FT on the identity row glow yellow until that folder is found, then green. A group 1–9 row with only an ID and description stays off the EDDI sheet. A long description wraps and the row grows. Drag is not back.
 
 **2.11 A single pack stays on the sheet.** Pack all and Packed only open the full Next editor. Row and column lines run across the sheet. An empty Jira field shows a dash. Sideways scrolling disappears under JIRA ID. Selecting a row does not change its height. Drag is not back.
 

@@ -39,12 +39,27 @@ def test_missing_field_folder_is_not_created(tmp_path: Path) -> None:
 
 def test_job_local_folder_wins(tmp_path: Path) -> None:
     job = tmp_path / "2026-Tanzim"
-    nested = job / "8.0 Field Construction Folder"
+    nested = job / "8.0 Field Construction Folder (2026-Tanzim)"
     (nested / "2.0 IFC Drawings & Transmittals").mkdir(parents=True)
     shared = _field(tmp_path, "2026-Tanzim")
     found = find_field_folder("2026-Tanzim", job, library=tmp_path)
     assert found == nested
     assert found != shared
+
+
+def test_eight_folder_name_can_vary(tmp_path: Path) -> None:
+    job = tmp_path / "2025-110"
+    nested = job / "8.0 Field Construction"
+    (nested / "2.0 IFC Drawings & Transmittals").mkdir(parents=True)
+    found = find_field_folder("2025-110", job, library=tmp_path)
+    assert found == nested
+
+
+def test_two_eight_folders_are_not_guessed(tmp_path: Path) -> None:
+    job = tmp_path / "2026-Tanzim"
+    (job / "8.0 Construction").mkdir(parents=True)
+    (job / "8.0 Field Construction Folder").mkdir()
+    assert find_field_folder("2026-Tanzim", job, library=tmp_path) is None
 
 
 def test_place_pdf_replaces_older_rev_and_form_goes_in_transmittals(tmp_path: Path) -> None:

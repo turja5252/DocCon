@@ -15,7 +15,6 @@ from doccon.match import parse_pdf_stem
 IFC_DIR = "2.0 IFC Drawings & Transmittals"
 TRANSMITTALS = "Transmittals"
 FIELD_SUFFIX = " Field Construction Folder"
-NESTED_FIELD = "8.0 Field Construction Folder"
 MISSING_FIELD_FOLDER = (
     "Field folder is not on Dropbox yet. "
     "Locate field folder… once it exists. Nothing was written."
@@ -37,10 +36,11 @@ def find_field_folder(
     *,
     library: Path | None = None,
 ) -> Path | None:
-    """``{job} Field Construction Folder`` on this PC. Does not create it.
+    """The job's ``8.0…`` folder, otherwise ``{job} Field Construction Folder``.
 
-    An exact child job wins over the parent folder. A remembered Locate pick wins
-    over the hunt. A job-local ``8.0 Field Construction Folder`` wins over the hunt.
+    Inside the loaded job, a folder whose name starts with ``8.0`` is the field
+    folder. ``2.0 IFC Drawings & Transmittals`` lives in that folder. A remembered
+    Locate pick wins. An exact child job wins over the parent name at the Dropbox root.
     """
     if remembered is not None and Path(remembered).is_dir():
         return Path(remembered)
@@ -48,8 +48,8 @@ def find_field_folder(
     if not job:
         return None
     if job_folder is not None:
-        nested = Path(job_folder) / NESTED_FIELD
-        if nested.is_dir():
+        nested = _job_eight_folder(job_folder)
+        if nested is not None:
             return nested
     keys = job_folder_keys(job)
     roots = [library] if library is not None else local_team_dropbox_member_roots(job_folder)
@@ -95,6 +95,25 @@ def place_field_form(field_root: Path, form: Path) -> Path:
     dest = dest_dir / form.name
     shutil.copy2(form, dest)
     return dest
+
+
+def _job_eight_folder(job_folder: Path) -> Path | None:
+    """The field folder inside the job. The name starts with ``8.0``."""
+    try:
+        children = [
+            child
+            for child in Path(job_folder).iterdir()
+            if child.is_dir() and child.name.casefold().startswith("8.0")
+        ]
+    except OSError:
+        return None
+    if not children:
+        return None
+    with_drawings = [child for child in children if (child / IFC_DIR).is_dir()]
+    pool = with_drawings or children
+    if len(pool) == 1:
+        return pool[0]
+    return None
 
 
 def _field_rank(name: str, keys: list[str]) -> int | None:

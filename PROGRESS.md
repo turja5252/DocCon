@@ -2,6 +2,14 @@
 
 Newest first. Append a dated entry when a decision is locked, a test runs, or the next step changes.
 
+## 2026-10-13 — Field folder is the job’s 8.0 folder
+
+Inside the loaded job, a folder whose name starts with `8.0` is the field folder. `2.0 IFC Drawings & Transmittals` is inside it. The name is not always `8.0 Field Construction Folder`. Two `8.0` folders and no single `2.0` stay yellow for Locate. Shipped in 2.13.
+
+## 2026-10-13 — Shipped 2.13
+
+Source and the frozen exe are 2.13. Field finds the job’s `8.0` folder even when the name is `8.0 Field Construction Folder (2025-092)` or `8.0 Field Construction`. Load `2026-Tanzim`. Do not Confirm 075.
+
 ## 2026-10-13 — Shipped 2.12
 
 Source and the frozen exe are 2.12. Field copies drawings into the Field Construction folder and attaches only the form. ST and FT glow yellow until found, then green. EDDI skips a group row that only has an ID and description, and a long description wraps. Load `2026-Tanzim`. Do not Confirm 075.
