@@ -53,7 +53,7 @@ Project Execution Plan is the job card for the cover. Form is sheet `C-109.5` (E
 - If Sales has no usable PEP, the operator locates the file (Excel C-109.5 preferred; PDF if that is all they have)
 - Real job: highest Rev whose filename is this Job Number. Sandbox `2026-Tanzim` has no PEP of its own; a copied PEP in `7.0 Sales` is the test stand-in. Blank C-109.5 and leftover template PEP PDFs are not auto-picked.
 
-Mail: **Create transmittal** uses `doc.control@eliteintegrityservices.com` when that Outlook account is on this PC; otherwise the signed-in default (Chris, Tanzim, Sarah). Never auto-send. Attaches `CT|ST|FT-{job}-{n}.pdf` and `{cover_id}.zip` of the drawing PDFs (the transmittal form is not in the zip). Operator clicks Send in Outlook. Cover FROM on the Excel sheet stays `doc.control@…`. Shop/Field still copy into IFC folders later (no MID/BOM on Field).
+Mail: **Create transmittal** uses `doc.control@eliteintegrityservices.com` when that Outlook account is on this PC; otherwise the signed-in default (Chris, Tanzim, Sarah). Never auto-send. Client attaches `CT-{job}-{n}.pdf` and a zip of the drawing PDFs (the form is not in the zip). Shop copies each drawing into `1.0 Current IFC Drawings` and attaches only `ST-{job}-{n}.pdf`. Field copies each drawing into `{job} Field Construction Folder/2.0 IFC Drawings & Transmittals` (no MID/BOM pick) and attaches only `FT-{job}-{n}.pdf`. The form also goes in that folder’s `Transmittals`. Operator clicks Send in Outlook. Cover FROM on the Excel sheet stays `doc.control@…`.
 
 ## Build slices (do not start until asked)
 

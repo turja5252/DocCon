@@ -43,6 +43,9 @@ from doccon.register import DrawingRow, eddi_group_rank, eddi_group_title, is_ge
 DOC_CON_DIR = Path("3.0 Doc Con")
 PROJECT_SHEET = "Project"
 ITEM_COLS = 15
+DESC_COL = 3
+DESC_WIDTH_FALLBACK = 38.0
+DESC_LINE_PT = 15.0
 PAPERSIZE_LETTER = 1
 # Shop purpose is inserted at J, then Field purpose at M, on the dated copy.
 PURPOSE_COLUMN_INSERTS = (10, 13)
@@ -129,6 +132,7 @@ class FillPlan:
     field_validation: str = ""
     shop_purpose_col: int = 11
     field_purpose_col: int = 14
+    description_wrap: list[tuple[int, float]] = field(default_factory=list)
 
 
 def row_has_eddi_pdf(row: MatchedRow) -> bool:
@@ -142,9 +146,40 @@ def row_has_eddi_pdf(row: MatchedRow) -> bool:
         return False
 
 
+def eddi_line_has_detail(drawing: DrawingRow) -> bool:
+    """True when an EDDI line has a Jira value besides the ID and the description.
+
+    EDDI Status only chooses the group. Jira Status and Return Request Date are not
+    printed on the line, so they do not keep a row.
+    """
+    tokens = (
+        drawing.client_document_number,
+        drawing.outgoing_rev,
+        drawing.purpose,
+        drawing.submission_date,
+        drawing.incoming_rev,
+        drawing.approval,
+        drawing.return_date,
+        drawing.shop_ifc_rev,
+        drawing.shop_purpose,
+        drawing.shop_ifc_date,
+        drawing.field_ifc_rev,
+        drawing.field_purpose,
+        drawing.field_ifc_date,
+    )
+    return any((token or "").strip() for token in tokens)
+
+
 def eddi_print_drawings(rows: list[MatchedRow]) -> list[DrawingRow]:
-    """Every Jira row. Pack and a missing PDF do not drop a line. Generic stays off the form."""
-    return [row.drawing for row in rows if not is_generic_eddi(row.drawing.eddi_status)]
+    """Jira rows in play for the form. Pack and a missing PDF do not drop a line.
+
+    Generic stays off. A group 1–9 row whose only text is the ID and description stays off.
+    """
+    return [
+        row.drawing
+        for row in rows
+        if not is_generic_eddi(row.drawing.eddi_status) and eddi_line_has_detail(row.drawing)
+    ]
 
 
 def grouped_eddi_items(drawings: list[DrawingRow]) -> list[tuple[str, list[DrawingRow]]]:
@@ -169,7 +204,11 @@ def grouped_eddi_items(drawings: list[DrawingRow]) -> list[tuple[str, list[Drawi
 def form_group_items(drawings: list[DrawingRow]) -> dict[int, list[DrawingRow]]:
     """Items for form groups 1–9. Generic and ungrouped are omitted."""
     buckets: dict[int, list[DrawingRow]] = {number: [] for number in range(1, 10)}
-    visible = [row for row in drawings if not is_generic_eddi(row.eddi_status)]
+    visible = [
+        row
+        for row in drawings
+        if not is_generic_eddi(row.eddi_status) and eddi_line_has_detail(row)
+    ]
     visible.sort(key=pack_sort_key)
     for drawing in visible:
         rank = eddi_group_rank(drawing.eddi_status)
@@ -347,6 +386,7 @@ def build_fill_plan(
         ),
         shop_purpose_col=cols[1] or SHOP_PURPOSE_COL,
         field_purpose_col=cols[4] or FIELD_PURPOSE_COL,
+        description_wrap=_description_wraps(ws, fills),
     )
 
 
@@ -416,6 +456,7 @@ def apply_fill_plan(ws: Worksheet, plan: FillPlan) -> None:
         ws.row_dimensions[row].hidden = False
     _layout_snapshot_sheet(ws, plan)
     _style_purpose_columns(ws, plan)
+    _style_description_column(ws, plan)
     ws.print_area = f"A1:{get_column_letter(ITEM_COLS)}{plan.print_last_row}"
     ws.page_setup.fitToWidth = 1
     ws.page_setup.fitToHeight = 0
@@ -486,6 +527,9 @@ def plan_payload(plan: FillPlan, *, sheet: str = PROJECT_SHEET) -> dict:
         "field_list": FIELD_PURPOSE_LIST,
         "shop_purpose_col": plan.shop_purpose_col,
         "field_purpose_col": plan.field_purpose_col,
+        "description_wrap": [
+            {"row": row, "height": height} for row, height in plan.description_wrap
+        ],
     }
 
 
@@ -607,6 +651,70 @@ def _copy_border(src, dest) -> None:
         return
     thin = Side(style="thin")
     dest.border = Border(left=thin, right=thin)
+
+
+def _wrapped_line_count(text: str, width: int) -> int:
+    """Lines Excel wrap uses for this many characters of column width."""
+    room = max(1, int(width))
+    total = 0
+    for paragraph in (text or "").splitlines() or [""]:
+        words = [word for word in paragraph.split(" ") if word]
+        if not words:
+            total += 1
+            continue
+        used = 0
+        rows = 1
+        for word in words:
+            pieces = [word[index : index + room] for index in range(0, len(word), room)]
+            for index, piece in enumerate(pieces):
+                gap = 1 if used and index == 0 else 0
+                if used and used + gap + len(piece) > room:
+                    rows += 1
+                    used = len(piece)
+                else:
+                    used += gap + len(piece)
+                if index < len(pieces) - 1:
+                    rows += 1
+                    used = 0
+        total += rows
+    return max(1, total)
+
+
+def description_row_height(text: str, column_width: float | None) -> float:
+    """Point height for a wrapped description. One line stays at the form height."""
+    token = (text or "").strip()
+    if not token:
+        return 0
+    width = column_width if column_width and column_width >= 8 else DESC_WIDTH_FALLBACK
+    lines = _wrapped_line_count(token, int(width))
+    if lines <= 1:
+        return 0
+    return lines * DESC_LINE_PT
+
+
+def _description_wraps(ws: Worksheet, fills: list[tuple[int, list[str]]]) -> list[tuple[int, float]]:
+    width = ws.column_dimensions["C"].width
+    wraps: list[tuple[int, float]] = []
+    for row, values in fills:
+        text = values[DESC_COL - 1] if len(values) >= DESC_COL else ""
+        if not (text or "").strip():
+            continue
+        wraps.append((row, description_row_height(text, width)))
+    return wraps
+
+
+def _style_description_column(ws: Worksheet, plan: FillPlan) -> None:
+    """Wrap the description and raise the row when the wording needs more than one line."""
+    wrap = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    for row, height in plan.description_wrap:
+        cell = ws.cell(row, DESC_COL)
+        if isinstance(cell, MergedCell):
+            continue
+        cell.alignment = wrap
+        if height <= 0:
+            continue
+        current = ws.row_dimensions[row].height or DESC_LINE_PT
+        ws.row_dimensions[row].height = max(float(current), float(height))
 
 
 def _style_purpose_columns(ws: Worksheet, plan: FillPlan) -> None:

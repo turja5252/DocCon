@@ -24,6 +24,13 @@ BAD = "#B42318"
 JIRA = "#4C9AFF"
 FOLDER = "#2DD4BF"
 IDENTITY_MISSING = "#FCA5A5"
+# Shop and Field folder chips. A bright ring around the wash reads as a glow on navy.
+PLACE_OK_BG = "#BBF7D0"
+PLACE_OK_FG = "#14532D"
+PLACE_OK_GLOW = "#4ADE80"
+PLACE_MISS_BG = "#FDE68A"
+PLACE_MISS_FG = "#92400E"
+PLACE_MISS_GLOW = "#FACC15"
 PENDING_BG = "#FEF3C7"
 PENDING_BORDER = "#E8B86D"
 # Keyboard focus inside a text cell stays teal. The selected row is a darker orange.

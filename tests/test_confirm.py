@@ -372,3 +372,96 @@ def test_confirm_abort_does_not_delete_dropped_copies(monkeypatch, tmp_path: Pat
         )
     assert dropped.is_file()
 
+
+def test_field_confirm_copies_drawings_and_attaches_only_the_form(monkeypatch, tmp_path: Path) -> None:
+    from doccon import confirm
+    from doccon.client_log import ClientBook, FileClientResult
+    from doccon.kinds import FIELD
+    from doccon.match import PdfHit
+
+    field = tmp_path / "2026-Tanzim Field Construction Folder" / "2.0 IFC Drawings & Transmittals"
+    field.mkdir(parents=True)
+    (field / "2026-Tanzim-1-1 REV 0.pdf").write_bytes(b"old")
+    drawing = tmp_path / "2026-Tanzim-1-1 REV 1.pdf"
+    drawing.write_bytes(b"new")
+    book = tmp_path / "FT-2026-Tanzim.xlsm"
+    book.write_bytes(b"book")
+    monkeypatch.setattr(confirm, "preflight_jira_updates", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        confirm,
+        "preflight_client_file",
+        lambda *_args, **_kwargs: ClientBook(
+            path=book, job_number="2026-Tanzim", next_number=1, filed_tabs=()
+        ),
+    )
+    monkeypatch.setattr(confirm, "apply_jira_updates", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        confirm,
+        "file_client_transmittal",
+        lambda *_args, **_kwargs: FileClientResult(
+            book=book,
+            cover_id="FT-2026-Tanzim-1",
+            sheet_name="TRANSMITTAL",
+            line_count=1,
+            pdf_path=None,
+        ),
+    )
+    monkeypatch.setattr(confirm, "export_sheet_pdf", lambda _book, _sheet, dest: Path(dest).write_bytes(b"%PDF"))
+    monkeypatch.setattr(confirm, "snapshot_eddi", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(confirm, "_eddi_snapshot_note", lambda *_args, **_kwargs: "")
+    mailed: dict = {}
+    monkeypatch.setattr(confirm, "display_outlook_draft", lambda **kwargs: mailed.update(kwargs))
+    result = run_confirm_client_pack(
+        site="https://example.atlassian.net",
+        email="a@b.c",
+        token="token",
+        pairs=[],
+        book=book,
+        job="2026-Tanzim",
+        lines=[],
+        issued=date(2026, 9, 9),
+        expected_return="N/A",
+        cover=_cover(tmp_path / "pep.xlsx"),
+        rows=[
+            MatchedRow(
+                drawing=_drawing(),
+                pdf=PdfHit(path=drawing, drawing_id="2026-Tanzim-1-1", rev="1"),
+                confidence="High",
+            )
+        ],
+        kind=FIELD,
+        field_root=field.parent,
+        field_copies=[drawing],
+    )
+    names = [Path(str(item)).name for item in mailed.get("attachments") or []]
+    assert names == ["FT-2026-Tanzim-1.pdf"]
+    assert "Field copies:" in result.pdf_note
+    assert (field / "2026-Tanzim-1-1 REV 1.pdf").read_bytes() == b"new"
+    assert not (field / "2026-Tanzim-1-1 REV 0.pdf").exists()
+    assert (field / "Transmittals" / "FT-2026-Tanzim-1.pdf").is_file()
+    assert not (tmp_path / "FT-2026-Tanzim-1.zip").exists()
+
+
+def test_field_confirm_aborts_when_the_folder_is_missing(monkeypatch, tmp_path: Path) -> None:
+    from doccon import confirm
+    from doccon.kinds import FIELD
+
+    wrote: list[str] = []
+    monkeypatch.setattr(confirm, "apply_jira_updates", lambda *_args, **_kwargs: wrote.append("jira"))
+    with pytest.raises(LogError, match="Field folder"):
+        run_confirm_client_pack(
+            site="https://example.atlassian.net",
+            email="a@b.c",
+            token="token",
+            pairs=[],
+            book=tmp_path / "FT-2026-Tanzim.xlsm",
+            job="2026-Tanzim",
+            lines=[],
+            issued=date(2026, 9, 9),
+            expected_return="N/A",
+            cover=_cover(tmp_path / "pep.xlsx"),
+            rows=[],
+            kind=FIELD,
+        )
+    assert wrote == []
+

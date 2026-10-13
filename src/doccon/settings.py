@@ -34,6 +34,7 @@ ALLOWED_KEYS = (
     "board_layout_rev",
     "job_folders",
     "shop_ifc_folders",
+    "field_folders",
 )
 
 
@@ -56,6 +57,7 @@ class AppSettings:
     board_layout_rev: int = 0
     job_folders: dict[str, str] = field(default_factory=dict)
     shop_ifc_folders: dict[str, str] = field(default_factory=dict)
+    field_folders: dict[str, str] = field(default_factory=dict)
 
 
 def load_settings() -> AppSettings:
@@ -92,6 +94,7 @@ def load_settings() -> AppSettings:
         board_layout_rev=_board_layout_rev(raw.get("board_layout_rev")),
         job_folders=_job_folders(raw.get("job_folders")),
         shop_ifc_folders=_job_folders(raw.get("shop_ifc_folders")),
+        field_folders=_job_folders(raw.get("field_folders")),
     )
     if leaked:
         save_settings(settings)
@@ -118,6 +121,7 @@ def save_settings(settings: AppSettings) -> None:
         "board_layout_rev": int(settings.board_layout_rev),
         "job_folders": dict(_job_folders(settings.job_folders)),
         "shop_ifc_folders": dict(_job_folders(settings.shop_ifc_folders)),
+        "field_folders": dict(_job_folders(settings.field_folders)),
     }
     settings_path().write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
@@ -260,6 +264,34 @@ def remembered_shop_folder(job_number: str) -> Path | None:
         return None
     path = Path(token)
     return path if path.is_dir() else None
+
+
+def remembered_field_folder(job_number: str) -> Path | None:
+    job = job_number.strip()
+    if not job:
+        return None
+    token = load_settings().field_folders.get(job, "").strip()
+    if not token:
+        return None
+    path = Path(token)
+    return path if path.is_dir() else None
+
+
+def remember_field_folder(job_number: str, folder: Path) -> None:
+    job = job_number.strip()
+    path = Path(folder)
+    if not job or not path.is_dir():
+        return
+    try:
+        token = str(path.resolve())
+    except OSError:
+        token = str(path)
+    settings = load_settings()
+    mapped = dict(settings.field_folders)
+    if mapped.get(job) == token:
+        return
+    mapped[job] = token
+    save_settings(replace(settings, field_folders=mapped))
 
 
 def remember_shop_folder(job_number: str, folder: Path) -> None:

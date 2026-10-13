@@ -2,6 +2,26 @@
 
 Newest first. Append a dated entry when a decision is locked, a test runs, or the next step changes.
 
+## 2026-10-13 — Shipped 2.12
+
+Source and the frozen exe are 2.12. Field copies drawings into the Field Construction folder and attaches only the form. ST and FT glow yellow until found, then green. EDDI skips a group row that only has an ID and description, and a long description wraps. Load `2026-Tanzim`. Do not Confirm 075.
+
+## 2026-10-13 — EDDI description wraps
+
+A long description on the EDDI line wraps in the description column. The row grows by 15 points for each extra line. A short description keeps the form's row height.
+
+## 2026-10-13 — EDDI skips a group row with only an ID and description
+
+Groups 1–9 still print, including a missing PDF and an unticked Pack. A row stays off when Client Doc No., revs, purposes, and the dates on the EDDI line are all blank. EDDI Status, Jira Status, and Return Request Date do not keep it. Create transmittal uses the same list.
+
+## 2026-10-13 — Shop and Field folders show on the identity row
+
+ST and FT sit beside Paste PDF. A missing folder glows yellow, with Locate…, and that pick is saved on this PC. A found folder glows green and shows its name. Both are hunted on Load, whichever transmittal is selected.
+
+## 2026-10-13 — Field copies into the Field Construction folder
+
+Create transmittal on Field copies each packed PDF into `{job} Field Construction Folder/2.0 IFC Drawings & Transmittals`, puts `FT-{job}-{n}.pdf` in `Transmittals` there, and attaches only that form. A missing field folder stops the send. **Locate field folder…** remembers the pick on this PC. Shop was already form-only. Shipped in 2.12.
+
 ## 2026-10-09 — Shipped 2.11
 
 Source and the frozen exe are 2.11. A single pack stays on the drawn sheet. Pack all and Packed only open the full Next editor. Row lines run across every column, empty Jira fields show a dash, and sideways scrolling disappears under JIRA ID. Load `2026-Tanzim`. Do not Confirm 075.

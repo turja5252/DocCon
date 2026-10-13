@@ -152,6 +152,7 @@ from doccon.register import (
     new_issue_id_error,
     new_issue_preflight_error,
 )
+from doccon.field_place import MISSING_FIELD_FOLDER, find_field_folder
 from doccon.secrets import load_token, save_token
 from doccon.settings import (
     AppSettings,
@@ -159,9 +160,11 @@ from doccon.settings import (
     load_settings,
     locate_start_dir,
     normalize_saved_emails,
+    remember_field_folder,
     remember_job_folder,
     remember_locate_dir,
     remember_shop_folder,
+    remembered_field_folder,
     remembered_shop_folder,
     save_settings,
 )
@@ -178,6 +181,12 @@ from doccon.theme import (
     FONT_TITLE,
     IDENTITY_MISSING,
     JIRA,
+    PLACE_MISS_BG,
+    PLACE_MISS_FG,
+    PLACE_MISS_GLOW,
+    PLACE_OK_BG,
+    PLACE_OK_FG,
+    PLACE_OK_GLOW,
     LOAD_STEPS,
     NAVY,
     PENDING_BG,
@@ -1224,6 +1233,7 @@ class DocConApp(tk.Tk):
         self._located_pdfs: dict[str, LocatedPdf] = {}
         self._pack_extras: list[PackExtra] = []
         self._shop_root: Path | None = None
+        self._field_root: Path | None = None
         self._job_project: JobProject | None = None
         self._eddi_contexts: dict[str, tuple[FieldOption, ...]] = {}
         self._open_path = _os_open_path
@@ -1278,9 +1288,6 @@ class DocConApp(tk.Tk):
                 command=self._kind_changed,
                 style="Brand.TRadiobutton",
             ).pack(side="left", padx=(0, 6))
-        self.shop_locate_btn = ttk.Button(
-            bar, text="Locate shop folder…", style="Brand.TButton", command=self._locate_shop_folder
-        )
         self.send_btn = LoadButton(
             bar, self._issue_pack, label=CREATE_TRANSMITTAL_BTN, width=250
         )
@@ -1311,6 +1318,10 @@ class DocConApp(tk.Tk):
             style="Brand.TButton",
             command=self._paste_pdf,
         ).pack(side="right", padx=(8, 0))
+        self._field_place = self._place_chip(identity, "FT", self._locate_field_folder)
+        self._shop_place = self._place_chip(identity, "ST", self._locate_shop_folder)
+        self._paint_place(self._shop_place, None)
+        self._paint_place(self._field_place, None)
         self._jira_bar, self._jira_title, self._jira_value = self._identity_chip(
             identity, "Jira", JIRA
         )
@@ -1540,6 +1551,7 @@ class DocConApp(tk.Tk):
             )
             self.board.set_transmittal_kind(INCOMING)
             self._refresh_shop_place()
+            self._refresh_field_place()
             self._refresh_cover_hint()
             return
         if self.kind.get() == CLIENT:
@@ -1561,6 +1573,7 @@ class DocConApp(tk.Tk):
             )
         self.board.set_transmittal_kind(self.kind.get())
         self._refresh_shop_place()
+        self._refresh_field_place()
         self._refresh_cover_hint()
 
     def _show_kind_cover(self) -> None:
@@ -2049,6 +2062,53 @@ class DocConApp(tk.Tk):
         value = tk.Label(body, text="", bg=NAVY, fg="#FFFFFF", font=FONT_SMALL, anchor="w")
         value.pack(side="left", fill="x", expand=True, padx=(6, 0))
         return bar, head, value
+
+    def _place_chip(self, parent: tk.Misc, title: str, command) -> dict[str, tk.Widget]:
+        """ST or FT on the identity row. Yellow until that folder is found, then green."""
+        glow = tk.Frame(parent, bg=PLACE_MISS_GLOW, padx=3, pady=3)
+        glow.pack(side="right", padx=(0, 8))
+        body = tk.Frame(glow, bg=PLACE_MISS_BG, padx=8, pady=3, cursor="hand2")
+        body.pack()
+        head = tk.Label(body, text=title, bg=PLACE_MISS_BG, fg=PLACE_MISS_FG, font=FONT_SMALL, cursor="hand2")
+        head.pack(side="left")
+        value = tk.Label(body, text="", bg=PLACE_MISS_BG, fg=PLACE_MISS_FG, font=FONT_SMALL, cursor="hand2")
+        value.pack(side="left", padx=(6, 0))
+        locate = tk.Label(
+            body,
+            text="Locate…",
+            bg=PLACE_MISS_BG,
+            fg=PLACE_MISS_FG,
+            font=FONT_SMALL,
+            cursor="hand2",
+        )
+        locate.pack(side="left", padx=(8, 0))
+        for widget in (body, head, value, locate):
+            widget.bind("<Button-1>", lambda _event, go=command: go())
+        return {"glow": glow, "body": body, "head": head, "value": value, "locate": locate}
+
+    def _paint_place(self, chip: dict[str, tk.Widget], folder: Path | None) -> None:
+        found = folder is not None and Path(folder).is_dir()
+        ready = bool(self._job_number)
+        bg = PLACE_OK_BG if found else PLACE_MISS_BG
+        fg = PLACE_OK_FG if found else PLACE_MISS_FG
+        ring = PLACE_OK_GLOW if found else PLACE_MISS_GLOW
+        body = chip["body"]
+        head = chip["head"]
+        value = chip["value"]
+        locate = chip["locate"]
+        chip["glow"].configure(bg=ring)
+        body.configure(bg=bg)
+        head.configure(bg=bg, fg=fg)
+        if found:
+            name = Path(folder).name
+            shown = name if len(name) <= 36 else name[:33] + "…"
+            value.configure(text=shown, bg=bg, fg=fg)
+            locate.pack_forget()
+            return
+        value.configure(text="" if ready else "—", bg=bg, fg=fg)
+        locate.configure(bg=bg, fg=fg)
+        if not locate.winfo_ismapped():
+            locate.pack(side="left", padx=(8, 0))
 
     def _set_job_identity(
         self,
@@ -3159,6 +3219,7 @@ class DocConApp(tk.Tk):
         self._restore_pack(self._job_folder, job, None)
         self._save_pack(quiet=True, force=True)
         self._refresh_shop_place()
+        self._refresh_field_place()
         self._start_watcher()
         pending = self._pending_files
         if pending is not None:
@@ -3860,6 +3921,8 @@ class DocConApp(tk.Tk):
         cover_pdf = f"{info.cover_id}.pdf"
         shop_root: Path | None = None
         shop_copies: list[tuple[Path, str]] = []
+        field_root: Path | None = None
+        field_copies: list[Path] = []
         if kind == SHOP:
             self._refresh_shop_place()
             shop_root = self._shop_root
@@ -3872,6 +3935,17 @@ class DocConApp(tk.Tk):
                     shop_copies.append((row.pdf.path, picks.get(row.drawing.key, "Root")))
             for item in pack_extras:
                 shop_copies.append((Path(item.path), picks.get(item.id, "Root")))
+        if kind == FIELD:
+            self._refresh_field_place()
+            field_root = self._field_root
+            if field_root is None:
+                messagebox.showerror(label, MISSING_FIELD_FOLDER)
+                return
+            for row in rows:
+                if row.pdf is not None and row.pdf.path.is_file():
+                    field_copies.append(row.pdf.path)
+            for item in pack_extras:
+                field_copies.append(Path(item.path))
         if kind == SHOP:
             file_line = (
                 f"file {info.cover_id}, copy the drawings into the shop folder, "
@@ -3879,6 +3953,14 @@ class DocConApp(tk.Tk):
             )
             attach_line = (
                 f"Attachments: {cover_pdf} only. Drawings are copied into {shop_root.name}, not zipped.\n"
+            )
+        elif kind == FIELD:
+            file_line = (
+                f"file {info.cover_id}, copy the drawings into the field folder, "
+                f"attach only the transmittal form, "
+            )
+            attach_line = (
+                f"Attachments: {cover_pdf} only. Drawings are copied into {field_root.name}, not zipped.\n"
             )
         else:
             file_line = (
@@ -3965,6 +4047,8 @@ class DocConApp(tk.Tk):
                     extra_pdfs=extra_pdfs,
                     shop_root=shop_root,
                     shop_copies=shop_copies,
+                    field_root=field_root,
+                    field_copies=field_copies,
                     on_step=on_confirm_step,
                     mail=facts,
                     mail_subject=wording[0],
@@ -4610,18 +4694,16 @@ class DocConApp(tk.Tk):
         log("INFO", "drop", f"renamed dropped={dest.name} row={updated.drawing.key}")
 
     def _refresh_shop_place(self) -> None:
-        if self.kind.get() != SHOP or not self._job_number:
-            if self.shop_locate_btn.winfo_ismapped():
-                self.shop_locate_btn.pack_forget()
+        if not self._job_number:
             self._shop_root = None
             self.board.set_shop_folders(())
+            self._paint_place(self._shop_place, None)
             return
-        if not self.shop_locate_btn.winfo_ismapped():
-            self.shop_locate_btn.pack(side="left", padx=(8, 0), before=self.send_btn.shell)
         remembered = remembered_shop_folder(self._job_number)
         found = find_shop_ifc_folder(self._job_number, self._job_folder, remembered)
         self._shop_root = found
-        if found is None:
+        self._paint_place(self._shop_place, found)
+        if self.kind.get() != SHOP or found is None:
             self.board.set_shop_folders(())
             return
         self.board.set_shop_folders(shop_folder_choices(found))
@@ -4646,6 +4728,34 @@ class DocConApp(tk.Tk):
         remember_shop_folder(self._job_number, path)
         self._refresh_shop_place()
         self._set_status(f"Shop folder: {path.name}")
+
+    def _refresh_field_place(self) -> None:
+        if not self._job_number:
+            self._field_root = None
+            self._paint_place(self._field_place, None)
+            return
+        remembered = remembered_field_folder(self._job_number)
+        self._field_root = find_field_folder(self._job_number, self._job_folder, remembered)
+        self._paint_place(self._field_place, self._field_root)
+
+    def _locate_field_folder(self) -> None:
+        if not self._job_number:
+            messagebox.showinfo("Field folder", "Enter a Job Number and click Load first.")
+            return
+        start = self._field_root or self._job_folder
+        chosen = filedialog.askdirectory(
+            title="Locate the Field Construction folder",
+            initialdir=str(start) if start is not None else self._picker_dir(),
+        )
+        if not chosen:
+            return
+        path = Path(chosen)
+        if not path.is_dir():
+            messagebox.showerror("Field folder", "That folder is not available.")
+            return
+        remember_field_folder(self._job_number, path)
+        self._refresh_field_place()
+        self._set_status(f"Field folder: {path.name}")
 
     def _locate_pdf(self, key: str = "") -> None:
         if key and self._extra_item(key) is not None:

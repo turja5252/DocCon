@@ -24,7 +24,7 @@ from doccon.jira_client import (
     preflight_jira_updates,
     revert_drawing_update,
 )
-from doccon.kinds import CLIENT, SHOP
+from doccon.kinds import CLIENT, FIELD, SHOP
 from doccon.match import MatchedRow
 from doccon.pack_mail import (
     attach_pdfs,
@@ -39,6 +39,13 @@ from doccon.pack_mail import (
 )
 from doccon.pep import PepCover
 from doccon.register import DrawingRow, FieldOption
+from doccon.field_place import (
+    IFC_DIR,
+    MISSING_FIELD_FOLDER,
+    field_ifc_dir,
+    place_field_form,
+    place_field_pdf,
+)
 from doccon.shop_place import MISSING_SHOP_FOLDER, place_shop_form, place_shop_pdf
 
 
@@ -102,6 +109,8 @@ def run_confirm_client_pack(
     extra_pdfs: list[Path] | None = None,
     shop_root: Path | None = None,
     shop_copies: list[tuple[Path, str]] | None = None,
+    field_root: Path | None = None,
+    field_copies: list[Path] | None = None,
     on_step=None,
     mail=None,
     mail_subject: str = "",
@@ -117,6 +126,10 @@ def run_confirm_client_pack(
         raise LogError(MISSING_SHOP_FOLDER)
     if kind == SHOP:
         _preflight_shop_copies(Path(shop_root), shop_copies or [])
+    if kind == FIELD and (field_root is None or not Path(field_root).is_dir()):
+        raise LogError(MISSING_FIELD_FOLDER)
+    if kind == FIELD:
+        _preflight_field_copies(Path(field_root), field_copies or [])
     if pairs:
         step("jira_check")
         preflight_jira_updates(site, email, token, pairs, eddi_contexts)
@@ -174,6 +187,19 @@ def run_confirm_client_pack(
                     pdf_note=pdf_note,
                 ) from exc
             pdf_note = f"{pdf_note}\nShop copies: {Path(shop_root).name}".strip()
+        elif kind == FIELD:
+            try:
+                step("field")
+                _copy_field_pack(Path(field_root), field_copies or [], pdf_path)
+            except LogError as exc:
+                raise ConfirmDeliveryError(
+                    f"Filed {cover_id} and wrote Jira, but could not copy the field PDFs. "
+                    f"Do not Confirm again.\n{exc}",
+                    cover_id=cover_id,
+                    attach_note=attachment_note([]),
+                    pdf_note=pdf_note,
+                ) from exc
+            pdf_note = f"{pdf_note}\nField copies: {Path(field_root).name}".strip()
         else:
             pdfs = attach_pdfs(rows, extra_pdfs or [])
             zip_path = book.parent / f"{cover_id}.zip"
@@ -288,6 +314,21 @@ def _copy_shop_pack(shop_root: Path, copies: list[tuple[Path, str]], form: Path)
         place_shop_pdf(shop_root, label, Path(source))
     if form.is_file():
         place_shop_form(shop_root, form)
+
+
+def _preflight_field_copies(field_root: Path, copies: list[Path]) -> None:
+    if not field_ifc_dir(field_root).is_dir():
+        raise LogError(f"{IFC_DIR} is not in {field_root.name}. Confirm aborted; nothing was written.")
+    for source in copies:
+        if not Path(source).is_file():
+            raise LogError(f"Missing {Path(source).name}. Confirm aborted; nothing was written.")
+
+
+def _copy_field_pack(field_root: Path, copies: list[Path], form: Path) -> None:
+    for source in copies:
+        place_field_pdf(field_root, Path(source))
+    if form.is_file():
+        place_field_form(field_root, form)
 
 
 def _eddi_snapshot_note(

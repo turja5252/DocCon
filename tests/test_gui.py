@@ -15,7 +15,15 @@ import pytest
 
 from doccon.match import MatchedRow, PdfHit, pair_pdf
 from doccon.register import DrawingRow, JobProject
-from doccon.theme import FOLDER, IDENTITY_MISSING, JIRA
+from doccon.theme import (
+    FOLDER,
+    IDENTITY_MISSING,
+    JIRA,
+    PLACE_MISS_BG,
+    PLACE_MISS_GLOW,
+    PLACE_OK_BG,
+    PLACE_OK_GLOW,
+)
 
 
 def _pack_row(
@@ -144,6 +152,29 @@ def test_job_identity_labels_and_colors(tmp_path: Path, monkeypatch) -> None:
         app._matches[matched.drawing.key] = matched
         app._preview_pdf_key("P2024-1")
         assert previewed == [pdf]
+
+        shop = tmp_path / "2026-Tanzim shop"
+        shop.mkdir()
+        app._job_number = "2026-Tanzim"
+        app._paint_place(app._shop_place, shop)
+        app._paint_place(app._field_place, None)
+        assert app._shop_place["body"].cget("bg") == PLACE_OK_BG
+        assert app._shop_place["glow"].cget("bg") == PLACE_OK_GLOW
+        assert "2026-Tanzim shop" in app._shop_place["value"].cget("text")
+        assert app._shop_place["locate"].winfo_manager() == ""
+        assert app._field_place["body"].cget("bg") == PLACE_MISS_BG
+        assert app._field_place["glow"].cget("bg") == PLACE_MISS_GLOW
+        assert app._field_place["locate"].winfo_manager() == "pack"
+        assert app._field_place["locate"].cget("text") == "Locate…"
+
+        saved: list[tuple[str, Path]] = []
+        monkeypatch.setattr("doccon.gui.remember_field_folder", lambda job, path: saved.append((job, Path(path))))
+        monkeypatch.setattr("doccon.gui.filedialog.askdirectory", lambda **_kwargs: str(shop))
+        monkeypatch.setattr("doccon.gui.find_field_folder", lambda *_args, **_kwargs: shop)
+        monkeypatch.setattr("doccon.gui.remembered_field_folder", lambda _job: shop)
+        app._locate_field_folder()
+        assert saved == [("2026-Tanzim", shop)]
+        assert app._field_place["body"].cget("bg") == PLACE_OK_BG
     finally:
         app.destroy()
 

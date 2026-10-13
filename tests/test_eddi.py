@@ -15,7 +15,9 @@ from openpyxl.worksheet.pagebreak import Break
 from doccon.client_log import LogError
 from doccon.eddi import (
     CATEGORY_HEADER_MERGES,
+    description_row_height,
     find_live_eddi_book,
+    fill_project_sheet,
     form_group_items,
     grouped_eddi_items,
     is_dated_eddi_name,
@@ -122,6 +124,21 @@ def _merged(ws, ref: str) -> bool:
 
 def _hidden(ws, row: int) -> bool:
     return bool(ws.row_dimensions[row].hidden)
+
+
+def test_long_description_wraps_and_grows_the_row(tmp_path: Path) -> None:
+    title = "INSIDE HANDRAIL DETAIL"
+    assert description_row_height(title, 20) == 30
+    assert description_row_height("Drawing-1", 20) == 0
+    path = _project_fixture(tmp_path / "EDDI 3.0 - 2026-Tanzim.xlsx")
+    wb = load_workbook(path)
+    ws = wb["Project"]
+    ws.column_dimensions["C"].width = 20
+    fill_project_sheet(ws, "2026-Tanzim", [_drawing(title=title, shop_purpose="IFC")])
+    item = next(row for row in range(1, ws.max_row + 1) if ws.cell(row, 1).value == "2026-Tanzim-1-1")
+    assert ws.cell(item, 3).alignment.wrap_text is True
+    assert ws.row_dimensions[item].height == 30
+    wb.close()
 
 
 def test_grouped_eddi_skips_generic_and_empty_blocks() -> None:
@@ -472,6 +489,46 @@ def test_snapshot_includes_matched_pdf_only(tmp_path: Path) -> None:
     wb.close()
     assert "2026-Tanzim-1-1" in values
     assert "2026-Tanzim-1-2" in values
+
+
+def test_eddi_skips_a_group_row_that_only_has_id_and_description() -> None:
+    from doccon.eddi import eddi_print_drawings
+    from doccon.match import MatchedRow
+
+    blank = {
+        "outgoing_rev": "",
+        "purpose": "",
+        "submission_date": "",
+        "status": "OFA",
+        "return_request_date": "2026-10-13",
+    }
+    empty = MatchedRow(
+        drawing=_drawing(
+            key="P2024-9",
+            drawing_id="2026-Tanzim-1-9",
+            title="Name only",
+            eddi_status="3 - Supplier Drawings - EDDI",
+            **blank,
+        ),
+        pdf=None,
+        confidence="Missing",
+    )
+    kept = MatchedRow(
+        drawing=_drawing(
+            key="P2024-8",
+            drawing_id="2026-Tanzim-1-8",
+            title="Has a rev",
+            eddi_status="3 - Supplier Drawings - EDDI",
+            purpose="",
+            submission_date="",
+            outgoing_rev="0",
+        ),
+        pdf=None,
+        confidence="Missing",
+    )
+    drawings = eddi_print_drawings([empty, kept])
+    assert [row.drawing_id for row in drawings] == ["2026-Tanzim-1-8"]
+    assert form_group_items([empty.drawing, kept.drawing])[3] == [kept.drawing]
 
 
 def test_snapshot_excel_uses_local_temp_not_dropbox(tmp_path: Path, monkeypatch) -> None:
