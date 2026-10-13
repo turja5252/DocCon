@@ -173,6 +173,7 @@ from doccon.shop_place import (
     find_shop_ifc_folder,
     shop_folder_choices,
 )
+from doccon.usage import record_transmittal, transmittal_count
 from doccon.theme import (
     CONFIRM_STEPS,
     FOLDER,
@@ -189,6 +190,7 @@ from doccon.theme import (
     PLACE_OK_GLOW,
     LOAD_STEPS,
     NAVY,
+    NAVY_MID,
     PENDING_BG,
     PENDING_BORDER,
     RENDER_LOAD_END,
@@ -1243,6 +1245,9 @@ class DocConApp(tk.Tk):
         self._create_focus_key = ""
         self._drop_hover_after = ""
         self._drop_hover_pt = (0, 0)
+        self._place_tip: tk.Toplevel | None = None
+        self._place_tip_after = ""
+        self._place_hide_after = ""
         self._watcher: InboxWatcher | None = None
         self._watch_after = ""
         self._new_pdfs: list[Path] = []
@@ -1250,6 +1255,8 @@ class DocConApp(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.bind_all("<Control-v>", self._on_paste_key, add="+")
         self.bind_all("<Control-V>", self._on_paste_key, add="+")
+        self.bind_all("<Control-Shift-L>", lambda _event: self._show_transmittal_count(), add="+")
+        self.bind_all("<Control-Shift-l>", lambda _event: self._show_transmittal_count(), add="+")
         log("INFO", "session", f"gui init pid={os.getpid()} paste + watched folder")
 
         chrome = tk.Frame(self, bg=NAVY, padx=12, pady=6)
@@ -2082,13 +2089,15 @@ class DocConApp(tk.Tk):
             cursor="hand2",
         )
         locate.pack(side="left", padx=(8, 0))
-        for widget in (body, head, value, locate):
+        chip = {"glow": glow, "body": body, "head": head, "value": value, "locate": locate, "path": ""}
+        for widget in (glow, body, head, value, locate):
             widget.bind("<Button-1>", lambda _event, go=command: go())
-        return {"glow": glow, "body": body, "head": head, "value": value, "locate": locate}
+            widget.bind("<Enter>", lambda _event, item=chip: self._schedule_place_tip(item), add="+")
+            widget.bind("<Leave>", lambda _event: self._schedule_hide_place_tip(), add="+")
+        return chip
 
     def _paint_place(self, chip: dict[str, tk.Widget], folder: Path | None) -> None:
         found = folder is not None and Path(folder).is_dir()
-        ready = bool(self._job_number)
         bg = PLACE_OK_BG if found else PLACE_MISS_BG
         fg = PLACE_OK_FG if found else PLACE_MISS_FG
         ring = PLACE_OK_GLOW if found else PLACE_MISS_GLOW
@@ -2096,19 +2105,73 @@ class DocConApp(tk.Tk):
         head = chip["head"]
         value = chip["value"]
         locate = chip["locate"]
+        chip["path"] = str(Path(folder)) if found else ""
         chip["glow"].configure(bg=ring)
         body.configure(bg=bg)
         head.configure(bg=bg, fg=fg)
-        if found:
-            name = Path(folder).name
-            shown = name if len(name) <= 36 else name[:33] + "…"
-            value.configure(text=shown, bg=bg, fg=fg)
-            locate.pack_forget()
-            return
-        value.configure(text="" if ready else "—", bg=bg, fg=fg)
-        locate.configure(bg=bg, fg=fg)
+        value.configure(text="", bg=bg, fg=fg)
+        if value.winfo_ismapped():
+            value.pack_forget()
+        locate.configure(text="Locate…", bg=bg, fg=fg)
         if not locate.winfo_ismapped():
             locate.pack(side="left", padx=(8, 0))
+
+    def _schedule_place_tip(self, chip: dict[str, tk.Widget]) -> None:
+        self._cancel_place_timers()
+        path = str(chip.get("path") or "").strip()
+        if not path:
+            self._hide_place_tip()
+            return
+        self._place_tip_after = self.after(350, lambda: self._show_place_tip(chip["body"], path))
+
+    def _schedule_hide_place_tip(self) -> None:
+        if self._place_hide_after:
+            return
+        self._place_hide_after = self.after(80, self._hide_place_tip)
+
+    def _cancel_place_timers(self) -> None:
+        for name in ("_place_tip_after", "_place_hide_after"):
+            token = getattr(self, name, "")
+            if token:
+                with contextlib.suppress(tk.TclError):
+                    self.after_cancel(token)
+                setattr(self, name, "")
+
+    def _hide_place_tip(self) -> None:
+        self._cancel_place_timers()
+        if self._place_tip is not None:
+            with contextlib.suppress(tk.TclError):
+                self._place_tip.destroy()
+            self._place_tip = None
+
+    def _show_place_tip(self, widget: tk.Misc, text: str) -> None:
+        self._place_tip_after = ""
+        self._hide_place_tip()
+        self._place_tip_after = ""
+        try:
+            if not widget.winfo_exists():
+                return
+        except tk.TclError:
+            return
+        tip = tk.Toplevel(self)
+        tip.wm_overrideredirect(True)
+        with contextlib.suppress(tk.TclError):
+            tip.wm_attributes("-topmost", True)
+        tk.Label(
+            tip,
+            text=text,
+            justify="left",
+            wraplength=560,
+            background=NAVY_MID,
+            foreground="#FFFFFF",
+            font=FONT_SMALL,
+            padx=10,
+            pady=8,
+        ).pack()
+        x = widget.winfo_rootx()
+        y = widget.winfo_rooty() + widget.winfo_height() + 4
+        tip.geometry(f"+{x}+{y}")
+        self._place_tip = tip
 
     def _set_job_identity(
         self,
@@ -4024,6 +4087,7 @@ class DocConApp(tk.Tk):
             note = ""
             saved_attach = f"{info.cover_id}.pdf"
             jira_ok = False
+            filed = False
             pairs = [
                 (originals.get(row.drawing.key, row.drawing), row.drawing) for row in jira_rows
             ]
@@ -4039,6 +4103,7 @@ class DocConApp(tk.Tk):
                     issued=issued,
                     expected_return=expected,
                     cover=cover,
+                    urgent=bool(self.board.return_urgency()),
                     rows=rows,
                     kind=kind,
                     job_folder=folder,
@@ -4058,19 +4123,21 @@ class DocConApp(tk.Tk):
                 saved_attach = result.attach_note
                 note = result.pdf_note
                 jira_ok = result.jira_written
+                filed = True
             except ConfirmDeliveryError as exc:
                 error = str(exc)
                 cover_id = exc.cover_id
                 saved_attach = exc.attach_note
                 note = exc.pdf_note
                 jira_ok = True
+                filed = True
             except (JiraError, LogError, OSError) as exc:
                 error = str(exc)
             packed = list(jira_rows)
             self.after(
                 0,
-                lambda c=cover_id, e=error, n=note, z=saved_attach, f=folder, j=job, u=packed, ok=jira_ok: (
-                    self._pack_issued(c, e, n, z, f, j, u, ok)
+                lambda c=cover_id, e=error, n=note, z=saved_attach, f=folder, j=job, u=packed, ok=jira_ok, done=filed, sent=kind: (
+                    self._pack_issued(c, e, n, z, f, j, u, ok, done, sent)
                 ),
             )
 
@@ -4086,6 +4153,8 @@ class DocConApp(tk.Tk):
         job: str,
         jira_rows: list[MatchedRow] | None = None,
         jira_ok: bool = False,
+        filed: bool = False,
+        kind: str = "",
     ) -> None:
         self._busy = False
         self._work = ""
@@ -4099,6 +4168,8 @@ class DocConApp(tk.Tk):
             self._consume_pack_extras()
         self._save_pack(quiet=True, force=True)
         self._refresh_cover_hint()
+        if filed:
+            record_transmittal(cover=cover, job=job, kind=kind or self.kind.get())
         label = LABELS.get(self.kind.get(), LABELS[CLIENT])
         extra = f"\n{pdf_note}" if pdf_note else ""
         jira_note = f"\nJira: {len(jira_rows)} drawing(s)." if jira_rows else "\nJira: no field changes."
@@ -4115,6 +4186,11 @@ class DocConApp(tk.Tk):
             f"Filed {cover}.{extra}{jira_note}\n{attach_note}\n"
             "Outlook draft is open from this PC's mailbox. Send it there.",
         )
+
+    def _show_transmittal_count(self) -> None:
+        count = transmittal_count()
+        word = "transmittal" if count == 1 else "transmittals"
+        messagebox.showinfo(APP_DISPLAY_NAME, f"{count} {word} created.")
 
     def _apply_row(self, row: MatchedRow) -> None:
         self._matches[row.drawing.key] = row
@@ -4838,6 +4914,8 @@ class DocConApp(tk.Tk):
             rev=rev,
             description=current.description,
             status=current.status,
+            notes=current.notes,
+            note_color=current.note_color,
             email_dropped=is_dropped_pdf_path(path),
             id=current.id,
             packed=current.packed,

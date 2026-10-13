@@ -160,10 +160,19 @@ def test_job_identity_labels_and_colors(tmp_path: Path, monkeypatch) -> None:
         app._paint_place(app._field_place, None)
         assert app._shop_place["body"].cget("bg") == PLACE_OK_BG
         assert app._shop_place["glow"].cget("bg") == PLACE_OK_GLOW
-        assert "2026-Tanzim shop" in app._shop_place["value"].cget("text")
-        assert app._shop_place["locate"].winfo_manager() == ""
+        assert app._shop_place["value"].cget("text") == ""
+        assert app._shop_place["path"] == str(shop)
+        assert app._shop_place["locate"].winfo_manager() == "pack"
+        assert app._shop_place["locate"].cget("text") == "Locate…"
+        app.update_idletasks()
+        app._show_place_tip(app._shop_place["body"], app._shop_place["path"])
+        assert app._place_tip is not None
+        assert app._place_tip.winfo_children()[0].cget("text") == str(shop)
+        app._hide_place_tip()
+        assert app._place_tip is None
         assert app._field_place["body"].cget("bg") == PLACE_MISS_BG
         assert app._field_place["glow"].cget("bg") == PLACE_MISS_GLOW
+        assert app._field_place["path"] == ""
         assert app._field_place["locate"].winfo_manager() == "pack"
         assert app._field_place["locate"].cget("text") == "Locate…"
 

@@ -349,6 +349,23 @@ def test_batch_applies_to_pack_only() -> None:
         board._blocks["P2024-1"].nexts["return_request_date"].set("2026-11-01")
         board._commit_batch_field("return_request_date")
         assert board._blocks["P2024-1"].nexts["return_request_date"].get() == "2026-11-01"
+        assert "letter_notes" in board._batch_fields
+        assert "letter_note_color" in board._batch_fields
+        board._batch_fields["letter_notes"].set("Issued for review")
+        board._commit_batch_field("letter_notes")
+        board._batch_fields["letter_note_color"].set("Red")
+        board._commit_batch_field("letter_note_color")
+        assert board._blocks["P2024-1"].nexts["letter_notes"].get() == "Issued for review"
+        assert board._blocks["P2024-2"].nexts["letter_notes"].get() == "Issued for review"
+        assert board._blocks["P2024-2"].nexts["letter_note_color"].get() == "Red"
+        board._blocks["P2024-1"].nexts["letter_notes"].set("Hold this one")
+        board._blocks["P2024-1"].nexts["letter_note_color"].set("Black")
+        board._commit_batch_field("letter_notes")
+        board._commit_batch_field("letter_note_color")
+        assert board._blocks["P2024-1"].nexts["letter_notes"].get() == "Hold this one"
+        assert board._blocks["P2024-1"].nexts["letter_note_color"].get() == "Black"
+        assert board._blocks["P2024-2"].nexts["letter_notes"].get() == "Issued for review"
+        assert board._blocks["P2024-2"].nexts["letter_note_color"].get() == "Red"
     finally:
         root.destroy()
 
@@ -2856,6 +2873,14 @@ def test_letter_and_eddi_print_the_effective_jira_id(tmp_path) -> None:
         ]
         printed = eddi_print_drawings(board.current_rows())
         assert [item_values(drawing)[0] for drawing in printed] == ["2026-Tanzim-1-STWD"]
+        board._blocks["P2024-1"].nexts["letter_notes"].set("Hold for comment")
+        assert lines_from_rows(board.selected_rows())[0].notes == "Hold for comment"
+        assert lines_from_rows(board.selected_rows())[0].note_color == "Black"
+        assert "letter_note_color" not in board.next_edits()["P2024-1"]
+        board._blocks["P2024-1"].nexts["letter_note_color"].set("Red")
+        assert board.next_edits()["P2024-1"]["letter_note_color"] == "Red"
+        assert lines_from_rows(board.selected_rows())[0].note_color == "Red"
+        assert "NoteRed" in str(board._blocks["P2024-1"].nexts["letter_notes"].cget("style"))
     finally:
         root.destroy()
 

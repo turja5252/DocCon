@@ -19,6 +19,7 @@ from pathlib import Path
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.cell.cell import MergedCell
+from openpyxl.styles.colors import Color
 from openpyxl.worksheet.worksheet import Worksheet
 
 from doccon.jobs import find_job_folder, job_folder_keys
@@ -47,6 +48,20 @@ class LogError(ValueError):
     """Raised when the client book cannot be filled or filed."""
 
 
+NOTE_COLOR_BLACK = "Black"
+NOTE_COLOR_RED = "Red"
+NOTE_COLORS = (NOTE_COLOR_BLACK, NOTE_COLOR_RED)
+
+
+def note_color_name(value: str) -> str:
+    """Black unless she picked Red. Blank means black."""
+    return NOTE_COLOR_RED if (value or "").strip().casefold() == "red" else NOTE_COLOR_BLACK
+
+
+def note_color_is_red(value: str) -> bool:
+    return note_color_name(value) == NOTE_COLOR_RED
+
+
 @dataclass(frozen=True)
 class LogLine:
     document_no: str
@@ -54,6 +69,7 @@ class LogLine:
     description: str
     status: str
     notes: str = ""
+    note_color: str = ""
 
 
 @dataclass(frozen=True)
@@ -120,6 +136,8 @@ def lines_from_rows(rows: list[MatchedRow], kind: str = CLIENT) -> list[LogLine]
                 rev=rev,
                 description=drawing.title or "",
                 status=line_status(_purpose_for_kind(drawing, kind), kind),
+                notes=(drawing.letter_notes or "").strip(),
+                note_color=note_color_name(drawing.letter_note_color),
             )
         )
     return lines
@@ -136,6 +154,8 @@ def lines_from_extras(items: list[PackExtra] | tuple[PackExtra, ...], kind: str 
                 rev=(item.rev or "").strip(),
                 description=(item.description or "").strip(),
                 status=letter_status(kind, item.status),
+                notes=(item.notes or "").strip(),
+                note_color=note_color_name(item.note_color),
             )
         )
     return lines
@@ -411,6 +431,7 @@ def file_client_transmittal(
     expected_return: date | str | None = None,
     cover: PepCover | None = None,
     kind: str = CLIENT,
+    urgent: bool = False,
 ) -> FileClientResult:
     return _commit_transmittal(
         path,
@@ -421,6 +442,7 @@ def file_client_transmittal(
         cover=cover,
         archive=True,
         kind=kind,
+        urgent=urgent,
     )
 
 
@@ -457,6 +479,7 @@ def _commit_transmittal(
     cover: PepCover | None = None,
     archive: bool,
     kind: str = CLIENT,
+    urgent: bool = False,
 ) -> FileClientResult:
     if not lines:
         raise LogError("Select at least one drawing for this transmittal.")
@@ -491,6 +514,7 @@ def _commit_transmittal(
                 template=template_book(kind),
                 archive=archive,
                 kind=kind,
+                urgent=urgent,
             )
             cover_id = f"{PREFIX[kind]}-{job}-{number}"
             return FileClientResult(
@@ -510,6 +534,7 @@ def _commit_transmittal(
             issued=issued or date.today(),
             expected_return=expected_return,
             cover=cover,
+            urgent=urgent,
         )
         if archive:
             archived = wb.copy_worksheet(ws)
@@ -629,6 +654,7 @@ def _write_working_sheet(
     issued: date,
     expected_return: date | str | None = None,
     cover: PepCover | None = None,
+    urgent: bool = False,
 ) -> None:
     ws[layout.number_cell] = number
     ws[layout.pages_cell] = pages
@@ -650,6 +676,7 @@ def _write_working_sheet(
         _set_value(ws, layout.issued_cell, _date_cell(issued))
     if layout.expected_cell:
         _set_value(ws, layout.expected_cell, _expected_cell(expected_return))
+        _set_note_color(ws, layout.expected_cell, urgent)
     last_row = (
         layout.page3_last_row if pages >= 3 else layout.page2_last_row if pages >= 2 else layout.page1_last_row
     )
@@ -657,14 +684,19 @@ def _write_working_sheet(
     for row in range(layout.doc_start_row, layout.page3_last_row + 1):
         ws.row_dimensions[row].hidden = row > last_row
         for col in cols:
-            _set_value(ws, ws.cell(row, col).coordinate, None)
+            coord = ws.cell(row, col).coordinate
+            _set_value(ws, coord, None)
+            if col == layout.notes_col:
+                _set_note_color(ws, coord, False)
     for index, line in enumerate(lines):
         row = layout.doc_start_row + index
         _set_value(ws, ws.cell(row, layout.doc_no_col).coordinate, line.document_no)
         _set_value(ws, ws.cell(row, layout.rev_col).coordinate, _rev_value(line.rev))
         _set_value(ws, ws.cell(row, layout.desc_col).coordinate, line.description)
         _set_value(ws, ws.cell(row, layout.status_col).coordinate, line.status)
-        _set_value(ws, ws.cell(row, layout.notes_col).coordinate, line.notes or None)
+        note_coord = ws.cell(row, layout.notes_col).coordinate
+        _set_value(ws, note_coord, line.notes or None)
+        _set_note_color(ws, note_coord, note_color_is_red(line.note_color) and bool((line.notes or "").strip()))
 
 
 def _reset_working_sheet(ws: Worksheet, *, layout: BookLayout, next_number: int) -> None:
@@ -672,11 +704,28 @@ def _reset_working_sheet(ws: Worksheet, *, layout: BookLayout, next_number: int)
     ws[layout.pages_cell] = 1
     for coord in layout.reset_cells:
         _set_value(ws, coord, None)
+    if layout.expected_cell:
+        _set_note_color(ws, layout.expected_cell, False)
     cols = (layout.doc_no_col, layout.rev_col, layout.desc_col, layout.status_col, layout.notes_col)
     for row in range(layout.doc_start_row, layout.page3_last_row + 1):
         ws.row_dimensions[row].hidden = row > layout.page1_last_row
         for col in cols:
-            _set_value(ws, ws.cell(row, col).coordinate, None)
+            coord = ws.cell(row, col).coordinate
+            _set_value(ws, coord, None)
+            if col == layout.notes_col:
+                _set_note_color(ws, coord, False)
+
+
+def _set_note_color(ws: Worksheet, coord: str, red: bool) -> None:
+    """Notes stay black unless this line was marked red."""
+    cell = ws[coord]
+    if isinstance(cell, MergedCell):
+        return
+    from copy import copy
+
+    font = copy(cell.font)
+    font.color = Color(rgb="FFFF0000" if red else "FF000000")
+    cell.font = font
 
 
 def _set_value(ws: Worksheet, coord: str, value: object) -> None:

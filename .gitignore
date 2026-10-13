@@ -10,6 +10,7 @@ build/
 .env
 *.token
 mail-formats.json
+usage/
 doccon.log
 doccon.log.old
 .DS_Store

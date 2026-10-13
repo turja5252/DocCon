@@ -6,10 +6,21 @@
 from __future__ import annotations
 
 import contextlib
+import sys
 import tkinter as tk
 
 _INSTALLED = False
 _CONSOLE: tk.Misc | None = None
+
+# A borderless Tk window is WS_EX_TOOLWINDOW. Windows then centers MessageBox
+# on the primary screen even when that window sits on the console's monitor.
+_WS_EX_TOOLWINDOW = 0x00000080
+_GWL_EXSTYLE = -20
+_GA_ROOT = 2
+_SWP_NOZORDER = 0x0004
+_SWP_NOACTIVATE = 0x0010
+_SWP_SHOWWINDOW = 0x0040
+_SWP_FRAMECHANGED = 0x0020
 
 
 def bind_console(window: tk.Misc) -> None:
@@ -38,12 +49,135 @@ def fit_on_monitor(
     return x, y
 
 
+def _user32():
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.windll.user32
+    user32.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
+    user32.GetAncestor.restype = wintypes.HWND
+    user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.c_void_p]
+    user32.GetWindowRect.restype = wintypes.BOOL
+    user32.MonitorFromWindow.argtypes = [wintypes.HWND, wintypes.DWORD]
+    user32.MonitorFromWindow.restype = wintypes.HMONITOR
+    long_ptr = ctypes.c_ssize_t
+    user32.GetWindowLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int]
+    user32.GetWindowLongPtrW.restype = long_ptr
+    user32.SetWindowLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int, long_ptr]
+    user32.SetWindowLongPtrW.restype = long_ptr
+    user32.SetWindowPos.argtypes = [
+        wintypes.HWND,
+        wintypes.HWND,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        wintypes.UINT,
+    ]
+    user32.SetWindowPos.restype = wintypes.BOOL
+    return user32, wintypes, ctypes
+
+
+def root_hwnd(host: tk.Misc) -> int:
+    """The real top-level window. Tk's own id can be an inner child."""
+    hwnd = int(host.winfo_id())
+    if sys.platform != "win32" or hwnd <= 0:
+        return hwnd
+    try:
+        user32, _wintypes, _ctypes = _user32()
+        root = user32.GetAncestor(hwnd, _GA_ROOT)
+        return int(root or hwnd)
+    except (AttributeError, OSError, tk.TclError, ValueError):
+        return hwnd
+
+
+def window_rect(hwnd: int) -> tuple[int, int, int, int] | None:
+    """Screen rectangle of a window, in pixels. None when Windows cannot see it."""
+    if sys.platform != "win32" or hwnd <= 0:
+        return None
+    try:
+        user32, wintypes, ctypes = _user32()
+
+        class RECT(ctypes.Structure):
+            _fields_ = [
+                ("left", wintypes.LONG),
+                ("top", wintypes.LONG),
+                ("right", wintypes.LONG),
+                ("bottom", wintypes.LONG),
+            ]
+
+        area = RECT()
+        if not user32.GetWindowRect(hwnd, ctypes.byref(area)):
+            return None
+        return int(area.left), int(area.top), int(area.right), int(area.bottom)
+    except (AttributeError, OSError, ValueError):
+        return None
+
+
+def host_span(host: tk.Misc) -> tuple[int, int, int, int]:
+    """Left, top, width, height of the console in screen pixels."""
+    rect = window_rect(root_hwnd(host))
+    if rect is not None:
+        left, top, right, bottom = rect
+        if right > left and bottom > top:
+            return left, top, right - left, bottom - top
+    return (
+        int(host.winfo_rootx()),
+        int(host.winfo_rooty()),
+        max(int(host.winfo_width()), 1),
+        max(int(host.winfo_height()), 1),
+    )
+
+
+def seat_owner(window: tk.Misc, x: int, y: int) -> None:
+    """Move a dialog owner onto the console and drop the tool-window style.
+
+    Windows centers a message on the primary screen while the owner still
+    has WS_EX_TOOLWINDOW, which is what a borderless Tk window carries.
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        raw = int(window.winfo_id())
+        hwnd = root_hwnd(window)
+        if hwnd <= 0 and raw <= 0:
+            return
+        user32, _wintypes, _ctypes = _user32()
+        for handle in dict.fromkeys((raw, hwnd)):
+            if handle <= 0:
+                continue
+            style = int(user32.GetWindowLongPtrW(handle, _GWL_EXSTYLE))
+            if style & _WS_EX_TOOLWINDOW:
+                user32.SetWindowLongPtrW(handle, _GWL_EXSTYLE, style & ~_WS_EX_TOOLWINDOW)
+        user32.SetWindowPos(
+            hwnd or raw,
+            0,
+            int(x),
+            int(y),
+            1,
+            1,
+            _SWP_NOZORDER | _SWP_NOACTIVATE | _SWP_SHOWWINDOW | _SWP_FRAMECHANGED,
+        )
+    except (AttributeError, OSError, tk.TclError, ValueError):
+        return
+
+
+def owner_is_tool_window(window: tk.Misc) -> bool:
+    if sys.platform != "win32":
+        return False
+    try:
+        user32, _wintypes, _ctypes = _user32()
+        style = int(user32.GetWindowLongPtrW(root_hwnd(window), _GWL_EXSTYLE))
+    except (AttributeError, OSError, tk.TclError, ValueError):
+        return False
+    return bool(style & _WS_EX_TOOLWINDOW)
+
+
 def _monitor_work(host: tk.Misc) -> tuple[int, int, int, int] | None:
     if str(host.tk.call("tk", "windowingsystem")) != "win32":
         return None
     try:
-        import ctypes
-        from ctypes import wintypes
+        user32, wintypes, ctypes = _user32()
 
         class RECT(ctypes.Structure):
             _fields_ = [
@@ -61,13 +195,12 @@ def _monitor_work(host: tk.Misc) -> tuple[int, int, int, int] | None:
                 ("dwFlags", wintypes.DWORD),
             ]
 
-        hwnd = int(host.winfo_id())
-        monitor = ctypes.windll.user32.MonitorFromWindow(hwnd, 2)
+        monitor = user32.MonitorFromWindow(root_hwnd(host), 2)
         if not monitor:
             return None
         info = MONITORINFO()
         info.cbSize = ctypes.sizeof(MONITORINFO)
-        if not ctypes.windll.user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
+        if not user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
             return None
         area = info.rcWork
         return int(area.left), int(area.top), int(area.right), int(area.bottom)
@@ -138,14 +271,8 @@ def place_on_parent(window: tk.Misc) -> None:
     try:
         host.update_idletasks()
         width, height = _child_size(window)
-        x, y = center_origin(
-            int(host.winfo_rootx()),
-            int(host.winfo_rooty()),
-            max(int(host.winfo_width()), 1),
-            max(int(host.winfo_height()), 1),
-            width,
-            height,
-        )
+        left, top, host_w, host_h = host_span(host)
+        x, y = center_origin(left, top, host_w, host_h, width, height)
         work = _monitor_work(host)
         if work is not None:
             x, y = fit_on_monitor(x, y, width, height, work)
@@ -166,10 +293,11 @@ def reveal_on_parent(window: tk.Toplevel) -> None:
 
 
 def _pin(parent: tk.Misc | None) -> tk.Toplevel | None:
-    """A mapped 1px owner on the console's monitor.
+    """A mapped owner on the console's monitor.
 
-    Windows centers a message on its owner. An unmapped or see-through owner
-    still counts as the primary screen, so the pin is placed and drawn first.
+    Windows centers a message on its owner. A borderless Tk window is a tool
+    window, and Windows then uses the primary screen, so the tool style is
+    cleared and the owner is moved to the console's real window rectangle.
     """
     host = _host(parent)
     if host is None:
@@ -178,11 +306,12 @@ def _pin(parent: tk.Misc | None) -> tk.Toplevel | None:
         host.update_idletasks()
         pin = tk.Toplevel(host)
         pin.overrideredirect(True)
-        pin.transient(host)
-        x = int(host.winfo_rootx()) + max(int(host.winfo_width()), 1) // 2
-        y = int(host.winfo_rooty()) + max(int(host.winfo_height()), 1) // 2
+        left, top, width, height = host_span(host)
+        x = left + max(width, 1) // 2
+        y = top + max(height, 1) // 2
         pin.geometry(f"1x1+{x}+{y}")
         pin.update()
+        seat_owner(pin, x, y)
         return pin
     except tk.TclError:
         return None

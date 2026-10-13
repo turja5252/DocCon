@@ -87,6 +87,22 @@ def test_lines_prefer_pdf_rev() -> None:
     lines = lines_from_rows([MatchedRow(drawing=drawing, pdf=hit, confidence="High")])
     assert lines[0].rev == "0"
     assert lines[0].status == "APPROVAL"
+    assert lines[0].notes == ""
+    noted = lines_from_rows(
+        [MatchedRow(drawing=_drawing(letter_notes="Hold for client comment"), pdf=None, confidence="Missing")]
+    )
+    assert noted[0].notes == "Hold for client comment"
+    assert noted[0].note_color == "Black"
+    red = lines_from_rows(
+        [
+            MatchedRow(
+                drawing=_drawing(letter_notes="Hold for client comment", letter_note_color="Red"),
+                pdf=None,
+                confidence="Missing",
+            )
+        ]
+    )
+    assert red[0].note_color == "Red"
 
 
 def test_shop_and_field_letters_use_their_own_submitted_to() -> None:
@@ -226,6 +242,7 @@ def test_fill_writes_working_sheet_without_archive(tmp_path: Path) -> None:
     assert working["C4"].value == DOC_CONTROL_FROM
     assert working["C12"].value.date() == date(2026, 9, 1)
     assert working["D12"].value.date() == date(2026, 9, 15)
+    assert not _font_is_red(working["D12"])
     wb.close()
     inspect = inspect_client_book(path, "2026-Tanzim")
     assert inspect.next_number == 1
@@ -311,6 +328,34 @@ def test_file_writes_pep_cover_and_return_date(tmp_path: Path) -> None:
     assert working["C12"].value is None
     assert working["D12"].value is None
     wb.close()
+
+
+def test_urgent_return_date_prints_red(tmp_path: Path) -> None:
+    path = tmp_path / "CT-2026-Tanzim.xlsx"
+    empty_client_workbook().save(path)
+    file_client_transmittal(
+        path,
+        "2026-Tanzim",
+        [LogLine("2026-Tanzim-1-1", "A", "Drawing-1", "APPROVAL")],
+        issued=date(2026, 9, 1),
+        expected_return=date(2026, 9, 1),
+        urgent=True,
+    )
+    wb = load_workbook(path)
+    filed = wb["1"]
+    working = wb["TRANSMITTAL"]
+    assert filed["D12"].value.date() == date(2026, 9, 1)
+    assert _font_is_red(filed["D12"])
+    assert working["D12"].value is None
+    assert not _font_is_red(working["D12"])
+    wb.close()
+
+
+def _font_is_red(cell) -> bool:
+    color = cell.font.color
+    if color is None or getattr(color, "type", None) != "rgb":
+        return False
+    return str(color.rgb or "").upper().endswith("FF0000")
 
 
 def test_parse_dates() -> None:

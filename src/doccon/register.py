@@ -121,6 +121,8 @@ class DrawingRow:
     field_purpose: str = ""
     eddi_status: str = ""
     issue_type: str = ""
+    letter_notes: str = ""
+    letter_note_color: str = ""
 
 
 DASH_CHARS = "\u2010\u2011\u2012\u2013\u2014\u2015\u2212"

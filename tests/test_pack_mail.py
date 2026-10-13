@@ -7,7 +7,9 @@ from zipfile import ZipFile
 
 from doccon.match import MatchedRow, PdfHit
 from doccon.pack_mail import (
+    MAIL_ATTACH_LIMIT_BYTES,
     attachment_note,
+    body_for_held_zip,
     cover_pdf_for_book,
     draft_body,
     draft_subject,
@@ -15,6 +17,7 @@ from doccon.pack_mail import (
     load_mail_formats,
     mail_attachments,
     mail_facts,
+    mail_pack_for_outlook,
     normalize_recipients,
     pick_outlook_send_account,
     save_mail_formats,
@@ -80,6 +83,43 @@ def test_drawings_zip_excludes_transmittal_form(tmp_path: Path) -> None:
     assert "doc.control@eliteintegrityservices.com" in body
     assert "Rows 1.1" not in body
     assert "Kind Regards," in body
+
+
+def test_oversized_zip_stays_off_the_draft_and_names_the_dropbox_file(tmp_path: Path, monkeypatch) -> None:
+    drawing = tmp_path / "2026-Tanzim-1-1 REV 0.pdf"
+    drawing.write_bytes(b"%PDF")
+    cover = tmp_path / "CT-2026-Tanzim-1.pdf"
+    cover.write_bytes(b"%PDF-cover")
+    dest = tmp_path / "CT-2026-Tanzim-1.zip"
+    write_drawings_zip(dest, [drawing], exclude=cover)
+    monkeypatch.setattr("doccon.pack_mail.MAIL_ATTACH_LIMIT_BYTES", 8)
+    files, held = mail_pack_for_outlook(cover, dest)
+    assert [path.name for path in files] == ["CT-2026-Tanzim-1.pdf"]
+    assert held == dest.resolve()
+    note = attachment_note(files, held_zip=held)
+    assert "CT-2026-Tanzim-1.zip" in note
+    assert "Share" in note
+    assert str(dest.resolve()) in note
+    body = draft_body(
+        cover_id="CT-2026-Tanzim-1",
+        project="Job",
+        rows=[_row("2026-Tanzim-1-1", drawing)],
+        held_zip=held,
+    )
+    assert "associated documents attached" not in body
+    assert "Please find the transmittal attached." in body
+    assert "too large to attach" in body
+    assert "CT-2026-Tanzim-1.zip" in body
+    assert "Dropbox download link" in body
+    assert body.strip().endswith("Kind Regards,")
+    assert MAIL_ATTACH_LIMIT_BYTES == 20 * 1024 * 1024
+    monkeypatch.undo()
+    small, left = mail_pack_for_outlook(cover, dest)
+    assert left is None
+    assert [path.name for path in small] == ["CT-2026-Tanzim-1.pdf", "CT-2026-Tanzim-1.zip"]
+    parked = body_for_held_zip("Kind Regards,\n", dest)
+    assert "too large to attach" in parked
+    assert parked.strip().endswith("Kind Regards,")
 
 
 def test_itp_signoff_note_is_only_on_a_client_pack_that_includes_an_itp(tmp_path: Path) -> None:

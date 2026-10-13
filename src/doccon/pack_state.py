@@ -28,6 +28,8 @@ class PackExtra:
     rev: str = ""
     description: str = ""
     status: str = ""
+    notes: str = ""
+    note_color: str = ""
     email_dropped: bool = False
     id: str = ""
     packed: bool = True
@@ -256,6 +258,8 @@ def _pack_extras(raw: object) -> tuple[PackExtra, ...]:
                 rev=str(entry.get("rev") or "").strip(),
                 description=str(entry.get("description") or "").strip(),
                 status=str(entry.get("status") or "").strip(),
+                notes=str(entry.get("notes") or "").strip(),
+                note_color=str(entry.get("note_color") or "").strip(),
                 email_dropped=bool(entry.get("email_dropped")),
                 id=str(entry.get("id") or "").strip() or f"x:{uuid.uuid4().hex[:12]}",
                 packed=True if packed is None else bool(packed),
@@ -272,6 +276,8 @@ def _dump_pack_extras(items: tuple[PackExtra, ...]) -> list[dict[str, object]]:
             "rev": item.rev,
             "description": item.description,
             "status": item.status,
+            "notes": item.notes,
+            "note_color": item.note_color,
             "email_dropped": bool(item.email_dropped),
             "id": item.id,
             "packed": bool(item.packed),

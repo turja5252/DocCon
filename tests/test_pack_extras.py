@@ -52,6 +52,12 @@ def test_lines_follow_packed_drawings() -> None:
     assert lines[0].document_no == "Site photo"
     assert lines[0].description == "North side"
     assert lines[0].status == "INFORMATION"
+    assert lines[0].notes == ""
+    noted = lines_from_extras(
+        [PackExtra(path="notes.pdf", document_no="Site photo", notes="See markup")],
+        CLIENT,
+    )
+    assert noted[0].notes == "See markup"
 
 
 def test_pack_extras_round_trip(tmp_path: Path) -> None:
@@ -62,6 +68,8 @@ def test_pack_extras_round_trip(tmp_path: Path) -> None:
         rev="0",
         description="From Sarah",
         status="INFORMATION",
+        notes="See markup",
+        note_color="Red",
         email_dropped=True,
         id="x:mail",
     )

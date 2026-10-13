@@ -1081,6 +1081,7 @@ def file_client_with_excel(
     template: Path | None,
     archive: bool = True,
     kind: str = CLIENT,
+    urgent: bool = False,
 ) -> None:
     """Copy TRANSMITTAL with Excel so the logo and macro buttons stay intact."""
     if os.name != "nt":
@@ -1130,6 +1131,7 @@ def file_client_with_excel(
         "issued": issued.isoformat() if hasattr(issued, "isoformat") else str(issued),
         "expected": expected_text,
         "expected_is_date": expected_is_date,
+        "expected_urgent": bool(urgent),
         "archive": bool(archive),
         "lines": [
             {
@@ -1138,6 +1140,7 @@ def file_client_with_excel(
                 "description": line.description,
                 "status": line.status,
                 "notes": line.notes or "",
+                "note_color": "Red" if (getattr(line, "note_color", "") or "").strip().casefold() == "red" else "Black",
             }
             for line in lines
         ],
@@ -1295,8 +1298,11 @@ def _write_file_script(
             "  if ($p.site_cell -and $p.site) { $ws.Range([string]$p.site_cell).Value = [string]$p.site }\n"
             "  if ($p.issued_cell) { $ws.Range([string]$p.issued_cell).Value = [datetime]$p.issued }\n"
             "  if ($p.expected_cell) {\n"
-            "    if ($p.expected_is_date) { $ws.Range([string]$p.expected_cell).Value = [datetime]$p.expected }\n"
-            "    else { $ws.Range([string]$p.expected_cell).Value = [string]$p.expected }\n"
+            "    $expectedCell = $ws.Range([string]$p.expected_cell).MergeArea\n"
+            "    if ($p.expected_is_date) { $expectedCell.Value = [datetime]$p.expected }\n"
+            "    else { $expectedCell.Value = [string]$p.expected }\n"
+            "    if ($p.expected_urgent) { $expectedCell.Font.Color = 255 }\n"
+            "    else { $expectedCell.Font.Color = 0 }\n"
             "  }\n"
             "  $start = [int]$p.doc_start_row\n"
             "  $end = [int]$p.page3_last_row\n"
@@ -1308,7 +1314,9 @@ def _write_file_script(
             "  for ($r = $start; $r -le $end; $r++) {\n"
             "    $ws.Rows($r).Hidden = ($r -gt $last)\n"
             "    foreach ($col in $cols) {\n"
-            "      $ws.Cells.Item($r, $col).MergeArea.ClearContents()\n"
+            "      $area = $ws.Cells.Item($r, $col).MergeArea\n"
+            "      $area.ClearContents()\n"
+            "      if ($col -eq [int]$p.notes_col) { $area.Font.Color = 0 }\n"
             "    }\n"
             "  }\n"
             "  $row = $start\n"
@@ -1317,7 +1325,10 @@ def _write_file_script(
             "    $ws.Cells.Item($row, [int]$p.rev_col).Value = [string]$line.rev\n"
             "    $ws.Cells.Item($row, [int]$p.desc_col).Value = [string]$line.description\n"
             "    $ws.Cells.Item($row, [int]$p.status_col).Value = [string]$line.status\n"
-            "    if ($line.notes) { $ws.Cells.Item($row, [int]$p.notes_col).Value = [string]$line.notes }\n"
+            "    $noteCell = $ws.Cells.Item($row, [int]$p.notes_col).MergeArea\n"
+            "    if ($line.notes) { $noteCell.Value = [string]$line.notes }\n"
+            "    if ([string]$line.note_color -eq 'Red' -and $line.notes) { $noteCell.Font.Color = 255 }\n"
+            "    else { $noteCell.Font.Color = 0 }\n"
             "    $row++\n"
             "  }\n"
             "  if ($p.hide_page2) { $ws.Rows([string]$p.hide_page2).EntireRow.Hidden = ([int]$p.pages -lt 2) }\n"
@@ -1333,9 +1344,12 @@ def _write_file_script(
             "    try { $copy.Protect($p.lock, $true, $true, $true, $false, $true) } catch {}\n"
             "    $ws.Activate()\n"
             "    foreach ($addr in @($p.reset_cells)) { if ($addr) { Clear-Addr $ws $addr } }\n"
+            "    if ($p.expected_cell) { $ws.Range([string]$p.expected_cell).MergeArea.Font.Color = 0 }\n"
             "    for ($r = $start; $r -le $end; $r++) {\n"
             "      foreach ($col in $cols) {\n"
-            "        $ws.Cells.Item($r, $col).MergeArea.ClearContents()\n"
+            "        $area = $ws.Cells.Item($r, $col).MergeArea\n"
+            "        $area.ClearContents()\n"
+            "        if ($col -eq [int]$p.notes_col) { $area.Font.Color = 0 }\n"
             "      }\n"
             "    }\n"
             "    if ($p.reset_hide) { $ws.Rows([string]$p.reset_hide).EntireRow.Hidden = $true }\n"

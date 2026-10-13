@@ -98,6 +98,14 @@ def _unique_arcname(name: str, used: set[str]) -> str:
         n += 1
 
 
+# Raw bytes of the form plus the zip. Microsoft 365's usual message cap is about
+# 35 MB after encoding, so 20 MB of files stays under it.
+MAIL_ATTACH_LIMIT_BYTES = 20 * 1024 * 1024
+
+_ATTACHED_SENTENCE = "Please find transmittal and associated documents attached."
+_FORM_ONLY_SENTENCE = "Please find the transmittal attached."
+
+
 def mail_attachments(cover_pdf: Path | None, pack_zip: Path | None) -> list[Path]:
     files: list[Path] = []
     if cover_pdf is not None and Path(cover_pdf).is_file():
@@ -105,6 +113,41 @@ def mail_attachments(cover_pdf: Path | None, pack_zip: Path | None) -> list[Path
     if pack_zip is not None and Path(pack_zip).is_file():
         files.append(Path(pack_zip).resolve())
     return files
+
+
+def mail_pack_for_outlook(
+    cover_pdf: Path | None, pack_zip: Path | None
+) -> tuple[list[Path], Path | None]:
+    """Form plus zip, or the form alone when the two together exceed the mail limit.
+
+    The zip stays on disk in the Out folder. The caller tells the operator to share it.
+    """
+    form = mail_attachments(cover_pdf, None)
+    if pack_zip is None or not Path(pack_zip).is_file():
+        return form, None
+    zip_path = Path(pack_zip).resolve()
+    total = sum(path.stat().st_size for path in form) + zip_path.stat().st_size
+    if total > MAIL_ATTACH_LIMIT_BYTES:
+        return form, zip_path
+    return [*form, zip_path], None
+
+
+def body_for_held_zip(body: str, held: Path) -> str:
+    """Say the drawings were left off this email and will be a Dropbox link."""
+    text = body.replace(_ATTACHED_SENTENCE, _FORM_ONLY_SENTENCE)
+    note = (
+        "The drawing files were too large to attach to this email. "
+        f"They are saved in Dropbox as {Path(held).name}. "
+        "A Dropbox download link will be added before this message is sent."
+    )
+    if note in text:
+        return text if text.endswith("\n") else text + "\n"
+    lines = text.splitlines()
+    at = next((i for i, line in enumerate(lines) if line.strip() == "Kind Regards,"), len(lines))
+    while at > 0 and not lines[at - 1].strip():
+        at -= 1
+    lines[at:at] = ["", note, ""]
+    return "\n".join(lines).rstrip() + "\n"
 
 
 def cover_pdf_for_book(book: Path, job: str, next_number: int, kind: str = CLIENT) -> tuple[str, Path | None]:
@@ -121,11 +164,22 @@ def cover_pdf_for_book(book: Path, job: str, next_number: int, kind: str = CLIEN
     return next_id, None
 
 
-def attachment_note(files: list[Path]) -> str:
+def attachment_note(files: list[Path], *, held_zip: Path | None = None) -> str:
     names = [path.name for path in files]
     if not names:
-        return "No PDFs attached."
-    return "Attached: " + "; ".join(names)
+        base = "No PDFs attached."
+    else:
+        base = "Attached: " + "; ".join(names)
+    if held_zip is None:
+        return base
+    size = Path(held_zip).stat().st_size if Path(held_zip).is_file() else 0
+    mb = size / (1024 * 1024)
+    return (
+        f"{base}\n"
+        f"The drawing zip {Path(held_zip).name} ({mb:.1f} MB) was not attached. "
+        f"It is already in Dropbox:\n{Path(held_zip)}\n"
+        "Right-click that zip, choose Share, copy the Dropbox link, and paste it into the draft before Send."
+    )
 
 
 @dataclass(frozen=True)
@@ -576,11 +630,12 @@ def draft_body(
     job: str = "",
     template: str = "",
     facts: "MailFacts | None" = None,
+    held_zip: Path | None = None,
 ) -> str:
     kind = mail_kind_key(cover_id)
     note = ITP_SIGNOFF_NOTE if kind == "client" and pack_includes_itp(rows) else ""
     info = replace(facts or MailFacts(), itp_note=note)
-    return apply_mail_template(
+    body = apply_mail_template(
         template,
         fallback=default_mail_body(kind),
         cover=cover_id,
@@ -589,6 +644,9 @@ def draft_body(
         documents=documents_text(rows),
         facts=info,
     ).rstrip() + "\n"
+    if held_zip is not None:
+        return body_for_held_zip(body, held_zip)
+    return body
 
 
 def pick_outlook_send_account(addresses: list[str], *, preferred: str = DOC_CONTROL_FROM) -> str:

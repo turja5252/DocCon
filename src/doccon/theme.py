@@ -316,6 +316,26 @@ def apply_theme(root: tk.Misc) -> ttk.Style:
         darkcolor=PENDING_BORDER,
         padding=5,
     )
+    style.configure(
+        "NoteRed.TEntry",
+        fieldbackground=SURFACE,
+        foreground="#B91C1C",
+        insertcolor="#B91C1C",
+        bordercolor=BORDER,
+        lightcolor=BORDER,
+        darkcolor=BORDER,
+        padding=5,
+    )
+    style.configure(
+        "PendingNoteRed.TEntry",
+        fieldbackground=PENDING_BG,
+        foreground="#B91C1C",
+        insertcolor="#B91C1C",
+        bordercolor=PENDING_BORDER,
+        lightcolor=PENDING_BORDER,
+        darkcolor=PENDING_BORDER,
+        padding=5,
+    )
     style.map(
         "Pending.TEntry",
         fieldbackground=[("focus", PENDING_BG), ("!disabled", PENDING_BG)],

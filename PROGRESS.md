@@ -2,6 +2,34 @@
 
 Newest first. Append a dated entry when a decision is locked, a test runs, or the next step changes.
 
+## 2026-10-13 — Shipped 2.14
+
+Source and the frozen exe are 2.14. The letter has notes and a red urgent return date. A client zip that is too large stays off the draft. Message boxes follow the console. ST and FT stay one size. Ctrl+Shift+L counts transmittals created. Load `2026-Tanzim`. Do not Confirm 075.
+
+## 2026-10-13 — A hidden count of transmittals created
+
+Each filed transmittal adds one line under `usage/` next to Elite DocCon, one file per PC. Dropbox adds the PCs together. **Ctrl+Shift+L** shows the total. A check that stops before the letter is filed does not count. Shipped in 2.14.
+
+## 2026-10-13 — ST and FT stay the same size
+
+The shop and field chips on the identity row stay **ST Locate…** and **FT Locate…**. Yellow until the folder is found, then green. Hover shows the full folder path. Shipped in 2.14.
+
+## 2026-10-13 — Urgent return date prints red on the letter
+
+Urgent same day and Urgent +1 print the return date on the client transmittal in red. A normal date, 7 days, 14 days, and No return stay black. Shop and Field letters have no return-date cell. Jira is unchanged. Shipped in 2.14.
+
+## 2026-10-13 — Notes can be typed on the transmittal
+
+The letter already has a notes column. Pack opens a Notes box and a Note color pick on that drawing, and on a Non Jira row. Batch Next has the same two boxes and stamps them onto packed rows. A later edit on one drawing stays. Black is the default. Red prints the note in red on the transmittal. Jira is not written. The note and the color stay in `client-pack.json`. Shipped in 2.14.
+
+## 2026-10-13 — Message boxes use the console's window
+
+A message was owned by a 1-pixel borderless window. Windows treats that as a tool window and opens the message on the primary screen. The owner is now the console's real window, with the tool-window style cleared, and it is moved to that window's screen rectangle. Shipped in 2.14.
+
+## 2026-10-13 — A client zip that is too large stays off the email
+
+When the transmittal PDF plus the drawing zip is over 20 MB, or Outlook refuses the zip, Create transmittal still opens the draft with the transmittal PDF. The zip stays in `3.1.1 Out`. The draft says the drawings were too large and a Dropbox link will be added. The console names the zip and tells her to Share it and paste the link before Send. Shop and Field are unchanged. Shipped in 2.14.
+
 ## 2026-10-13 — Field folder is the job’s 8.0 folder
 
 Inside the loaded job, a folder whose name starts with `8.0` is the field folder. `2.0 IFC Drawings & Transmittals` is inside it. The name is not always `8.0 Field Construction Folder`. Two `8.0` folders and no single `2.0` stay yellow for Locate. Shipped in 2.13.

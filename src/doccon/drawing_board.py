@@ -16,6 +16,7 @@ from pathlib import Path
 from tkinter import messagebox, ttk
 
 from doccon.date_picker import CalendarPopup, attach_calendar
+from doccon.client_log import note_color_is_red, note_color_name
 from doccon.kinds import CLIENT, FIELD, INCOMING, SHOP
 from doccon.drop_pdfs import dropped_pdf_filename
 from doccon.match import (
@@ -167,9 +168,12 @@ FIELD_KEYS = (
     ("field_ifc_rev", "Field Rev", REV_VALUES, 12, "option"),
     ("field_ifc_date", "Field Issue Date", (), 12, "date"),
     ("eddi_status", "EDDI Status", EDDI_VALUES, 28, "eddi"),
+    ("letter_notes", "Notes", (), 22, "text"),
+    ("letter_note_color", "Note color", ("Black", "Red"), 12, "option"),
 )
 
 # Each drawing has its own client number, so the batch row does not stamp it.
+# Notes and Note color do stamp packed rows. A later edit on one drawing stays.
 BATCH_SKIP_FIELDS = frozenset({"client_document_number"})
 # Pick from the list only (same as Status). Outgoing / Incoming Rev stay typeable after double-click.
 PICK_ONLY_FIELDS = frozenset(
@@ -181,6 +185,7 @@ PICK_ONLY_FIELDS = frozenset(
         "shop_ifc_rev",
         "field_ifc_rev",
         "eddi_status",
+        "letter_note_color",
     }
 )
 TYPEABLE_REV_FIELDS = frozenset({"outgoing_rev", "incoming_rev"})
@@ -220,7 +225,7 @@ STATUS_COL_INDEX = 3
 MATCH_COL_INDEX = 4
 PDF_COL_INDEX = 5
 NON_JIRA_GROUP = "Non Jira"
-EXTRA_EDIT_FIELDS = frozenset({"drawing_id", "title", "outgoing_rev"})
+EXTRA_EDIT_FIELDS = frozenset({"drawing_id", "title", "outgoing_rev", "letter_notes", "letter_note_color"})
 FIELD_COL_START = 6
 BOARD_COLUMNS = FIELD_COL_START + len(FIELD_KEYS)
 FROZEN_COLS = 2
@@ -4066,11 +4071,13 @@ class DrawingBoard(ttk.Frame):
         nexts: dict[str, NextWidget] = {}
         for offset, (field, _title, values, _width, kind) in enumerate(FIELD_KEYS):
             col = FIELD_COL_START + offset
-            current = getattr(drawing, field) or "—"
+            now_text = getattr(drawing, field) or ""
+            if field == "letter_note_color":
+                now_text = note_color_name(now_text)
+            current = now_text or "—"
             original = self._clip_label(current)
             self._place(original, now_row, col)
             originals[field] = original
-            now_text = getattr(drawing, field) or ""
             base = self._eddi_values_for(drawing.key) if kind == "eddi" else self._field_values(field)
             list_values = with_now_option(base, now_text) if kind in {"option", "eddi"} else values
             box = self._next_box(
@@ -4232,6 +4239,12 @@ class DrawingBoard(ttk.Frame):
                     rev=block.nexts["outgoing_rev"].get().strip(),
                     description=block.title_next.get().strip(),
                     status=block.status_next.get().strip(),
+                    notes=block.nexts["letter_notes"].get().strip() if "letter_notes" in block.nexts else "",
+                    note_color=(
+                        "Red"
+                        if "letter_note_color" in block.nexts and note_color_is_red(block.nexts["letter_note_color"].get())
+                        else ""
+                    ),
                     email_dropped=block.extra_dropped,
                     id=block.key,
                     packed=bool(block.include.get()),
@@ -4366,7 +4379,14 @@ class DrawingBoard(ttk.Frame):
         nexts: dict[str, NextWidget] = {}
         for offset, (field, _title, values, _width, kind) in enumerate(FIELD_KEYS):
             col = FIELD_COL_START + offset
-            initial = item.rev if field == "outgoing_rev" else ""
+            if field == "outgoing_rev":
+                initial = item.rev
+            elif field == "letter_notes":
+                initial = item.notes
+            elif field == "letter_note_color":
+                initial = note_color_name(item.note_color)
+            else:
+                initial = ""
             original = self._clip_label(initial or "—")
             self._place(original, now_row, col)
             originals[field] = original
@@ -4534,9 +4554,19 @@ class DrawingBoard(ttk.Frame):
         status_value = (status or "").strip()
         if not status_value and not updates:
             return 0
+        letter = {
+            key: value
+            for key, value in updates.items()
+            if key in {"letter_notes", "letter_note_color"}
+        }
         count = 0
         for block in self._states():
-            if not block.include.get() or block.extra:
+            if not block.include.get():
+                continue
+            if block.extra:
+                if letter:
+                    self._apply_next_to_block(block, fields=letter)
+                    count += 1
                 continue
             self._apply_next_to_block(block, status=status_value, fields=updates)
             count += 1
@@ -5184,7 +5214,12 @@ class DrawingBoard(ttk.Frame):
                     nxt = block.nexts[field].get().strip()
                 except tk.TclError:
                     continue
-                if nxt != (getattr(drawing, field) or "").strip():
+                now = (getattr(drawing, field) or "").strip()
+                if field == "letter_note_color":
+                    if note_color_name(nxt) != note_color_name(now):
+                        dirty[field] = note_color_name(nxt)
+                    continue
+                if nxt != now:
                     dirty[field] = nxt
             if dirty:
                 edits[key] = dirty
@@ -5753,8 +5788,20 @@ class DrawingBoard(ttk.Frame):
         if block is not None:
             self._refresh_next_marks(block)
 
+    def _note_entry_is_red(self, block: _Block) -> bool:
+        box = block.nexts.get("letter_note_color")
+        if box is None:
+            return False
+        try:
+            return note_color_is_red(box.get())
+        except tk.TclError:
+            return False
+
     def _refresh_next_marks(self, block: _Block) -> None:
         if block.extra:
+            notes = block.nexts.get("letter_notes")
+            if notes is not None:
+                self._style_next(notes, False, red=self._note_entry_is_red(block))
             self._notify_draft()
             return
         row = self._matches.get(block.key)
@@ -5767,13 +5814,16 @@ class DrawingBoard(ttk.Frame):
         for field, _title, _values, _width, kind in FIELD_KEYS:
             box = block.nexts.get(field)
             if box is not None:
+                now = getattr(drawing, field) or ""
+                nxt = box.get()
+                if field == "letter_note_color":
+                    changed = note_color_name(nxt) != note_color_name(now)
+                else:
+                    changed = _field_pending(now, nxt, date=kind == "date")
                 self._style_next(
                     box,
-                    _field_pending(
-                        getattr(drawing, field) or "",
-                        box.get(),
-                        date=kind == "date",
-                    ),
+                    changed,
+                    red=field == "letter_notes" and self._note_entry_is_red(block),
                 )
         self._notify_draft()
 
@@ -5784,7 +5834,7 @@ class DrawingBoard(ttk.Frame):
         if hook is not None:
             hook()
 
-    def _style_next(self, box: NextWidget, changed: bool) -> None:
+    def _style_next(self, box: NextWidget, changed: bool, *, red: bool = False) -> None:
         fill = PENDING_BG if changed else SURFACE
         cell = self._next_cell(box)
         if cell is not None and str(cell.cget("bg")) != fill:
@@ -5793,7 +5843,14 @@ class DrawingBoard(ttk.Frame):
             want = "Pending.TCombobox" if changed else "TCombobox"
             fallback = "TCombobox"
         else:
-            want = "Pending.TEntry" if changed else "TEntry"
+            if red and changed:
+                want = "PendingNoteRed.TEntry"
+            elif red:
+                want = "NoteRed.TEntry"
+            elif changed:
+                want = "Pending.TEntry"
+            else:
+                want = "TEntry"
             fallback = "TEntry"
         current = str(box.cget("style") or fallback)
         if current in {"", "."}:
@@ -5820,6 +5877,8 @@ class DrawingBoard(ttk.Frame):
                 changed = True
             if not changed:
                 for field, _title, _values, _width, kind in FIELD_KEYS:
+                    if field in {"letter_notes", "letter_note_color"}:
+                        continue
                     nxt = block.nexts[field].get().strip()
                     now = (getattr(drawing, field) or "").strip()
                     if kind == "date" and date_is_blank(nxt) and date_is_blank(now):

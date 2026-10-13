@@ -242,6 +242,86 @@ def test_confirm_eddi_note_is_not_attached(monkeypatch, tmp_path: Path) -> None:
         assert "CT-2026-Tanzim-1.pdf" not in archive.namelist()
 
 
+def _client_pack(monkeypatch, tmp_path: Path, drawing_pdf: Path):
+    from doccon.match import PdfHit
+
+    _succeeding_file(monkeypatch, tmp_path)
+    drawing_pdf.write_bytes(b"%PDF-drawing")
+    return [
+        MatchedRow(
+            drawing=_drawing(),
+            pdf=PdfHit(path=drawing_pdf, drawing_id="2026-Tanzim-1-1", rev="A"),
+            confidence="High",
+        )
+    ]
+
+
+def test_confirm_leaves_an_oversized_zip_off_the_draft(monkeypatch, tmp_path: Path) -> None:
+    from doccon import confirm
+
+    rows = _client_pack(monkeypatch, tmp_path, tmp_path / "2026-Tanzim-1-1 REV A.pdf")
+    monkeypatch.setattr(confirm, "snapshot_eddi", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(confirm, "_eddi_snapshot_note", lambda *_args, **_kwargs: "")
+    monkeypatch.setattr("doccon.pack_mail.MAIL_ATTACH_LIMIT_BYTES", 8)
+    mailed: dict = {}
+    monkeypatch.setattr(confirm, "display_outlook_draft", lambda **kwargs: mailed.update(kwargs))
+    result = run_confirm_client_pack(
+        site="https://example.atlassian.net",
+        email="a@b.c",
+        token="token",
+        pairs=[],
+        book=tmp_path / "CT-2026-Tanzim.xlsm",
+        job="2026-Tanzim",
+        lines=[],
+        issued=date(2026, 9, 9),
+        expected_return="N/A",
+        cover=_cover(tmp_path / "pep.xlsx"),
+        rows=rows,
+        job_folder=tmp_path,
+    )
+    names = [Path(str(item)).name for item in mailed["attachments"]]
+    assert names == ["CT-2026-Tanzim-1.pdf"]
+    assert "too large to attach" in mailed["body"]
+    assert "CT-2026-Tanzim-1.zip" in mailed["body"]
+    assert "Share" in result.attach_note
+    assert (tmp_path / "CT-2026-Tanzim-1.zip").is_file()
+
+
+def test_confirm_retries_with_the_form_when_outlook_refuses_the_zip(monkeypatch, tmp_path: Path) -> None:
+    from doccon import confirm
+
+    rows = _client_pack(monkeypatch, tmp_path, tmp_path / "2026-Tanzim-1-1 REV A.pdf")
+    monkeypatch.setattr(confirm, "snapshot_eddi", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(confirm, "_eddi_snapshot_note", lambda *_args, **_kwargs: "")
+    calls: list[dict] = []
+
+    def fake_draft(**kwargs):
+        calls.append(kwargs)
+        if any(str(path).lower().endswith(".zip") for path in kwargs["attachments"]):
+            raise LogError("The file is too large")
+
+    monkeypatch.setattr(confirm, "display_outlook_draft", fake_draft)
+    result = run_confirm_client_pack(
+        site="https://example.atlassian.net",
+        email="a@b.c",
+        token="token",
+        pairs=[],
+        book=tmp_path / "CT-2026-Tanzim.xlsm",
+        job="2026-Tanzim",
+        lines=[],
+        issued=date(2026, 9, 9),
+        expected_return="N/A",
+        cover=_cover(tmp_path / "pep.xlsx"),
+        rows=rows,
+        job_folder=tmp_path,
+    )
+    assert len(calls) == 2
+    assert [Path(str(item)).name for item in calls[1]["attachments"]] == ["CT-2026-Tanzim-1.pdf"]
+    assert "too large to attach" in calls[1]["body"]
+    assert "Share" in result.attach_note
+    assert (tmp_path / "CT-2026-Tanzim-1.zip").is_file()
+
+
 def test_confirm_eddi_failure_still_mails(monkeypatch, tmp_path: Path) -> None:
     from doccon import confirm
     from doccon.match import PdfHit

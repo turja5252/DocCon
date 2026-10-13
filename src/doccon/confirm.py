@@ -33,8 +33,8 @@ from doccon.pack_mail import (
     draft_body,
     draft_subject,
     load_mail_formats,
-    mail_attachments,
     mail_kind_key,
+    mail_pack_for_outlook,
     write_drawings_zip,
 )
 from doccon.pep import PepCover
@@ -111,6 +111,7 @@ def run_confirm_client_pack(
     shop_copies: list[tuple[Path, str]] | None = None,
     field_root: Path | None = None,
     field_copies: list[Path] | None = None,
+    urgent: bool = False,
     on_step=None,
     mail=None,
     mail_subject: str = "",
@@ -154,6 +155,7 @@ def run_confirm_client_pack(
             expected_return=expected_return,
             cover=cover,
             kind=kind,
+            urgent=urgent,
         )
         filed = True
         cover_id = result.cover_id
@@ -219,8 +221,9 @@ def run_confirm_client_pack(
                     attach_note=attachment_note([]),
                     pdf_note=pdf_note,
                 ) from exc
-        files = mail_attachments(pdf_path if pdf_path.is_file() else None, zip_path)
-        note = attachment_note(files)
+        cover_file = pdf_path if pdf_path.is_file() else None
+        files, held_zip = mail_pack_for_outlook(cover_file, zip_path)
+        note = attachment_note(files, held_zip=held_zip)
         if not files:
             raise ConfirmDeliveryError(
                 f"Filed {cover_id} and wrote Jira, but there were no files to attach. "
@@ -232,22 +235,51 @@ def run_confirm_client_pack(
         wording = load_mail_formats().get(mail_kind_key(kind), ("", ""))
         subject_template = mail_subject or wording[0]
         body_template = mail_body or wording[1]
+
+        def open_draft(attach: list[Path], left_off: Path | None) -> None:
+            display_outlook_draft(
+                to_line=cover.to_line,
+                cc_line=cover.cc_line,
+                subject=draft_subject(cover_id, log_job, template=subject_template, facts=mail),
+                body=draft_body(
+                    cover_id=cover_id,
+                    project=cover.project_description,
+                    rows=rows,
+                    job=log_job,
+                    template=body_template,
+                    facts=mail,
+                    held_zip=left_off,
+                ),
+                attachments=attach,
+                require_to=kind == CLIENT,
+            )
+
         step("outlook")
-        display_outlook_draft(
-            to_line=cover.to_line,
-            cc_line=cover.cc_line,
-            subject=draft_subject(cover_id, log_job, template=subject_template, facts=mail),
-            body=draft_body(
-                cover_id=cover_id,
-                project=cover.project_description,
-                rows=rows,
-                job=log_job,
-                template=body_template,
-                facts=mail,
-            ),
-            attachments=files,
-            require_to=kind == CLIENT,
-        )
+        try:
+            open_draft(files, held_zip)
+        except LogError as exc:
+            form_only = _form_without_zip(files, zip_path)
+            if held_zip is not None or not form_only:
+                raise ConfirmDeliveryError(
+                    f"Filed {cover_id} and wrote Jira, but the Outlook draft did not open. "
+                    f"Do not Confirm again.\n{exc}",
+                    cover_id=cover_id,
+                    attach_note=note,
+                    pdf_note=pdf_note,
+                ) from exc
+            held_zip = Path(zip_path).resolve()
+            files = form_only
+            note = attachment_note(files, held_zip=held_zip)
+            try:
+                open_draft(files, held_zip)
+            except LogError as retry_exc:
+                raise ConfirmDeliveryError(
+                    f"Filed {cover_id} and wrote Jira, but the Outlook draft did not open. "
+                    f"Do not Confirm again.\n{exc}",
+                    cover_id=cover_id,
+                    attach_note=note,
+                    pdf_note=pdf_note,
+                ) from retry_exc
         delete_pack_dropped_copies(rows)
         return ConfirmResult(
             cover_id=cover_id,
@@ -272,6 +304,17 @@ def run_confirm_client_pack(
             except JiraError as rev:
                 raise JiraError(f"{exc}\n{rev}") from exc
         raise
+
+
+def _form_without_zip(files: list[Path], zip_path: Path | None) -> list[Path]:
+    """The transmittal form, when the zip was part of a failed Outlook attach."""
+    if zip_path is None or not Path(zip_path).is_file():
+        return []
+    held = str(Path(zip_path).resolve()).casefold()
+    form = [path for path in files if str(Path(path).resolve()).casefold() != held]
+    if len(form) == len(files):
+        return []
+    return form
 
 
 def _rollback_jira(
