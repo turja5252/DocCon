@@ -27,7 +27,7 @@ from doccon.kinds import BOOK_DIR, CLIENT, FIELD, PREFIX, SHOP
 from doccon.log_layout import CLIENT_LAYOUT, BookLayout, layout_for
 from doccon.match import MatchedRow
 from doccon.pack_state import PackExtra, letter_status
-from doccon.pep import DOC_CONTROL_FROM, PepCover, email_line
+from doccon.pep import DOC_CONTROL_FROM, PepCover, email_line, form_contact
 from doccon.transmittal_books import adopt_transmittal_books
 
 CLIENT_OUT = BOOK_DIR[CLIENT]
@@ -660,7 +660,7 @@ def _write_working_sheet(
     ws[layout.pages_cell] = pages
     ws[layout.job_cell] = job
     if layout.from_cell:
-        _set_value(ws, layout.from_cell, DOC_CONTROL_FROM)
+        _set_value(ws, layout.from_cell, form_contact(layout.kind, cover) or None)
     if cover is not None:
         if layout.to_cell:
             _set_value(ws, layout.to_cell, cover.to_line or None)

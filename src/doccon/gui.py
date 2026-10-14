@@ -47,6 +47,7 @@ from doccon.drop_pdfs import (
     apply_board_drop,
     apply_row_drop,
     delete_dropped_copy,
+    delete_pack_dropped_copies,
     ingest_sources,
     rename_email_dropped_pdf,
     replace_paired_pdf,
@@ -70,7 +71,7 @@ from doccon.jira_client import (
     update_eddi_status,
 )
 from doccon.jobs import job_folder_identity, resolve_job_folder
-from doccon.kinds import CLIENT, FIELD, INCOMING, LABELS, PREFIX, SHOP
+from doccon.kinds import BOTH, CLIENT, FIELD, INCOMING, LABELS, PREFIX, SHOP
 from doccon.log_layout import layout_for
 from doccon.match import (
     LocatedPdf,
@@ -1221,6 +1222,7 @@ class DocConApp(tk.Tk):
         self._pending_files: tuple | None = None
         self._book_covers: dict[str, BookCover] = {}
         self._pep_cover: PepCover | None = None
+        self._elite_contact = ""
         self._cover_stamp: tuple[str, str, str] = ("", "", "")
         self._load_pump = ""
         self._matches: dict[str, MatchedRow] = {}
@@ -1286,7 +1288,7 @@ class DocConApp(tk.Tk):
 
         kinds = tk.Frame(bar, bg=NAVY)
         kinds.pack(side="left", padx=(10, 0))
-        for value in (CLIENT, SHOP, FIELD, INCOMING):
+        for value in (CLIENT, SHOP, FIELD, BOTH, INCOMING):
             ttk.Radiobutton(
                 kinds,
                 text=LABELS[value],
@@ -1552,6 +1554,24 @@ class DocConApp(tk.Tk):
         self._save_pack(quiet=True)
 
     def _kind_changed(self) -> None:
+        if self.kind.get() == BOTH:
+            self.cover_hint.configure(
+                text=(
+                    "ST + FT files the shop letter and the field letter. "
+                    "Each uses its own saved TO and CC. "
+                    "The shop letter uses Submitted to Shop For. "
+                    "The field letter uses Submitted to Field For."
+                )
+            )
+            if self.board.extras_painted():
+                self.board.set_pack_extras(
+                    self._current_extras(), statuses=layout_for(SHOP).statuses
+                )
+            self.board.set_transmittal_kind(SHOP)
+            self._refresh_shop_place()
+            self._refresh_field_place()
+            self._refresh_cover_hint()
+            return
         if self.kind.get() == INCOMING:
             self.cover_hint.configure(
                 text="Incoming does not write Submission Date. Use the batch fields, then Update Jira."
@@ -1614,7 +1634,7 @@ class DocConApp(tk.Tk):
 
     def _cover_suffix(self) -> str:
         kind = self.kind.get()
-        if kind not in LABELS or self._job_folder is None or not self._job_number:
+        if kind not in PREFIX or self._job_folder is None or not self._job_number:
             return ""
         try:
             book = find_book(self._job_folder, self._job_number, kind)
@@ -1790,6 +1810,7 @@ class DocConApp(tk.Tk):
             po=self._job_field("po"),
             wo=self._job_field("wo"),
             moc=self._job_field("moc"),
+            elite_contact=self._elite_contact,
             pep_fields_saved=True,
             cover_captured=self._cover_captured or bool(existing and existing.cover_captured),
             cover_initialized=self._cover_initialized or bool(existing and existing.cover_initialized),
@@ -1985,6 +2006,10 @@ class DocConApp(tk.Tk):
             self._set_text(self.cc_box, self._cover_cc(kind, chosen.cc_line, cover, pack))
             self._set_text(self.project_box, chosen.project_description)
             self._set_job_fields_from(cover, pack)
+            if cover is not None and cover.elite_contact:
+                self._elite_contact = cover.elite_contact
+            elif pack is not None and pack.elite_contact:
+                self._elite_contact = pack.elite_contact
             self._cover_stamp = self._cover_text_now()
             self._write_cover_date_defaults()
             if pack is not None:
@@ -1994,7 +2019,8 @@ class DocConApp(tk.Tk):
                 self._pack_extras = []
         finally:
             self._cover_loading = False
-        self.board.set_pack_extras(self._pack_extras, statuses=layout_for(kind).statuses)
+        extra_kind = SHOP if kind == BOTH else CLIENT if kind == INCOMING else kind
+        self.board.set_pack_extras(self._pack_extras, statuses=layout_for(extra_kind).statuses)
         self._show_pack_extras()
 
     def _cover_for_write(self) -> PepCover | None:
@@ -2024,6 +2050,7 @@ class DocConApp(tk.Tk):
             tank_tag=self._job_field("tag"),
             po=self._job_field("po"),
             wo=self._joined_wo_moc(),
+            elite_contact=self._elite_contact,
         )
 
     def _effective_wording(self, kind: str) -> tuple[str, str]:
@@ -2572,6 +2599,7 @@ class DocConApp(tk.Tk):
             messagebox.showerror("PEP", str(exc))
             return
         self._set_pep(cover.path)
+        self._elite_contact = cover.elite_contact
         self._cover_initialized = True
         self._apply_cover_fields(cover)
         self._save_pack(quiet=True)
@@ -2922,6 +2950,8 @@ class DocConApp(tk.Tk):
         self._book_covers[kind] = book
         if isinstance(pep_cover, PepCover):
             self._pep_cover = pep_cover
+            if pep_cover.elite_contact:
+                self._elite_contact = pep_cover.elite_contact
         if pep_path is not None:
             self._set_pep(pep_path)
         if self.kind.get() == kind:
@@ -3819,6 +3849,9 @@ class DocConApp(tk.Tk):
         if kind == INCOMING:
             messagebox.showinfo(label, "Incoming does not file a transmittal letter.")
             return
+        if kind == BOTH:
+            messagebox.showinfo(label, "Pick Shop or Field, then Delete last removes that letter.")
+            return
         job = self._current_job()
         folder = self._ensure_job_folder(job) if job else None
         if not job:
@@ -3897,11 +3930,320 @@ class DocConApp(tk.Tk):
             ),
         )
 
+    def _cover_for_saved(self, kind: str) -> PepCover:
+        """Shop or Field cover from the addresses saved for that letter."""
+        pack = load_client_pack(self._job_folder, self._job_number) if self._job_folder else None
+        to_line, cc_line = cover_recipients(pack, kind)
+        if kind == SHOP and not (to_line or cc_line):
+            to_line, cc_line = self._shop_default_lines()
+        elif kind == FIELD and not (to_line or cc_line):
+            to_line, cc_line = self._field_default_lines()
+        to_line = email_line(self._with_permanent(kind, "to", to_line, pack))
+        cc_line = email_line(self._with_permanent(kind, "cc", cc_line, pack))
+        folder = self._job_folder or Path(".")
+        cover_path = self._pep_path if self._pep_path is not None else folder / "console-cover"
+        return PepCover(
+            path=cover_path,
+            from_address=DOC_CONTROL_FROM,
+            to_line=to_line,
+            cc_line=cc_line,
+            project_description=self._text_value(self.project_box),
+            client=self._job_field("client"),
+            site=self._job_field("location"),
+            tank_tag=self._job_field("tag"),
+            po=self._job_field("po"),
+            wo=self._joined_wo_moc(),
+            elite_contact=self._elite_contact,
+        )
+
+    def _issue_both(self) -> None:
+        """File the shop letter and the field letter. Jira is written once."""
+        label = LABELS[BOTH]
+        job = self._current_job()
+        folder = self._ensure_job_folder(job) if job else None
+        if not job:
+            messagebox.showinfo(label, "Enter a Job Number and click Load first.")
+            return
+        if folder is None:
+            messagebox.showerror(label, f"No Dropbox job folder for {job}. Check Current Jobs, then Load again.")
+            return
+        rows = self._selected_rows()
+        pack_extras = [item for item in self._current_extras() if item.packed]
+        if not rows and not pack_extras:
+            messagebox.showinfo(label, "Tick Pack on the drawings for this send.")
+            return
+        missing_extra = next((item for item in pack_extras if not Path(item.path).is_file()), None)
+        if missing_extra is not None:
+            who = (missing_extra.document_no or "").strip() or "A Non Jira row"
+            messagebox.showerror(label, f"{who} has no PDF. Locate one, or Assign it from New PDFs.")
+            return
+        try:
+            shop_book = prepare_book(folder, job, SHOP)
+            shop_info = inspect_book(shop_book, job, SHOP)
+            field_book = prepare_book(folder, job, FIELD)
+            field_info = inspect_book(field_book, job, FIELD)
+        except (LogError, OSError) as exc:
+            messagebox.showerror(label, str(exc))
+            return
+        try:
+            issued = parse_issued_date(self.issued.get())
+            expected = parse_expected_return(self.expected.get())
+        except LogError as exc:
+            messagebox.showerror(label, str(exc))
+            return
+        shop_cover = self._cover_for_saved(SHOP)
+        field_cover = self._cover_for_saved(FIELD)
+        self._refresh_shop_place()
+        self._refresh_field_place()
+        if self._shop_root is None:
+            messagebox.showerror(label, MISSING_SHOP_FOLDER)
+            return
+        if self._field_root is None:
+            messagebox.showerror(label, MISSING_FIELD_FOLDER)
+            return
+        picks = self.board.shop_folder_picks()
+        shop_copies: list[tuple[Path, str]] = []
+        field_copies: list[Path] = []
+        for row in rows:
+            if row.pdf is not None and row.pdf.path.is_file():
+                shop_copies.append((row.pdf.path, picks.get(row.drawing.key, "Root")))
+                field_copies.append(row.pdf.path)
+        for item in pack_extras:
+            shop_copies.append((Path(item.path), picks.get(item.id, "Root")))
+            field_copies.append(Path(item.path))
+        packed_keys = {row.drawing.key for row in rows}
+        jira_rows = [row for row in self.board.pending_rows() if row.drawing.key in packed_keys]
+        eddi_drawings = eddi_print_drawings(self._eddi_rows())
+        originals = {
+            row.drawing.key: self._matches[row.drawing.key].drawing
+            for row in jira_rows
+            if row.drawing.key in self._matches
+        }
+        settings, token = _session()
+        if jira_rows and (not settings.email or not token):
+            messagebox.showinfo("Settings", "Open Settings and save your Jira email and API token first.")
+            self._settings()
+            return
+        contact = self._elite_contact or "(blank)"
+        if not messagebox.askyesno(
+            "Confirm?",
+            (
+                "One click files the shop transmittal and the field transmittal.\n"
+                "Jira is written once. Each letter keeps its own TO and CC.\n"
+                "If a check fails before either letter is filed, nothing is written.\n\n"
+                f"{shop_book.name}: {shop_info.cover_id}\n"
+                f"TO: {shop_cover.to_line or '(none)'}\n"
+                f"CC: {shop_cover.cc_line or '(none)'}\n\n"
+                f"{field_book.name}: {field_info.cover_id}\n"
+                f"TO: {field_cover.to_line or '(none)'}\n"
+                f"CC: {field_cover.cc_line or '(none)'}\n\n"
+                f"Elite Contact: {contact}\n\n"
+                "Close both books first. Two Outlook drafts open. Nothing is sent until you click Send."
+            ),
+        ):
+            return
+        if not self._save_pack(quiet=True, force=True):
+            return
+        shop_lines = lines_from_rows(rows, SHOP) + lines_from_extras(pack_extras, SHOP)
+        field_lines = lines_from_rows(rows, FIELD) + lines_from_extras(pack_extras, FIELD)
+        extra_pdfs = [Path(item.path) for item in pack_extras]
+        self._busy = True
+        self._work = "confirm"
+        self.send_btn.start("Checking the pack")
+        pairs = [(originals.get(row.drawing.key, row.drawing), row.drawing) for row in jira_rows]
+        eddi_contexts = dict(self._eddi_contexts)
+        shop_wording = self._effective_wording(SHOP)
+        field_wording = self._effective_wording(FIELD)
+        shop_facts = self._mail_facts(rows, SHOP)
+        field_facts = self._mail_facts(rows, FIELD)
+
+        def work() -> None:
+            shop_error: str | None = None
+            field_error: str | None = None
+            shop_id = shop_info.cover_id
+            field_id = ""
+            shop_note = ""
+            field_note = ""
+            shop_attach = ""
+            field_attach = ""
+            jira_ok = False
+            shop_filed = False
+            field_filed = False
+            try:
+                result = run_confirm_client_pack(
+                    site=settings.site,
+                    email=settings.email,
+                    token=token,
+                    pairs=pairs,
+                    book=shop_book,
+                    job=job,
+                    lines=shop_lines,
+                    issued=issued,
+                    expected_return=expected,
+                    cover=shop_cover,
+                    rows=rows,
+                    kind=SHOP,
+                    job_folder=folder,
+                    eddi_drawings=eddi_drawings,
+                    eddi_contexts=eddi_contexts,
+                    extra_pdfs=extra_pdfs,
+                    shop_root=self._shop_root,
+                    shop_copies=shop_copies,
+                    urgent=bool(self.board.return_urgency()),
+                    keep_dropped=True,
+                    mail=shop_facts,
+                    mail_subject=shop_wording[0],
+                    mail_body=shop_wording[1],
+                )
+                shop_filed = True
+                shop_id = result.cover_id
+                shop_note = result.pdf_note
+                shop_attach = result.attach_note
+                jira_ok = result.jira_written
+            except ConfirmDeliveryError as exc:
+                shop_filed = True
+                shop_error = str(exc)
+                shop_id = exc.cover_id
+                shop_note = exc.pdf_note
+                shop_attach = exc.attach_note
+                jira_ok = True
+            except (JiraError, LogError, OSError) as exc:
+                shop_error = str(exc)
+            if shop_filed:
+                try:
+                    result = run_confirm_client_pack(
+                        site=settings.site,
+                        email=settings.email,
+                        token=token,
+                        pairs=[],
+                        book=field_book,
+                        job=job,
+                        lines=field_lines,
+                        issued=issued,
+                        expected_return=expected,
+                        cover=field_cover,
+                        rows=rows,
+                        kind=FIELD,
+                        job_folder=folder,
+                        extra_pdfs=extra_pdfs,
+                        field_root=self._field_root,
+                        field_copies=field_copies,
+                        urgent=bool(self.board.return_urgency()),
+                        skip_eddi=True,
+                        keep_dropped=True,
+                        mail=field_facts,
+                        mail_subject=field_wording[0],
+                        mail_body=field_wording[1],
+                    )
+                    field_filed = True
+                    field_id = result.cover_id
+                    field_note = result.pdf_note
+                    field_attach = result.attach_note
+                except ConfirmDeliveryError as exc:
+                    field_filed = True
+                    field_error = str(exc)
+                    field_id = exc.cover_id
+                    field_note = exc.pdf_note
+                    field_attach = exc.attach_note
+                except (JiraError, LogError, OSError) as exc:
+                    field_error = str(exc)
+            self.after(
+                0,
+                lambda: self._both_issued(
+                    shop_id,
+                    shop_error,
+                    shop_note,
+                    shop_attach,
+                    shop_filed,
+                    field_id,
+                    field_error,
+                    field_note,
+                    field_attach,
+                    field_filed,
+                    jira_ok,
+                    folder,
+                    job,
+                    list(jira_rows),
+                    list(rows),
+                ),
+            )
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _both_issued(
+        self,
+        shop_id: str,
+        shop_error: str | None,
+        shop_note: str,
+        shop_attach: str,
+        shop_filed: bool,
+        field_id: str,
+        field_error: str | None,
+        field_note: str,
+        field_attach: str,
+        field_filed: bool,
+        jira_ok: bool,
+        folder: Path | None,
+        job: str,
+        jira_rows: list[MatchedRow],
+        rows: list[MatchedRow],
+    ) -> None:
+        self._busy = False
+        self._work = ""
+        self._finish_confirm_button()
+        self._job_folder = folder
+        self._job_number = job
+        if jira_ok and jira_rows:
+            for row in jira_rows:
+                self._apply_row(row)
+        if shop_filed:
+            record_transmittal(cover=shop_id, job=job, kind=SHOP)
+        if field_filed:
+            record_transmittal(cover=field_id, job=job, kind=FIELD)
+        if shop_filed and field_filed:
+            delete_pack_dropped_copies(rows)
+            self._consume_pack_extras()
+        self._save_pack(quiet=True, force=True)
+        self._refresh_cover_hint()
+        notes = "\n".join(part for part in (shop_note, shop_attach, field_note, field_attach) if part)
+        if shop_filed and field_filed and not shop_error and not field_error:
+            self._set_status(f"Confirmed {shop_id} and {field_id}.")
+            messagebox.showinfo(
+                LABELS[BOTH],
+                f"Filed {shop_id} and {field_id}.\n{notes}\n"
+                "Two Outlook drafts are open. Send each one.",
+            )
+            return
+        if shop_filed and field_filed:
+            self._set_status(f"Filed {shop_id} and {field_id}.")
+            messagebox.showwarning(
+                LABELS[BOTH],
+                f"Filed {shop_id} and {field_id}.\n{shop_error or ''}\n{field_error or ''}\n{notes}",
+            )
+            return
+        if shop_filed:
+            self._set_status(f"Filed {shop_id}. Field was not filed.")
+            messagebox.showwarning(
+                LABELS[BOTH],
+                (
+                    f"Filed {shop_id}. The field letter was not filed.\n"
+                    f"{field_error or ''}\n\n"
+                    "Switch to Field Transmittal and create that letter. "
+                    "Do not create the shop letter again."
+                ),
+            )
+            return
+        self._set_status("Confirm failed.")
+        messagebox.showerror(LABELS[BOTH], shop_error or "The shop letter was not filed.")
+
     def _issue_pack(self) -> None:
         if self._note_if_busy():
             return
         kind = self.kind.get()
         label = LABELS.get(kind, LABELS[CLIENT])
+        if kind == BOTH:
+            self._issue_both()
+            return
         if kind == INCOMING:
             messagebox.showinfo(
                 label,

@@ -42,6 +42,7 @@ class PepCover:
     pm_line: str = ""
     engineer_line: str = ""
     pep_cc: str = ""
+    elite_contact: str = ""
 
     @property
     def filled(self) -> bool:
@@ -180,8 +181,11 @@ def _load_excel(path: Path) -> PepCover:
         to_raw, cc_raw = _transmittal_recipient_cells(ws)
         to_line = _format_emails(to_raw)
         cc_emails = _format_emails(cc_raw)
-        pm_line = _format_emails(_labeled_value(ws, "elite project manager", "C35"))
-        engineer_line = _format_emails(_labeled_value(ws, "elite project engineer", "I35"))
+        pm_raw = _labeled_value(ws, "elite project manager", "C35")
+        pe_raw = _labeled_value(ws, "elite project engineer", "I35")
+        pm_line = _format_emails(pm_raw)
+        engineer_line = _format_emails(pe_raw)
+        contact = elite_contact_line(pm_raw, pe_raw)
         cc_line = compose_cc(cc_emails, pm_line, engineer_line)
         job_cell = _cell_text(ws["A1"].value)
         if job_cell.lower().startswith("insert elite job number") and not client and not to_line:
@@ -200,6 +204,7 @@ def _load_excel(path: Path) -> PepCover:
             pm_line=pm_line,
             engineer_line=engineer_line,
             pep_cc=cc_emails,
+            elite_contact=contact,
         )
     finally:
         wb.close()
@@ -241,6 +246,7 @@ def _load_pdf(path: Path) -> PepCover:
     pe = _pdf_after(text, "Elite Project Engineer:")
     pm_line = _format_emails(pm)
     pe_line = _format_emails(pe)
+    contact = elite_contact_line(pm, pe)
     if not _usable(client) and not to_line:
         raise PepError(f"Could not read Transmittal Recipients from {path.name}.")
     return PepCover(
@@ -257,6 +263,7 @@ def _load_pdf(path: Path) -> PepCover:
         pm_line=pm_line,
         engineer_line=pe_line,
         pep_cc="",
+        elite_contact=contact,
     )
 
 
@@ -337,6 +344,30 @@ def elite_addresses(text: str) -> str:
         if part.strip().casefold().endswith("@eliteintegrityservices.com")
     ]
     return email_line("; ".join(kept))
+
+
+def person_name(text: str) -> str:
+    """The person's name in a PEP cell, without the email address."""
+    cleaned = _collapse(_EMAIL_RE.sub(" ", text or ""))
+    cleaned = _collapse(cleaned.replace("<", " ").replace(">", " "))
+    if cleaned.casefold() in _EMPTY_NAMES:
+        return ""
+    return cleaned
+
+
+def elite_contact_line(pm: str, pe: str) -> str:
+    """Shop and Field Elite Contact: project manager / project engineer."""
+    names = [name for name in (person_name(pm), person_name(pe)) if name]
+    return "/".join(names)
+
+
+def form_contact(kind: str, cover: PepCover | None) -> str:
+    """Client FROM stays document control. Shop and Field print the PM/PE names."""
+    from doccon.kinds import FIELD, SHOP
+
+    if kind in {SHOP, FIELD}:
+        return (getattr(cover, "elite_contact", "") or "").strip()
+    return DOC_CONTROL_FROM
 
 
 def _format_emails(text: str) -> str:

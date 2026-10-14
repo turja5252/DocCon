@@ -8,6 +8,7 @@ from doccon.pep import (
     DOC_CONTROL_FROM,
     SALES_DIR,
     PepError,
+    elite_contact_line,
     email_line,
     elite_addresses,
     empty_pep_workbook,
@@ -46,6 +47,12 @@ def _write_pep(
     wb.save(path)
     wb.close()
     return path
+
+
+def test_elite_contact_joins_pm_and_pe() -> None:
+    assert elite_contact_line("Breydon Kokas breydon@eliteintegrityservices.com", "Anton Vo anton@eliteintegrityservices.com") == "Breydon Kokas/Anton Vo"
+    assert elite_contact_line("Breydon Kokas", "") == "Breydon Kokas"
+    assert elite_contact_line("TBD", "TBD") == ""
 
 
 def test_load_pep_formats_cover(tmp_path: Path) -> None:
@@ -109,6 +116,7 @@ def test_cc_keeps_emails_from_pep_cells(tmp_path: Path) -> None:
     assert cover.pep_cc == "cc@client.com"
     assert cover.pm_line == "breydon@eliteintegrityservices.com"
     assert cover.engineer_line == ""
+    assert cover.elite_contact == "Breydon"
 
 
 def test_blank_template_is_rejected(tmp_path: Path) -> None:

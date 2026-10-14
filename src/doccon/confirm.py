@@ -112,6 +112,8 @@ def run_confirm_client_pack(
     field_root: Path | None = None,
     field_copies: list[Path] | None = None,
     urgent: bool = False,
+    skip_eddi: bool = False,
+    keep_dropped: bool = False,
     on_step=None,
     mail=None,
     mail_subject: str = "",
@@ -167,7 +169,7 @@ def run_confirm_client_pack(
         except LogError as exc:
             pdf_note = str(exc)
         step("eddi")
-        eddi_note = _eddi_snapshot_note(
+        eddi_note = "" if skip_eddi else _eddi_snapshot_note(
             job_folder,
             job,
             eddi_drawings if eddi_drawings is not None else eddi_print_drawings(rows),
@@ -280,7 +282,8 @@ def run_confirm_client_pack(
                     attach_note=note,
                     pdf_note=pdf_note,
                 ) from retry_exc
-        delete_pack_dropped_copies(rows)
+        if not keep_dropped:
+            delete_pack_dropped_copies(rows)
         return ConfirmResult(
             cover_id=cover_id,
             attach_note=note,

@@ -21,6 +21,7 @@ from typing import TypeVar
 from doccon.client_log import LogError
 from doccon.diag import describe_path, ingest_hop_file, log, log_runtime, redact, with_log_details
 from doccon.kinds import CLIENT
+from doccon.pep import form_contact
 from doccon.log_layout import layout_for
 from doccon.winproc import (
     excel_pids,
@@ -1122,7 +1123,7 @@ def file_client_with_excel(
         "job": job,
         "number": int(number),
         "pages": int(pages),
-        "from": getattr(cover, "from_address", None) or "doc.control@eliteintegrityservices.com",
+        "from": form_contact(kind, cover),
         "to": getattr(cover, "to_line", None) or "",
         "cc": getattr(cover, "cc_line", None) or "",
         "project": getattr(cover, "project_description", None) or "",

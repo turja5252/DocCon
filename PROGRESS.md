@@ -2,6 +2,14 @@
 
 Newest first. Append a dated entry when a decision is locked, a test runs, or the next step changes.
 
+## 2026-10-14 — Shipped 2.15
+
+Source and the frozen exe are 2.15. Shop and Field Elite Contact is the PEP project manager and project engineer. ST + FT files both letters, writes Jira once, and opens two drafts. Load `2026-Tanzim`. Do not Confirm 075.
+
+## 2026-10-14 — Shop and Field Elite Contact, and ST + FT
+
+Shop and Field Elite Contact prints the PEP project manager and project engineer, as `Breydon Kokas/Anton Vo`. The client letter and Outlook stay `doc.control@…`. **ST + FT** files both letters, writes Jira once, and opens two drafts. Each letter keeps its own TO and CC. Shipped in 2.15.
+
 ## 2026-10-13 — Shipped 2.14
 
 Source and the frozen exe are 2.14. The letter has notes and a red urgent return date. A client zip that is too large stays off the draft. Message boxes follow the console. ST and FT stay one size. Ctrl+Shift+L counts transmittals created. Load `2026-Tanzim`. Do not Confirm 075.

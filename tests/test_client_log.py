@@ -402,6 +402,7 @@ def test_file_shop_uses_st_cells(tmp_path: Path) -> None:
         tank_tag="",
         po="",
         wo="",
+        elite_contact="Breydon Kokas/Anton Vo",
     )
     result = file_client_transmittal(
         path,
@@ -416,7 +417,7 @@ def test_file_shop_uses_st_cells(tmp_path: Path) -> None:
     filed = wb["1"]
     assert filed["I4"].value == "2026-Tanzim"
     assert filed["C2"].value == 1
-    assert filed["A6"].value == DOC_CONTROL_FROM
+    assert filed["A6"].value == "Breydon Kokas/Anton Vo"
     assert filed["C6"].value is None
     assert filed["J4"].value == "Shop Co"
     assert filed["J6"].value == "Yard"

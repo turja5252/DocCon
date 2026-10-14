@@ -9,12 +9,14 @@ from pathlib import Path
 CLIENT = "client"
 SHOP = "shop"
 FIELD = "field"
+BOTH = "both"
 INCOMING = "incoming"
 
 LABELS = {
     CLIENT: "Client Transmittal",
     SHOP: "Shop Transmittal",
     FIELD: "Field Transmittal",
+    BOTH: "ST + FT",
     INCOMING: "Incoming",
 }
 

@@ -131,6 +131,7 @@ class ClientPack:
     po: str = ""
     wo: str = ""
     moc: str = ""
+    elite_contact: str = ""
     pep_fields_saved: bool = False
     cover_captured: bool = False
     cover_initialized: bool = False
@@ -334,6 +335,7 @@ def load_client_pack(job_folder: Path | None, job_number: str) -> ClientPack | N
         po=str(raw.get("po") or "").strip(),
         wo=str(raw.get("wo") or "").strip(),
         moc=str(raw.get("moc") or "").strip(),
+        elite_contact=str(raw.get("elite_contact") or "").strip(),
         pep_fields_saved=any(name in raw for name in ("client", "location", "tag", "po", "wo", "moc")),
         cover_captured=bool(raw.get("cover_captured")),
         cover_initialized=bool(raw.get("cover_initialized")),
@@ -383,6 +385,7 @@ def save_client_pack(job_folder: Path, pack: ClientPack) -> Path:
         "po": pack.po,
         "wo": pack.wo,
         "moc": pack.moc,
+        "elite_contact": pack.elite_contact,
         "cover_captured": bool(pack.cover_captured),
         "cover_initialized": bool(pack.cover_initialized),
         "selected_keys": list(pack.selected_keys),
@@ -459,4 +462,6 @@ def with_cover_recipients(pack: ClientPack, kind: str, to_line: str, cc_line: st
         return replace(pack, shop_to=to_line, shop_cc=cc_line)
     if kind == FIELD:
         return replace(pack, field_to=to_line, field_cc=cc_line)
+    if kind != CLIENT:
+        return pack
     return replace(pack, to_line=to_line, cc_line=cc_line)

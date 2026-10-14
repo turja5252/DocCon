@@ -38,7 +38,9 @@ The summary is an ID, then optional wording. Empty description is allowed.
 
 No extra Jira status or custom trigger field. Engineer emails Sarah the pack list; she runs DocCon.
 
-**Next:** Source and the frozen exe are **2.14**. Load `2026-Tanzim`. Do not Confirm 075.
+**Next:** Source and the frozen exe are **2.15**. Load `2026-Tanzim`. Do not Confirm 075.
+
+**2.15 Shop and Field Elite Contact is the PM/PE, and ST + FT files both.** Shop and Field Elite Contact prints the PEP project manager and project engineer (`Breydon Kokas/Anton Vo`). The client letter and Outlook stay `doc.control@…`. **ST + FT** files both letters, writes Jira once, and opens two drafts. Each letter keeps its own TO and CC. Drag is not back.
 
 **2.14 Notes, a red urgent date, and a draft when the zip is too large.** Pack and Batch Next have Notes and Note color. Black is the default. Red prints that note in red. Notes are not written to Jira. Urgent same day and Urgent +1 print the client return date in red. A date picked from the calendar stays black. When the client form plus the zip is over 20 MB, or Outlook refuses the zip, the draft still opens with the transmittal PDF and tells her to Share the zip. Message boxes open on the console's screen. ST and FT stay **Locate…**; hover shows the folder path. **Ctrl+Shift+L** shows how many transmittals have been created. Drag is not back.
 
