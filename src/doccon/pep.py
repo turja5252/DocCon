@@ -319,10 +319,92 @@ def _score_pep(path: Path, job: str, cover: PepCover) -> int:
     return score
 
 
-def _project_line(client: str, site: str, tank: str, po: str, wo: str) -> str:
+def project_description_line(
+    client: str,
+    location: str,
+    tag: str,
+    po: str,
+    wo: str,
+    moc: str = "",
+) -> str:
+    """PROJECT DESCRIPTION on the client letter. A blank piece prints as N/A."""
     return (
-        f"{_na(client)} | Loc: {_na(site)} | Ref. Tag: {_na(tank)} | "
-        f"PO#: {_na(po)} | WO#/MOC#: {_na(wo)}"
+        f"{_na(client)} | Loc: {_na(location)} | Ref. Tag: {_na(tag)} | "
+        f"PO#: {_na(po)} | WO#: {_na(wo)} | MOC#: {_na(moc)}"
+    )
+
+
+def project_description_is_default(
+    text: str,
+    client: str,
+    location: str,
+    tag: str,
+    po: str,
+    wo: str,
+    moc: str = "",
+) -> bool:
+    """True when the box is empty or still the line built from these fields."""
+    raw = (text or "").strip()
+    if not _usable(raw):
+        return True
+    folded = raw.casefold()
+    return folded in {
+        project_description_line(client, location, tag, po, wo, moc).casefold(),
+        _legacy_project_line(client, location, tag, po, wo, moc).casefold(),
+    }
+
+
+def resolve_project_description(
+    text: str,
+    client: str,
+    location: str,
+    tag: str,
+    po: str,
+    wo: str,
+    moc: str = "",
+    *,
+    previous_text: str = "",
+    previous: tuple[str, str, str, str, str, str] | None = None,
+) -> str:
+    """Keep a typed project description. Otherwise build it from the six fields."""
+    raw = (text or "").strip()
+    pieces = (client, location, tag, po, wo, moc)
+    if not any(_usable(part) for part in pieces):
+        return "" if not _usable(raw) else raw
+    line = project_description_line(*pieces)
+    if project_description_is_default(raw, *pieces):
+        return line
+    if (
+        previous is not None
+        and raw == (previous_text or "").strip()
+        and project_description_is_default(previous_text, *previous)
+    ):
+        return line
+    return raw
+
+
+def _split_wo_moc(text: str) -> tuple[str, str]:
+    """The PEP keeps Work Order and MOC in one cell. A slash splits them."""
+    raw = (text or "").strip()
+    if not raw:
+        return "", ""
+    parts = [part.strip() for part in re.split(r"\s*/\s*", raw, maxsplit=1)]
+    if len(parts) >= 2 and parts[0] and parts[1]:
+        return parts[0], parts[1]
+    return raw, ""
+
+
+def _project_line(client: str, site: str, tank: str, po: str, wo: str) -> str:
+    work, moc = _split_wo_moc(wo)
+    return project_description_line(client, site, tank, po, work, moc)
+
+
+def _legacy_project_line(client: str, location: str, tag: str, po: str, wo: str, moc: str) -> str:
+    """The line written before WO and MOC were separate."""
+    joined = " / ".join(part.strip() for part in (wo, moc) if _usable(part))
+    return (
+        f"{_na(client)} | Loc: {_na(location)} | Ref. Tag: {_na(tag)} | "
+        f"PO#: {_na(po)} | WO#/MOC#: {_na(joined)}"
     )
 
 
@@ -355,14 +437,35 @@ def person_name(text: str) -> str:
     return cleaned
 
 
+def name_from_email(address: str) -> str:
+    """breydon.kokas@… becomes Breydon Kokas. A one-word address becomes Breydon."""
+    local = (address or "").split("@", 1)[0]
+    words = [word for word in re.split(r"[._\-]+", local) if word.strip()]
+    return " ".join(word[:1].upper() + word[1:].lower() for word in words)
+
+
 def elite_contact_line(pm: str, pe: str) -> str:
-    """Shop and Field Elite Contact: project manager / project engineer."""
-    names = [name for name in (person_name(pm), person_name(pe)) if name]
+    """Shop and Field Elite Contact: a name taken from each PM and engineer address."""
+    names: list[str] = []
+    seen: set[str] = set()
+    for text in (pm, pe):
+        for address in email_line(text).split(";"):
+            name = name_from_email(address)
+            key = name.casefold()
+            if not name or key in seen:
+                continue
+            seen.add(key)
+            names.append(name)
     return "/".join(names)
 
 
+def shop_field_contact(pm: str, engineering: str) -> str:
+    """Elite Contact on ST and FT is the name taken from each of those addresses."""
+    return elite_contact_line(pm, engineering)
+
+
 def form_contact(kind: str, cover: PepCover | None) -> str:
-    """Client FROM stays document control. Shop and Field print the PM/PE names."""
+    """Client FROM stays document control. Shop and Field print the names taken from the addresses."""
     from doccon.kinds import FIELD, SHOP
 
     if kind in {SHOP, FIELD}:

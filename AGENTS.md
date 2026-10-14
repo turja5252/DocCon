@@ -38,7 +38,9 @@ The summary is an ID, then optional wording. Empty description is allowed.
 
 No extra Jira status or custom trigger field. Engineer emails Sarah the pack list; she runs DocCon.
 
-**Next:** Source and the frozen exe are **2.17**. Load `2026-Tanzim`. Do not Confirm 075.
+**Next:** Source and the frozen exe are **2.18**. Load `2026-Tanzim`. Do not Confirm 075.
+
+**2.18 The project description is built from the job fields, and Elite Contact is a name from the email.** The client letter project description defaults to `{client} | Loc: {location} | Ref. Tag: {tag} | PO#: {po} | WO#: {wo} | MOC#: {moc}`. A description she types herself stays. Shop and Field Elite Contact prints a name taken from each PM and Engineering address (`breydon.kokas@…` becomes `Breydon Kokas`). Drag is not back.
 
 **2.17 Jira Status stamps the pack, and the transmittal editor stays.** Batch Next Jira Status stamps packed rows. Client, location, tag, PO, WO, and MOC from the Transmittal Editor stay in `client-pack.json`. A saved cover does not come back yellow. Drag is not back.
 

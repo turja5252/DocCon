@@ -133,6 +133,9 @@ from doccon.pep import (
     elite_addresses,
     email_line,
     load_pep,
+    project_description_is_default,
+    resolve_project_description,
+    shop_field_contact,
 )
 from doccon.popups import bind_console
 from doccon.popups import install as _install_popups
@@ -612,9 +615,19 @@ class TransmittalEditor(tk.Toplevel):
             box.insert(0, job_fields.get(key, ""))
             box.grid(row=1, column=col, sticky="ew", padx=(0, 8), pady=(0, 4))
             self._fields[key] = box
-        ttk.Label(card, text="Project").grid(row=2, column=0, columnspan=6, sticky="w")
+        ttk.Label(card, text="Project description").grid(row=2, column=0, columnspan=6, sticky="w")
         self._project = tk.Text(card, height=2, wrap="word", font=FONT)
-        self._project.insert("1.0", project)
+        shown = resolve_project_description(
+            project,
+            job_fields.get("client", ""),
+            job_fields.get("location", ""),
+            job_fields.get("tag", ""),
+            job_fields.get("po", ""),
+            job_fields.get("wo", ""),
+            job_fields.get("moc", ""),
+        )
+        self._project.insert("1.0", shown)
+        self._generated_project = shown
         self._project.grid(row=3, column=0, columnspan=6, sticky="ew")
         style_text(self._project)
         buttons = ttk.Frame(self, padding=(12, 0, 12, 12))
@@ -834,6 +847,7 @@ class TransmittalEditor(tk.Toplevel):
                 self._set_widget(box, data[key])
         if "project" in data:
             self._set_widget(self._project, data["project"])
+            self._generated_project = data["project"].strip()
         client_to = self._tos.get("client")
         if client_to is not None and data.get("to"):
             self._set_widget(client_to, data["to"])
@@ -876,7 +890,19 @@ class TransmittalEditor(tk.Toplevel):
                 cc_line = compose_cc(slots.get("permanent", ""), slots.get("additional", ""))
             covers[key] = (to_line, cc_line)
         fields = {key: box.get().strip() for key, box in self._fields.items()}
-        project = self._project.get("1.0", "end").strip()
+        typed = self._project.get("1.0", "end").strip()
+        pieces = (
+            fields.get("client", ""),
+            fields.get("location", ""),
+            fields.get("tag", ""),
+            fields.get("po", ""),
+            fields.get("wo", ""),
+            fields.get("moc", ""),
+        )
+        if typed == getattr(self, "_generated_project", ""):
+            project = resolve_project_description("", *pieces)
+        else:
+            project = resolve_project_description(typed, *pieces)
         self._on_save(formats, covers, project, fields, client_cc, kind_cc)
         self.destroy()
 
@@ -1391,7 +1417,7 @@ class DocConApp(tk.Tk):
         project_head = ttk.Frame(cover)
         project_head.grid(row=0, column=3, sticky="w")
         self._cover_head_frames.append(project_head)
-        project_label = ttk.Label(project_head, text="PROJECT", style="CoverHead.TLabel")
+        project_label = ttk.Label(project_head, text="PROJECT DESCRIPTION", style="CoverHead.TLabel")
         project_label.pack(side="left")
         self._cover_heads.append(project_label)
         ttk.Button(project_head, text="Locate PEP…", command=self._locate_pep).pack(side="left", padx=(8, 0))
@@ -1718,11 +1744,13 @@ class DocConApp(tk.Tk):
         saved = ("", "", "", "", "", "")
         if pack is not None and pack.pep_fields_saved:
             saved = (pack.client, pack.location, pack.tag, pack.po, pack.wo, pack.moc)
-        self._set_job_fields(*(value_or_na(left, right) for left, right in zip(saved, detected)))
+        chosen_fields = tuple(value_or_na(left, right) for left, right in zip(saved, detected))
+        self._set_job_fields(*chosen_fields)
         current = self._text_value(self.project_box).strip()
-        found = pep.project_description if pep is not None else ""
-        if not current or current.casefold() == "n/a":
-            self._set_text(self.project_box, value_or_na(current, found))
+        if project_description_is_default(current, *chosen_fields) or (
+            pep is not None and project_description_is_default(current, *detected)
+        ):
+            self._set_text(self.project_box, resolve_project_description(current, *chosen_fields))
 
     def _apply_cover_fields(self, cover: PepCover, *, overlay: ClientPack | None = None) -> None:
         self._cover_loading = True
@@ -1822,7 +1850,7 @@ class DocConApp(tk.Tk):
             po=self._kept_job_field("po", existing),
             wo=self._kept_job_field("wo", existing),
             moc=self._kept_job_field("moc", existing),
-            elite_contact=self._elite_contact,
+            elite_contact=self._shop_field_contact(existing),
             pep_fields_saved=True,
             cover_captured=self._cover_captured or bool(existing and existing.cover_captured),
             cover_initialized=self._cover_initialized or bool(existing and existing.cover_initialized),
@@ -2066,8 +2094,13 @@ class DocConApp(tk.Tk):
             tank_tag=self._job_field("tag"),
             po=self._job_field("po"),
             wo=self._joined_wo_moc(),
-            elite_contact=self._elite_contact,
+            elite_contact=self._shop_field_contact(pack),
         )
+
+    def _shop_field_contact(self, pack: ClientPack | None) -> str:
+        """ST and FT Elite Contact: a name taken from each PM and Engineering address."""
+        parts = self._client_cc_parts(self._pep_cover, pack)
+        return shop_field_contact(parts.get("pm", ""), parts.get("engineering", ""))
 
     def _effective_wording(self, kind: str) -> tuple[str, str]:
         pack = load_client_pack(self._job_folder, self._job_number) if self._job_folder else None
@@ -3973,7 +4006,7 @@ class DocConApp(tk.Tk):
             tank_tag=self._job_field("tag"),
             po=self._job_field("po"),
             wo=self._joined_wo_moc(),
-            elite_contact=self._elite_contact,
+            elite_contact=self._shop_field_contact(pack),
         )
 
     def _issue_both(self) -> None:
@@ -4044,7 +4077,7 @@ class DocConApp(tk.Tk):
             messagebox.showinfo("Settings", "Open Settings and save your Jira email and API token first.")
             self._settings()
             return
-        contact = self._elite_contact or "(blank)"
+        contact = shop_cover.elite_contact or "(blank)"
         if not messagebox.askyesno(
             "Confirm?",
             (

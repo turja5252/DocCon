@@ -2,6 +2,18 @@
 
 Newest first. Append a dated entry when a decision is locked, a test runs, or the next step changes.
 
+## 2026-10-14 — Shipped 2.18
+
+Source and the frozen exe are 2.18. The client project description defaults from Client, Location, Tag, PO, WO, and MOC. Shop and Field Elite Contact is a name taken from each PM and Engineering email. Load `2026-Tanzim`. Do not Confirm 075.
+
+## 2026-10-14 — Elite Contact is the name in the email
+
+`breydon.kokas@eliteintegrityservices.com` prints as `Breydon Kokas`. The PM name and the Engineering name are joined with a slash. A saved display name from the PEP is not used. Shipped in 2.18.
+
+## 2026-10-14 — Project description defaults from the six job fields
+
+The client letter PROJECT DESCRIPTION (cell A10) defaults to `{client} | Loc: {location} | Ref. Tag: {tag} | PO#: {po} | WO#: {wo} | MOC#: {moc}`. A blank piece prints as N/A. The Transmittal Editor label is Project description. A description she types herself is kept. Not shipped yet.
+
 ## 2026-10-14 — Shipped 2.17
 
 Source and the frozen exe are 2.17. Batch Next Jira Status stamps packed rows. The Transmittal Editor keeps client, location, tag, PO, WO, and MOC, and a saved cover stays off yellow. Load `2026-Tanzim`. Do not Confirm 075.

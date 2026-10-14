@@ -14,6 +14,8 @@ from doccon.pep import (
     empty_pep_workbook,
     find_pep,
     load_pep,
+    project_description_line,
+    resolve_project_description,
 )
 
 
@@ -50,9 +52,19 @@ def _write_pep(
 
 
 def test_elite_contact_joins_pm_and_pe() -> None:
-    assert elite_contact_line("Breydon Kokas breydon@eliteintegrityservices.com", "Anton Vo anton@eliteintegrityservices.com") == "Breydon Kokas/Anton Vo"
-    assert elite_contact_line("Breydon Kokas", "") == "Breydon Kokas"
+    from doccon.pep import shop_field_contact
+
+    assert elite_contact_line(
+        "Breydon Kokas breydon.kokas@eliteintegrityservices.com",
+        "Anton Vo anton.vo@eliteintegrityservices.com",
+    ) == "Breydon Kokas/Anton Vo"
+    assert elite_contact_line("someone breydon@eliteintegrityservices.com", "") == "Breydon"
+    assert elite_contact_line("Breydon Kokas", "") == ""
     assert elite_contact_line("TBD", "TBD") == ""
+    assert shop_field_contact(
+        "breydon.kokas@eliteintegrityservices.com",
+        "anton.vo@eliteintegrityservices.com",
+    ) == "Breydon Kokas/Anton Vo"
 
 
 def test_load_pep_formats_cover(tmp_path: Path) -> None:
@@ -62,8 +74,31 @@ def test_load_pep_formats_cover(tmp_path: Path) -> None:
     assert cover.to_line == "glen.philips@interpipeline.com; rick.jondreau@outlook.com"
     assert cover.cc_line == ""
     assert cover.project_description == (
-        "IPL | Loc: Kerrobert SK, 02-34-033-22-W3 | Ref. Tag: TK9 | PO#: 4000072534 | WO#/MOC#: N/A"
+        "IPL | Loc: Kerrobert SK, 02-34-033-22-W3 | Ref. Tag: TK9 | "
+        "PO#: 4000072534 | WO#: N/A | MOC#: N/A"
     )
+
+
+def test_project_description_uses_the_six_fields_unless_she_types_one() -> None:
+    line = project_description_line("IPL", "Kerrobert", "TK9", "4000072534", "WO-14", "MOC-9")
+    assert line == (
+        "IPL | Loc: Kerrobert | Ref. Tag: TK9 | PO#: 4000072534 | WO#: WO-14 | MOC#: MOC-9"
+    )
+    assert resolve_project_description("", "IPL", "Kerrobert", "TK9", "4000072534", "WO-14", "MOC-9") == line
+    old = "IPL | Loc: Kerrobert | Ref. Tag: TK9 | PO#: 4000072534 | WO#/MOC#: WO-14 / MOC-9"
+    assert resolve_project_description(old, "IPL", "Kerrobert", "TK9", "4000072534", "WO-14", "MOC-9") == line
+    assert (
+        resolve_project_description(
+            "Tank 9 restoration", "IPL", "Kerrobert", "TK9", "4000072534", "WO-14", "MOC-9"
+        )
+        == "Tank 9 restoration"
+    )
+
+
+def test_load_pep_splits_work_order_and_moc(tmp_path: Path) -> None:
+    path = _write_pep(tmp_path / "pep.xlsx", wo="WO-14 / MOC-9")
+    cover = load_pep(path)
+    assert cover.project_description.endswith("WO#: WO-14 | MOC#: MOC-9")
 
 
 def test_email_line_keeps_addresses_only() -> None:
