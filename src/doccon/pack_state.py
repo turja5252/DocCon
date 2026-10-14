@@ -405,18 +405,32 @@ def save_client_pack(job_folder: Path, pack: ClientPack) -> Path:
     return dest
 
 
+def _cover_text(value: str) -> str:
+    token = (value or "").strip()
+    if token.casefold() == "n/a":
+        return ""
+    return token
+
+
 def pack_cover_initialized(pack: ClientPack | None) -> bool:
-    """The operator located a PEP or saved the cover. Load does not open a PEP."""
+    """The operator located a PEP, saved the cover, or saved the job fields. Load does not open a PEP."""
     if pack is None:
         return False
     if pack.cover_initialized or pack.cover_captured:
         return True
     return any(
-        (
-            (pack.to_line or "").strip(),
-            (pack.cc_line or "").strip(),
-            (pack.project_description or "").strip(),
-            (pack.pep_path or "").strip(),
+        _cover_text(value)
+        for value in (
+            pack.to_line,
+            pack.cc_line,
+            pack.project_description,
+            pack.pep_path,
+            pack.client,
+            pack.location,
+            pack.tag,
+            pack.po,
+            pack.wo,
+            pack.moc,
         )
     )
 

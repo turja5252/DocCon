@@ -1368,6 +1368,8 @@ class DrawingBoard(ttk.Frame):
         self._paint_on_progress = None
         if done is not None:
             done()
+        self._clear_pack_status_loading()
+        self._clear_pack_purpose_loading()
 
     def _fill_shells_toward_scroll(self) -> None:
         """Build the next light rows when the scroll position reaches them."""

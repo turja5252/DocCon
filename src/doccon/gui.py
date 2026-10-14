@@ -1677,6 +1677,16 @@ class DocConApp(tk.Tk):
     def _job_field(self, key: str) -> str:
         return str(self._job_fields.get(key) or "").strip()
 
+    def _kept_job_field(self, key: str, existing: ClientPack | None) -> str:
+        """A later save must not replace a saved client, MOC, or the other job fields with N/A."""
+        live = self._job_field(key)
+        if live and live.casefold() != "n/a":
+            return live
+        saved = str(getattr(existing, key, "") or "").strip() if existing is not None else ""
+        if saved and saved.casefold() != "n/a":
+            return saved
+        return live
+
     def _set_job_fields(self, client: str, location: str, tag: str, po: str, wo: str, moc: str) -> None:
         self._job_fields = {
             "client": client,
@@ -1806,12 +1816,12 @@ class DocConApp(tk.Tk):
             kind_cc_additional=dict(base.kind_cc_additional),
             mail_overrides=dict(base.mail_overrides),
             project_description=self._text_value(self.project_box),
-            client=self._job_field("client"),
-            location=self._job_field("location"),
-            tag=self._job_field("tag"),
-            po=self._job_field("po"),
-            wo=self._job_field("wo"),
-            moc=self._job_field("moc"),
+            client=self._kept_job_field("client", existing),
+            location=self._kept_job_field("location", existing),
+            tag=self._kept_job_field("tag", existing),
+            po=self._kept_job_field("po", existing),
+            wo=self._kept_job_field("wo", existing),
+            moc=self._kept_job_field("moc", existing),
             elite_contact=self._elite_contact,
             pep_fields_saved=True,
             cover_captured=self._cover_captured or bool(existing and existing.cover_captured),
@@ -2010,6 +2020,8 @@ class DocConApp(tk.Tk):
             self._set_text(self.cc_box, self._cover_cc(kind, chosen.cc_line, cover, pack))
             self._set_text(self.project_box, chosen.project_description)
             self._set_job_fields_from(cover, pack)
+            self._cover_initialized = pack_cover_initialized(pack)
+            self._paint_cover_attention()
             if cover is not None and cover.elite_contact:
                 self._elite_contact = cover.elite_contact
             elif pack is not None and pack.elite_contact:
@@ -2947,7 +2959,8 @@ class DocConApp(tk.Tk):
         gen, job, _hits, adopted_label, pep_path, pep_cover, book, kind, from_pack = payload
         if gen != self._load_gen or self._job_number != job:
             return
-        if not self._matches or len(self.board._blocks) < len(self._matches):
+        ready = len(self.board._blocks) + len(self.board._holds)
+        if not self._matches or ready < len(self._matches):
             self._pending_files = payload
             return
         self._pending_files = None

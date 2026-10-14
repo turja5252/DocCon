@@ -38,7 +38,9 @@ The summary is an ID, then optional wording. Empty description is allowed.
 
 No extra Jira status or custom trigger field. Engineer emails Sarah the pack list; she runs DocCon.
 
-**Next:** Source and the frozen exe are **2.16**. Load `2026-Tanzim`. Do not Confirm 075.
+**Next:** Source and the frozen exe are **2.17**. Load `2026-Tanzim`. Do not Confirm 075.
+
+**2.17 Jira Status stamps the pack, and the transmittal editor stays.** Batch Next Jira Status stamps packed rows. Client, location, tag, PO, WO, and MOC from the Transmittal Editor stay in `client-pack.json`. A saved cover does not come back yellow. Drag is not back.
 
 **2.16 Load starts, and shop and field folders are in the pack.** Clicking Load no longer dies while saving the pack. Locate shop folder and Locate field folder write the path into `client-pack.json` immediately. The next Load on any PC uses that path. Drag is not back.
 

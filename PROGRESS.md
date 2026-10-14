@@ -2,6 +2,14 @@
 
 Newest first. Append a dated entry when a decision is locked, a test runs, or the next step changes.
 
+## 2026-10-14 — Shipped 2.17
+
+Source and the frozen exe are 2.17. Batch Next Jira Status stamps packed rows. The Transmittal Editor keeps client, location, tag, PO, WO, and MOC, and a saved cover stays off yellow. Load `2026-Tanzim`. Do not Confirm 075.
+
+## 2026-10-14 — Jira Status stamps the pack, and the transmittal editor stays
+
+Batch Next Jira Status was ignored after Load because that dropdown stayed locked. It now stamps packed rows like the other batch fields. Client, location, tag, PO, WO, and MOC from the Transmittal Editor stay in `client-pack.json`, and a saved cover does not come back yellow. Shipped in 2.17.
+
 ## 2026-10-14 — Shipped 2.16
 
 Source and the frozen exe are 2.16. Load starts again. Shop and field folder picks are written into `client-pack.json` on Locate. Load `2026-Tanzim`. Do not Confirm 075.

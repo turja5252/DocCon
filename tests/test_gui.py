@@ -1239,6 +1239,57 @@ def test_missing_cover_does_not_open_a_pep(
         app.destroy()
 
 
+def test_drawn_list_keeps_a_saved_transmittal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    try:
+        import doccon.gui as gui_mod
+        from doccon.gui import DocConApp
+        from doccon.pack_state import ClientPack, load_client_pack, save_client_pack
+        from doccon.theme import SURFACE
+    except tk.TclError:
+        pytest.skip("Tk is not available")
+    save_client_pack(
+        tmp_path,
+        ClientPack(
+            job_number="2026-Tanzim",
+            client="Gibson",
+            moc="MOC-9",
+            cover_initialized=True,
+        ),
+    )
+    monkeypatch.setattr(gui_mod, "load_pep", lambda *_a, **_k: None)
+    try:
+        app = DocConApp()
+    except tk.TclError:
+        pytest.skip("Tk is not available")
+    app.withdraw()
+    _run_threads_now(monkeypatch)
+    try:
+        app._job_number = "2026-Tanzim"
+        app._job_folder = tmp_path
+        app.kind.set("client")
+        app._cover_initialized = False
+        app._set_job_fields("N/A", "N/A", "N/A", "N/A", "N/A", "N/A")
+        app._start_folder_files(app._load_gen, "2026-Tanzim", tmp_path, "client")
+        _wait_for_folder_files(app)
+        app.board.selected_keys = lambda: ()
+        app.board.next_edits = lambda: {}
+        app._matches = {"a": SimpleNamespace(confidence="High")}
+        app.board._holds["a"] = object()
+        app._apply_folder_files(app._pending_files)
+        assert app._job_field("client") == "Gibson"
+        assert app._job_field("moc") == "MOC-9"
+        assert app._cover_initialized is True
+        assert app._cover_shell.cget("bg") == SURFACE
+        saved = app._pack_from_console()
+        assert saved.client == "Gibson"
+        assert saved.moc == "MOC-9"
+        assert load_client_pack(tmp_path, "2026-Tanzim").client == "Gibson"
+    finally:
+        app.destroy()
+
+
 def test_create_eddi_uses_today_when_date_issued_is_blank(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

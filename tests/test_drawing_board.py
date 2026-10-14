@@ -370,6 +370,27 @@ def test_batch_applies_to_pack_only() -> None:
         root.destroy()
 
 
+def test_drawn_load_lets_jira_status_stamp_the_pack() -> None:
+    root = _board_root()
+    try:
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.start_rows(
+            [
+                _row(key="P2024-1", drawing_id="2026-Tanzim-1-1"),
+                _row(key="P2024-2", drawing_id="2026-Tanzim-1-2"),
+            ],
+            checked={"P2024-1"},
+        )
+        root.update()
+        assert board._pack_status_loading is False
+        board._batch_status.set("OFA")
+        board._on_pack_status_change()
+        assert board._state("P2024-1").status_next.get() == "OFA"
+        assert board._state("P2024-2").status_next.get() == "To Do"
+    finally:
+        root.destroy()
+
+
 def test_batch_fields_stay_open() -> None:
     root = _board_root()
     try:
