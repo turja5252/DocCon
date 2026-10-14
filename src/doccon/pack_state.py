@@ -10,7 +10,7 @@ import uuid
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
-from doccon.kinds import FIELD, SHOP
+from doccon.kinds import CLIENT, FIELD, SHOP
 from doccon.log_layout import layout_for
 from doccon.match import LocatedPdf, coerce_located_pdfs, is_dropped_pdf_path, parse_pdf_stem
 
@@ -140,6 +140,8 @@ class ClientPack:
     next_edits: dict[str, dict[str, str]] = field(default_factory=dict)
     pack_extras: tuple[PackExtra, ...] = ()
     shop_folders: dict[str, str] = field(default_factory=dict)
+    shop_folder: str = ""
+    field_folder: str = ""
     job_folder: str = ""
     schema_version: int = PACK_SCHEMA
 
@@ -344,6 +346,8 @@ def load_client_pack(job_folder: Path | None, job_number: str) -> ClientPack | N
         next_edits=_next_edits(raw.get("next_edits")),
         pack_extras=_pack_extras(raw.get("pack_extras")),
         shop_folders=_shop_folders(raw.get("shop_folders")),
+        shop_folder=str(raw.get("shop_folder") or "").strip(),
+        field_folder=str(raw.get("field_folder") or "").strip(),
         job_folder=str(raw.get("job_folder") or "").strip(),
         schema_version=schema_version,
     )
@@ -393,6 +397,8 @@ def save_client_pack(job_folder: Path, pack: ClientPack) -> Path:
         "next_edits": {key: dict(fields) for key, fields in pack.next_edits.items()},
         "pack_extras": _dump_pack_extras(pack.pack_extras),
         "shop_folders": dict(_shop_folders(pack.shop_folders)),
+        "shop_folder": pack.shop_folder,
+        "field_folder": pack.field_folder,
         "job_folder": pack.job_folder,
     }
     dest.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")

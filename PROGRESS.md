@@ -2,6 +2,18 @@
 
 Newest first. Append a dated entry when a decision is locked, a test runs, or the next step changes.
 
+## 2026-10-14 — Shipped 2.16
+
+Source and the frozen exe are 2.16. Load starts again. Shop and field folder picks are written into `client-pack.json` on Locate. Load `2026-Tanzim`. Do not Confirm 075.
+
+## 2026-10-14 — Shop and field folders travel with the pack
+
+Locate shop folder and Locate field folder write the path into `client-pack.json` immediately. The next Load on any PC uses that path. A path from another person's Dropbox is rewritten onto this PC. Shipped in 2.16.
+
+## 2026-10-14 — Load was dying on the click
+
+Clicking Load saves the pack already on screen, and that save called `with_cover_recipients` without `CLIENT` in scope. The click raised `NameError` and the button never started. `CLIENT` is imported again. Shipped in 2.16.
+
 ## 2026-10-14 — Shipped 2.15
 
 Source and the frozen exe are 2.15. Shop and Field Elite Contact is the PEP project manager and project engineer. ST + FT files both letters, writes Jira once, and opens two drafts. Load `2026-Tanzim`. Do not Confirm 075.

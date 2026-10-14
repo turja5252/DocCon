@@ -70,7 +70,7 @@ from doccon.jira_client import (
     run_jira_register_update,
     update_eddi_status,
 )
-from doccon.jobs import job_folder_identity, resolve_job_folder
+from doccon.jobs import job_folder_identity, localize_dropbox_path, resolve_job_folder
 from doccon.kinds import BOTH, CLIENT, FIELD, INCOMING, LABELS, PREFIX, SHOP
 from doccon.log_layout import layout_for
 from doccon.match import (
@@ -1238,6 +1238,8 @@ class DocConApp(tk.Tk):
         self._pack_extras: list[PackExtra] = []
         self._shop_root: Path | None = None
         self._field_root: Path | None = None
+        self._shop_folder_saved = ""
+        self._field_folder_saved = ""
         self._job_project: JobProject | None = None
         self._eddi_contexts: dict[str, tuple[FieldOption, ...]] = {}
         self._open_path = _os_open_path
@@ -1823,6 +1825,8 @@ class DocConApp(tk.Tk):
                 if self.board.shop_folders_open()
                 else (existing.shop_folders if existing is not None else {})
             ),
+            shop_folder=self._shop_folder_saved or (existing.shop_folder if existing is not None else ""),
+            field_folder=self._field_folder_saved or (existing.field_folder if existing is not None else ""),
             job_folder=str(self._job_folder) if self._job_folder else "",
         )
         return with_cover_recipients(
@@ -2669,6 +2673,8 @@ class DocConApp(tk.Tk):
         self._work = "load"
         self._job_number = job
         self._job_folder = None
+        self._shop_folder_saved = ""
+        self._field_folder_saved = ""
         self._cover_captured = False
         self._cover_initialized = False
         self._paint_cover_attention()
@@ -3313,6 +3319,7 @@ class DocConApp(tk.Tk):
         self._save_pack(quiet=True, force=True)
         self._refresh_shop_place()
         self._refresh_field_place()
+        self._publish_place_picks()
         self._start_watcher()
         pending = self._pending_files
         if pending is not None:
@@ -5111,13 +5118,43 @@ class DocConApp(tk.Tk):
         self._set_status(f"Renamed to {dest.name} for {updated.drawing.drawing_id or updated.drawing.key}.")
         log("INFO", "drop", f"renamed dropped={dest.name} row={updated.drawing.key}")
 
+    def _publish_place_picks(self) -> None:
+        """A locate kept only on this PC is written into the pack once the job is loaded."""
+        if self._job_folder is None or not self._job_number:
+            return
+        changed = False
+        if not self._shop_folder_saved:
+            local = remembered_shop_folder(self._job_number)
+            if local is not None:
+                self._shop_folder_saved = str(local)
+                changed = True
+        if not self._field_folder_saved:
+            local = remembered_field_folder(self._job_number)
+            if local is not None:
+                self._field_folder_saved = str(local)
+                changed = True
+        if changed:
+            self._save_pack(quiet=True, force=True)
+
+    def _folder_on_this_pc(self, stored: str) -> Path | None:
+        """A path from client-pack.json, rewritten onto this PC's Dropbox when needed."""
+        local = localize_dropbox_path(stored, hint=self._job_folder)
+        if not (local or "").strip():
+            return None
+        path = Path(local)
+        return path if path.is_dir() else None
+
     def _refresh_shop_place(self) -> None:
         if not self._job_number:
             self._shop_root = None
             self.board.set_shop_folders(())
             self._paint_place(self._shop_place, None)
             return
-        remembered = remembered_shop_folder(self._job_number)
+        pack = load_client_pack(self._job_folder, self._job_number) if self._job_folder else None
+        if pack is not None and pack.shop_folder and not self._shop_folder_saved:
+            self._shop_folder_saved = pack.shop_folder
+        shared = self._folder_on_this_pc(self._shop_folder_saved)
+        remembered = shared or remembered_shop_folder(self._job_number)
         found = find_shop_ifc_folder(self._job_number, self._job_folder, remembered)
         self._shop_root = found
         self._paint_place(self._shop_place, found)
@@ -5143,7 +5180,12 @@ class DocConApp(tk.Tk):
         if not path.is_dir():
             messagebox.showerror("Shop folder", "That folder is not available.")
             return
+        try:
+            self._shop_folder_saved = str(path.resolve())
+        except OSError:
+            self._shop_folder_saved = str(path)
         remember_shop_folder(self._job_number, path)
+        self._save_pack(quiet=True)
         self._refresh_shop_place()
         self._set_status(f"Shop folder: {path.name}")
 
@@ -5152,7 +5194,11 @@ class DocConApp(tk.Tk):
             self._field_root = None
             self._paint_place(self._field_place, None)
             return
-        remembered = remembered_field_folder(self._job_number)
+        pack = load_client_pack(self._job_folder, self._job_number) if self._job_folder else None
+        if pack is not None and pack.field_folder and not self._field_folder_saved:
+            self._field_folder_saved = pack.field_folder
+        shared = self._folder_on_this_pc(self._field_folder_saved)
+        remembered = shared or remembered_field_folder(self._job_number)
         self._field_root = find_field_folder(self._job_number, self._job_folder, remembered)
         self._paint_place(self._field_place, self._field_root)
 
@@ -5171,7 +5217,12 @@ class DocConApp(tk.Tk):
         if not path.is_dir():
             messagebox.showerror("Field folder", "That folder is not available.")
             return
+        try:
+            self._field_folder_saved = str(path.resolve())
+        except OSError:
+            self._field_folder_saved = str(path)
         remember_field_folder(self._job_number, path)
+        self._save_pack(quiet=True)
         self._refresh_field_place()
         self._set_status(f"Field folder: {path.name}")
 

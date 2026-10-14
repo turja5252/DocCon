@@ -5,7 +5,7 @@
 import json
 from pathlib import Path
 
-from doccon.kinds import CLIENT, FIELD, SHOP
+from doccon.kinds import BOTH, CLIENT, FIELD, SHOP
 from doccon.match import LocatedPdf
 from doccon.pack_state import (
     PACK_SCHEMA,
@@ -46,6 +46,21 @@ def test_round_trip_pack(tmp_path: Path) -> None:
     assert loaded == pack
 
 
+def test_shop_and_field_folders_travel_with_the_pack(tmp_path: Path) -> None:
+    shop = tmp_path / "1.0 Current IFC Drawings" / "2026-Tanzim"
+    field = tmp_path / "2026-Tanzim" / "8.0 Field Construction"
+    pack = ClientPack(
+        job_number="2026-Tanzim",
+        shop_folder=str(shop),
+        field_folder=str(field),
+    )
+    save_client_pack(tmp_path, pack)
+    loaded = load_client_pack(tmp_path, "2026-Tanzim")
+    assert loaded is not None
+    assert loaded.shop_folder == str(shop)
+    assert loaded.field_folder == str(field)
+
+
 def test_cover_recipients_stay_per_kind() -> None:
     pack = ClientPack(
         job_number="2026-Tanzim",
@@ -54,9 +69,12 @@ def test_cover_recipients_stay_per_kind() -> None:
     )
     shop = with_cover_recipients(pack, SHOP, "", "")
     field = with_cover_recipients(shop, FIELD, "foreman@x.com", "")
-    assert cover_recipients(field, CLIENT) == ("client@example.com", "pm@x.com")
-    assert cover_recipients(field, SHOP) == ("", "")
-    assert cover_recipients(field, FIELD) == ("foreman@x.com", "")
+    client = with_cover_recipients(field, CLIENT, "new@example.com", "cc@example.com")
+    both = with_cover_recipients(client, BOTH, "shop@x.com", "field@x.com")
+    assert cover_recipients(client, CLIENT) == ("new@example.com", "cc@example.com")
+    assert cover_recipients(client, SHOP) == ("", "")
+    assert cover_recipients(client, FIELD) == ("foreman@x.com", "")
+    assert both == client
 
 
 def test_saved_cover_skips_the_letter_read(tmp_path: Path) -> None:
