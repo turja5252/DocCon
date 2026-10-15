@@ -37,6 +37,12 @@ def test_drawing_id_error_only_rejects_blank_and_inner_space() -> None:
     spaced = drawing_id_error("P2024-9", "2026-075-1-1 Drawing")
     assert "P2024-9" in spaced and "space" in spaced
     assert drawing_id_error("P2024-9", "2026-075\t1")
+    assert drawing_id_error("P2024-1", "2026-070 TC-2026-070-1") == ""
+    assert drawing_id_error("P2024-1", "2026-070-1 EIS-1") == ""
+    assert drawing_id_error("P2024-1", "2026-070-1 DB") == ""
+    assert "space" in drawing_id_error("P2024-9", "2026-070-1 DB Databook")
+    tank = drawing_id_error("P2024-9", "2026-118-1-1-TJ TANK")
+    assert "P2024-9" in tank and "space" in tank
 
 
 def test_new_issue_id_error_blank_and_space() -> None:
@@ -154,9 +160,21 @@ def test_parse_summary_space_starts_the_description() -> None:
     drawing_id, title = parse_summary("2026-118-1-1-TJ TANK JACKING AND SHELL STIFFENERS DETAIL")
     assert drawing_id == "2026-118-1-1-TJ"
     assert title == "TANK JACKING AND SHELL STIFFENERS DETAIL"
+    drawing_id, title = parse_summary("2026-070 TC-2026-070-1 Tank Calculation Package")
+    assert drawing_id == "2026-070 TC-2026-070-1"
+    assert title == "Tank Calculation Package"
+    drawing_id, title = parse_summary("2026-070-1 EIS-1")
+    assert drawing_id == "2026-070-1 EIS-1"
+    assert title == ""
+    drawing_id, title = parse_summary("2026-070-1 DB Databook")
+    assert drawing_id == "2026-070-1 DB"
+    assert title == "Databook"
+    drawing_id, title = parse_summary("2026-070-1 DBI Databook Index")
+    assert drawing_id == "2026-070-1 DBI"
+    assert title == "Databook Index"
     drawing_id, title = parse_summary("2026-075 ITP-1-1 Inspection and Testing Plan")
-    assert drawing_id == "2026-075"
-    assert title == "ITP-1-1 Inspection and Testing Plan"
+    assert drawing_id == "2026-075 ITP-1-1"
+    assert title == "Inspection and Testing Plan"
 
 
 def test_parse_summary_size_after_the_id_is_description() -> None:

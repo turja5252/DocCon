@@ -75,6 +75,14 @@ def is_pdf_source(name: str, data: bytes | None = None) -> bool:
     return bool(data) and data.lstrip().startswith(b"%PDF")
 
 
+def is_email_attachment(name: str) -> bool:
+    """Any copied attachment. The Outlook message file itself stays out."""
+    base = Path(name or "").name.strip()
+    if not base or base in {".", ".."}:
+        return False
+    return not is_msg_filename(base)
+
+
 def safe_filename(name: str) -> str:
     raw = (name or "").replace("\\", "/").strip()
     base = Path(raw).name or "attachment.pdf"
@@ -131,8 +139,6 @@ def write_pdf_bytes_into_dropped(
     folder = dropped_dir(job_folder)
     folder.mkdir(parents=True, exist_ok=True)
     name = safe_filename(filename)
-    if not is_pdf_filename(name):
-        name = f"{Path(name).stem or 'attachment'}.pdf"
     dest = unique_dest(folder, name, used=used)
     dest.write_bytes(data)
     return dest
@@ -165,7 +171,7 @@ def _unique_notes(notes: list[str]) -> list[str]:
 
 
 def ingest_sources(job_folder: Path, sources: list[DropSource]) -> tuple[list[Path], list[str]]:
-    """Copy PDFs into dropped/. Skip .msg and non-PDF. Returns stable paths and skip notes."""
+    """Copy attachments into dropped/. Skip the Outlook .msg. Keep each file's own name."""
     pdfs: list[Path] = []
     skipped: list[str] = []
     used: set[str] = set()
@@ -180,8 +186,8 @@ def ingest_sources(job_folder: Path, sources: list[DropSource]) -> tuple[list[Pa
         if is_msg_filename(name) or (src.path is not None and is_msg_filename(src.path.name)):
             skipped.append(MSG_SKIP)
             continue
-        if not is_pdf_source(name, data):
-            skipped.append(NOT_PDF)
+        if not is_email_attachment(name):
+            skipped.append(UNREADABLE)
             continue
         if src.path is not None:
             try:
@@ -190,8 +196,7 @@ def ingest_sources(job_folder: Path, sources: list[DropSource]) -> tuple[list[Pa
                 skipped.append(UNREADABLE)
             continue
         if data:
-            write_name = name if is_pdf_filename(name) else f"{Path(name).stem or 'attachment'}.pdf"
-            pdfs.append(write_pdf_bytes_into_dropped(job_folder, write_name, data, used=used))
+            pdfs.append(write_pdf_bytes_into_dropped(job_folder, name, data, used=used))
             continue
         skipped.append(UNREADABLE)
     return pdfs, _unique_notes(skipped)

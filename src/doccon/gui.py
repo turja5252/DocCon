@@ -4624,7 +4624,7 @@ class DocConApp(tk.Tk):
             paths = clipboard_pdfs()
             log("INFO", "paste", f"clipboard pdfs={len(paths)}")
             if not paths:
-                self._set_status("No PDF on the clipboard.")
+                self._set_status("No file on the clipboard.")
                 messagebox.showinfo("Paste PDF", NO_PDF_ON_CLIPBOARD)
                 return
             self._ingest_pasted_pdfs(paths)
@@ -4656,7 +4656,7 @@ class DocConApp(tk.Tk):
         names = ", ".join(path.name for path in staged[:4])
         more = "…" if len(staged) > 4 else ""
         count = len(staged)
-        noun = "PDF" if count == 1 else "PDFs"
+        noun = "file" if count == 1 else "files"
         log("INFO", "paste", f"parked batch={count} in New PDFs: {names}")
         self._set_status(
             f"{count} {noun} in New PDFs: {names}{more} — Assign to a drawing, or Include with pack.{extra}"

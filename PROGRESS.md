@@ -2,6 +2,34 @@
 
 Newest first. Append a dated entry when a decision is locked, a test runs, or the next step changes.
 
+## 2026-10-15 — Shipped 2.20
+
+Source and the frozen exe are 2.20. A job number stays with the code after it, including DB and DBI. Non Jira Add row shows on the list, and Packed only keeps those editors fully visible. Paste from email keeps the attachment’s own file type. Load `2026-Tanzim`. Do not Confirm 075.
+
+## 2026-10-15 — Paste from email keeps the file type
+
+Paste PDF was keeping only PDFs and renaming other attachments to `.pdf`. A copied spreadsheet, Word file, or other attachment now stays under its own name. The Outlook message file itself is still skipped. Preview stays for PDFs. Open uses the normal Windows app. Not shipped yet.
+
+## 2026-10-15 — Packed editors keep their height when Non Jira is on the list
+
+With a Non Jira row present, Packed only stacked each editor in the short text slot, so the next row covered the editor and the ID column sat off the other columns. The list now lays those editors out at their real height. Not shipped yet.
+
+## 2026-10-15 — Non Jira editor lines up with the ID column
+
+The Non Jira header was sitting in the scrolling columns, so the editor was clipped and the ID line sat a little off the other columns. The header is now a normal group band, and the ID pane and the scrolling pane share one row height. Not shipped yet.
+
+## 2026-10-15 — Non Jira Add row shows on the drawn list
+
+Add row was creating the line in the list frame the painted sheet leaves detached, so nothing appeared. Non Jira rows are now their own windows at the bottom of that list. Not shipped yet. Close DocCon and open it from source again before testing.
+
+## 2026-10-15 — DB and DBI stay on the JIRA ID
+
+`2026-070-1 DB Databook` is ID `2026-070-1 DB` and description `Databook`. `2026-070-1 DBI Databook Index` is ID `2026-070-1 DBI` and description `Databook Index`. Not shipped yet.
+
+## 2026-10-15 — A job number is not the JIRA ID
+
+`2026-070` and `2026-070-1` stay with the code after the space. `2026-070 TC-2026-070-1 Tank Calculation Package` is ID `2026-070 TC-2026-070-1` and description `Tank Calculation Package`. A complete drawing number still stops at the first space. Not shipped yet.
+
 ## 2026-10-15 — Shipped 2.19
 
 Source and the frozen exe are 2.19. A space starts the description. Delete from start trims a packed JIRA ID. Preview grabs an ID or a description, a later box adds on, right-click clears, and a scanned box is read with Tesseract. `REV 0 Signed` is rev `0`. Load `2026-Tanzim`. Do not Confirm 075.

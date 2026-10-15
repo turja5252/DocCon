@@ -10,9 +10,8 @@ from pathlib import Path
 
 from doccon.drop_pdfs import (
     DropSource,
+    is_email_attachment,
     is_msg_filename,
-    is_pdf_filename,
-    is_pdf_source,
     safe_filename,
     unique_dest,
 )
@@ -31,8 +30,6 @@ def write_inbox_bytes(
     dest_dir = Path(folder) if folder is not None else inbox_dir()
     dest_dir.mkdir(parents=True, exist_ok=True)
     name = safe_filename(filename)
-    if not is_pdf_filename(name):
-        name = f"{Path(name).stem or 'attachment'}.pdf"
     dest = unique_dest(dest_dir, name, used=used)
     dest.write_bytes(data)
     return dest
@@ -58,7 +55,7 @@ def copy_into_inbox(source: Path, *, folder: Path | None = None, used: set[str] 
 
 
 def stage_sources(sources: list[DropSource], *, folder: Path | None = None) -> list[Path]:
-    """Write PDFs into the inbox. Skip .msg / non-PDF. Used only in drop_host."""
+    """Write attachments into the inbox. Skip the Outlook .msg. Used only in drop_host."""
     dest_dir = Path(folder) if folder is not None else inbox_dir()
     pdfs: list[Path] = []
     used: set[str] = set()
@@ -66,17 +63,16 @@ def stage_sources(sources: list[DropSource], *, folder: Path | None = None) -> l
         name = (src.name or "").strip() or (src.path.name if src.path is not None else "attachment")
         if is_msg_filename(name) or (src.path is not None and is_msg_filename(src.path.name)):
             continue
+        if not is_email_attachment(name):
+            continue
         data = src.data
         if data is None and src.path is not None:
             try:
                 data = src.path.read_bytes()
             except OSError:
                 data = None
-        if not is_pdf_source(name, data):
-            continue
         if data:
-            write_name = name if is_pdf_filename(name) else f"{Path(name).stem or 'attachment'}.pdf"
-            pdfs.append(write_inbox_bytes(write_name, data, folder=dest_dir, used=used))
+            pdfs.append(write_inbox_bytes(name, data, folder=dest_dir, used=used))
             continue
         if src.path is not None:
             try:

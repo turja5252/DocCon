@@ -13,7 +13,7 @@ from __future__ import annotations
 import contextlib
 from pathlib import Path
 
-from doccon.drop_pdfs import DropSource, is_pdf_filename
+from doccon.drop_pdfs import DropSource, is_email_attachment
 
 
 def _log(message: str, *, level: str = "INFO") -> None:
@@ -37,7 +37,7 @@ def merge_folder_paths(sources: list[DropSource], paths: list[Path]) -> list[Dro
     by_name = {
         path.name.casefold(): path
         for path in paths
-        if path.is_file() and is_pdf_filename(path.name)
+        if path.is_file() and is_email_attachment(path.name)
     }
     used: set[str] = set()
     out: list[DropSource] = []

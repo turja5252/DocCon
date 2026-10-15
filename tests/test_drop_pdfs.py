@@ -7,7 +7,6 @@ from pathlib import Path
 from doccon.drop_pdfs import (
     MSG_SKIP,
     NOT_EMAIL_DROPPED,
-    NOT_PDF,
     DropSource,
     apply_board_drop,
     apply_row_drop,
@@ -110,14 +109,16 @@ def test_board_drop_matches_filename_leftover_unmatched(tmp_path: Path) -> None:
     assert leftover == [leftover_src]
 
 
-def test_non_pdf_rejected(tmp_path: Path) -> None:
+def test_paste_keeps_the_attachment_suffix(tmp_path: Path) -> None:
     job = tmp_path / "2026-Tanzim"
-    note = tmp_path / "readme.txt"
-    note.write_text("not a drawing", encoding="utf-8")
+    note = tmp_path / "calc.xlsx"
+    note.write_bytes(b"PK")
     pdfs, skipped = ingest_sources(job, [DropSource(name=note.name, path=note)])
-    assert pdfs == []
-    assert NOT_PDF in skipped
-    assert not dropped_dir(job).exists() or not any(dropped_dir(job).iterdir())
+    assert skipped == []
+    assert len(pdfs) == 1
+    assert pdfs[0].name == "calc.xlsx"
+    assert pdfs[0].read_bytes() == b"PK"
+    assert pdfs[0].parent == dropped_dir(job)
 
 
 def test_msg_not_paired_as_drawing(tmp_path: Path) -> None:

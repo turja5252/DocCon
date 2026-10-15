@@ -713,7 +713,12 @@ class DrawingBoard(ttk.Frame):
         self._filling = False
         self._drawn_mode = False
         self._drawing_sheet = False
+        self._redraw_sheet = False
         self._sheet_height = 0
+        self._extra_top: int | None = None
+        self._extra_hosts: tuple[tk.Frame, tk.Frame] | None = None
+        self._extra_windows: tuple[int, int] | None = None
+        self._drawn_extra_pane = False
         self._draw_y: dict[str, int] = {}
         self._draw_h: dict[str, int] = {}
         self._draw_group_y: list[tuple[int, str]] = []
@@ -1132,7 +1137,8 @@ class DrawingBoard(ttk.Frame):
 
     def _pin_frozen(self) -> None:
         with contextlib.suppress(tk.TclError):
-            self._canvas.coords(self._freeze_window, self._canvas.canvasx(0), 0)
+            extra_y = self._extra_top if self._drawn_mode and self._extra_top is not None else 0
+            self._canvas.coords(self._freeze_window, self._canvas.canvasx(0), extra_y)
             self._header_canvas.coords(self._freeze_header_window, self._header_canvas.canvasx(0), 0)
             if not self._drawn_mode:
                 self._canvas.tag_raise(self._freeze_window)
@@ -1310,8 +1316,9 @@ class DrawingBoard(ttk.Frame):
             self._header_canvas.configure(height=header_h, scrollregion=(0, 0, span, header_h))
             body_h = self._list_body_height()
             with contextlib.suppress(tk.TclError):
-                self._canvas.itemconfigure(self._window, height=body_h)
-                self._canvas.itemconfigure(self._freeze_window, height=body_h)
+                if not self._drawn_mode:
+                    self._canvas.itemconfigure(self._window, height=body_h)
+                    self._canvas.itemconfigure(self._freeze_window, height=body_h)
             self._canvas.configure(scrollregion=(0, 0, span, body_h))
             self._size_frozen()
             self._pin_frozen()
@@ -1430,6 +1437,8 @@ class DrawingBoard(ttk.Frame):
                     self._canvas.yview_moveto(1.0)
                     return
                 y = int(block.drawing_label.winfo_y())
+                if self._drawn_mode and block.extra and self._extra_top is not None:
+                    y += self._extra_top
                 bottom = y + max(int(block.drawing_label.winfo_height()), 28) + 56
                 region = self._canvas.bbox("all") or (0, 0, 1, bottom)
                 total = max(int(region[3]) - int(region[1]), 1)
@@ -2763,6 +2772,8 @@ class DrawingBoard(ttk.Frame):
         self._frozen_draw.clear()
         self._frozen_shield = None
         self._sheet_height = 0
+        self._extra_top = None
+        self._drop_extra_hosts()
         self._materialize_queue.clear()
 
     def _clip_draw(self, text: str, px: int) -> str:
@@ -2801,7 +2812,11 @@ class DrawingBoard(ttk.Frame):
 
     def _draw_sheet(self) -> None:
         """Paint unpacked rows as text. Packed rows keep the real editor."""
-        if not self._drawn_mode or self._drawing_sheet:
+        if not self._drawn_mode:
+            return
+        if self._drawing_sheet:
+            # A packed editor can be built while this pass is measuring. Draw once more after.
+            self._redraw_sheet = True
             return
         self._drawing_sheet = True
         try:
@@ -2830,13 +2845,23 @@ class DrawingBoard(ttk.Frame):
                     group = hold.group
                 self._draw_y[key] = y
                 height = self._row_draw_height(key, hold)
-                self._draw_h[key] = height
                 if key in self._row_windows:
                     self._place_row_window(key, y, frozen_w)
+                    with contextlib.suppress(tk.TclError, TypeError, ValueError):
+                        placed = int(float(self._canvas.itemcget(self._row_windows[key][0], "height")))
+                        height = max(height, placed)
                 else:
                     self._draw_one_row(key, y, height, origins, frozen_w)
+                self._draw_h[key] = height
                 self._draw_h_rule(y + height, frozen_w)
                 y += height
+            if self._extra_hosts is not None and any(
+                block.extra and block.shown for block in self._blocks.values()
+            ):
+                self._draw_group_y.append((y, NON_JIRA_GROUP))
+                self._draw_group_band(y, NON_JIRA_GROUP, origins)
+                y += DRAW_GROUP_PX
+            y = self._place_extra_band(y, frozen_w)
             self._sheet_height = max(y, 1)
             self._draw_column_rules(self._sheet_height, origins)
             self._draw_frozen_shield(self._sheet_height, frozen_w)
@@ -2847,9 +2872,88 @@ class DrawingBoard(ttk.Frame):
                     scrollregion=(0, 0, max(self._shown_span(), 1), self._sheet_height + SCROLL_TAIL_PX)
                 )
                 self._raise_frozen_cover()
+                if self._extra_windows is not None and self._extra_top is not None:
+                    _frozen_id, scroll_id = self._extra_windows
+                    self._canvas.tag_raise(scroll_id)
+                    self._canvas.tag_raise(_frozen_id)
             self._pin_drawn_frozen()
         finally:
             self._drawing_sheet = False
+            if self._redraw_sheet:
+                self._redraw_sheet = False
+                self._draw_sheet()
+
+    def _place_extra_band(self, y: int, frozen_w: int) -> int:
+        """Show Non Jira rows under the drawn list, in their own windows."""
+        extras = [block for block in self._blocks.values() if block.extra and block.shown]
+        hosts = self._extra_hosts
+        windows = self._extra_windows
+        if hosts is None or windows is None or not extras:
+            self._extra_top = None
+            if windows is not None:
+                for item in windows:
+                    with contextlib.suppress(tk.TclError):
+                        self._canvas.itemconfigure(item, state="hidden")
+            return y
+        freeze, scroll = hosts
+        frozen_id, scroll_id = windows
+        order = self._display_order()
+        for pos, logical in enumerate(order):
+            px = self._shown_px(logical)
+            if logical < FROZEN_COLS:
+                freeze.columnconfigure(pos, minsize=px, weight=0)
+            else:
+                scroll.columnconfigure(pos, minsize=px, weight=0)
+        for pos in range(FROZEN_COLS):
+            scroll.columnconfigure(pos, minsize=0, weight=0)
+        span = max(self._shown_span() - frozen_w, 1)
+        self._extra_top = y
+        height = DRAW_ROW_PX
+        with contextlib.suppress(tk.TclError):
+            shift = float(self._canvas.canvasx(0))
+            self._canvas.itemconfigure(frozen_id, state="normal", width=frozen_w, height=height)
+            self._canvas.itemconfigure(scroll_id, state="normal", width=span, height=height)
+            self._canvas.coords(frozen_id, shift, y)
+            self._canvas.coords(scroll_id, frozen_w, y)
+            self.update_idletasks()
+            self._match_pane_rows(freeze, scroll)
+            self.update_idletasks()
+            height = max(self._frame_content_height(freeze), self._frame_content_height(scroll), DRAW_ROW_PX)
+            height += EDITOR_PAD_PX
+            self._canvas.itemconfigure(frozen_id, height=height)
+            self._canvas.itemconfigure(scroll_id, height=height)
+            self._canvas.tag_raise(frozen_id)
+        return y + height
+
+    def _match_pane_rows(self, left: tk.Misc, right: tk.Misc) -> None:
+        """Give the ID pane and the scrolling pane the same row heights."""
+        frames = (left, right)
+        rows: set[int] = set()
+        for frame in frames:
+            try:
+                _cols, nrows = frame.grid_size()
+            except tk.TclError:
+                continue
+            rows.update(range(int(nrows)))
+        empty: set[int] = set()
+        heights: dict[int, int] = {}
+        for row in rows:
+            heights[row] = max(
+                self._row_needed_height(left, row, tracked_ids=empty, shown_ids=empty),
+                self._row_needed_height(right, row, tracked_ids=empty, shown_ids=empty),
+            )
+        for frame in frames:
+            for row, span, need in self._rowspan_needs(frame, tracked_ids=empty, shown_ids=empty):
+                have = sum(heights.get(row + offset, 0) for offset in range(span))
+                if need <= have or span <= 0:
+                    continue
+                share, remainder = divmod(need - have, span)
+                for offset in range(span):
+                    heights[row + offset] = heights.get(row + offset, 0) + share + (1 if offset < remainder else 0)
+        for row, height in heights.items():
+            for frame in frames:
+                with contextlib.suppress(tk.TclError):
+                    frame.rowconfigure(row, minsize=height, weight=0)
 
     def _draw_group_band(self, y: int, title: str, origins: dict[int, int]) -> None:
         span = max(self._shown_span(), 1)
@@ -3078,6 +3182,11 @@ class DrawingBoard(ttk.Frame):
                 continue
             with contextlib.suppress(tk.TclError):
                 self._canvas.coords(frozen_id, shift, y)
+        if self._extra_windows is not None and self._extra_top is not None:
+            frozen_id, _scroll_id = self._extra_windows
+            with contextlib.suppress(tk.TclError):
+                self._canvas.coords(frozen_id, shift, self._extra_top)
+                self._canvas.tag_raise(frozen_id)
 
     def _drawn_group_at(self, canvas_y: float) -> str:
         for top, title in self._draw_group_y:
@@ -3677,7 +3786,8 @@ class DrawingBoard(ttk.Frame):
             borderwidth=0,
             highlightthickness=0,
         )
-        rest.grid(row=grid_row, column=0, columnspan=BOARD_COLUMNS, sticky="ew")
+        start = FROZEN_COLS if self._drawn_extra_pane else 0
+        rest.grid(row=grid_row, column=start, columnspan=max(BOARD_COLUMNS - start, 1), sticky="ew")
         freeze = tk.Frame(
             self._freeze_inner,
             height=1,
@@ -4078,7 +4188,10 @@ class DrawingBoard(ttk.Frame):
         shop_folder = self._make_shop_picker(pdf_actions)
         pdf_state = "normal" if row.pdf else "disabled"
         open_btn.configure(state=pdf_state)
-        preview_btn.configure(state=pdf_state)
+        preview_state = "disabled"
+        if row.pdf is not None and row.pdf.path.suffix.casefold() == ".pdf":
+            preview_state = "normal"
+        preview_btn.configure(state=preview_state)
         self._place(pdf_actions, next_row, PDF_COL_INDEX)
         self._bind_overflow(drawing_label, lambda w=drawing_label: str(w.cget("text")), 12)
         self._bind_overflow(title_label, lambda w=title_label: str(w.cget("text")), 12)
@@ -4281,6 +4394,8 @@ class DrawingBoard(ttk.Frame):
         self._extras_painted = True
         self._sync_all_group_packs()
         self._refresh_filter()
+        if self._drawn_mode:
+            self._draw_sheet()
         self._sync_scroll()
 
     def _clear_extra_blocks(self) -> None:
@@ -4311,14 +4426,75 @@ class DrawingBoard(ttk.Frame):
         self._group_headers = headers
         self._group_frozen = frozen
         self._group_pack_marks = marks
+        self._drop_extra_hosts()
+
+    def _drop_extra_hosts(self) -> None:
+        if self._extra_windows is not None:
+            for item in self._extra_windows:
+                with contextlib.suppress(tk.TclError):
+                    self._canvas.delete(item)
+        self._extra_windows = None
+        if self._extra_hosts is not None:
+            for frame in self._extra_hosts:
+                with contextlib.suppress(tk.TclError):
+                    frame.destroy()
+        self._extra_hosts = None
 
     def _paint_extra_blocks(self, items: list[PackExtra], statuses: tuple[str, ...]) -> None:
+        if self._drawn_mode:
+            self._paint_drawn_extras(items, statuses)
+            return
         grid = self._jira_grid_end + (1 if self._jira_grid_end else 0)
         self._add_group_header(grid, NON_JIRA_GROUP)
         grid += 1
         for item in items:
             self._add_extra_block(grid, item, statuses)
             grid += 4
+
+    def _paint_drawn_extras(self, items: list[PackExtra], statuses: tuple[str, ...]) -> None:
+        """Non Jira editors live on the painted sheet. The main list frame stays hidden."""
+        scroll = tk.Frame(self._canvas, bg=BG, highlightthickness=0, bd=0)
+        freeze = tk.Frame(self._canvas, bg=BG, highlightthickness=0, bd=0)
+        order = self._display_order()
+        for pos, logical in enumerate(order):
+            px = self._shown_px(logical)
+            if logical < FROZEN_COLS:
+                freeze.columnconfigure(pos, minsize=px, weight=0)
+            else:
+                scroll.columnconfigure(pos, minsize=px, weight=0)
+        old_inner, old_freeze = self._inner, self._freeze_inner
+        self._inner, self._freeze_inner = scroll, freeze
+        self._drawn_extra_pane = True
+        try:
+            grid = 0
+            for item in items:
+                self._add_extra_block(grid, item, statuses)
+                grid += 4
+        finally:
+            self._drawn_extra_pane = False
+            self._inner, self._freeze_inner = old_inner, old_freeze
+        frozen_w = self._frozen_width()
+        span = max(self._shown_span() - frozen_w, 1)
+        frozen_id = self._canvas.create_window(
+            (0, 0),
+            window=freeze,
+            anchor="nw",
+            width=frozen_w,
+            height=DRAW_ROW_PX,
+            state="hidden",
+            tags=("extra_win", "frozen_win"),
+        )
+        scroll_id = self._canvas.create_window(
+            (frozen_w, 0),
+            window=scroll,
+            anchor="nw",
+            width=span,
+            height=DRAW_ROW_PX,
+            state="hidden",
+            tags=("extra_win",),
+        )
+        self._extra_hosts = (freeze, scroll)
+        self._extra_windows = (frozen_id, scroll_id)
 
     def _add_extra_block(self, top: int, item: PackExtra, statuses: tuple[str, ...]) -> None:
         key = item.id or item.path
@@ -4390,7 +4566,9 @@ class DrawingBoard(ttk.Frame):
         shop_folder = self._make_shop_picker(pdf_actions)
         pdf_state = "normal" if Path(item.path).is_file() else "disabled"
         open_btn.configure(state=pdf_state)
-        preview_btn.configure(state=pdf_state)
+        preview_btn.configure(
+            state="normal" if pdf_state == "normal" and Path(item.path).suffix.casefold() == ".pdf" else "disabled"
+        )
         self._place(pdf_actions, next_row, PDF_COL_INDEX)
         originals: dict[str, ttk.Label] = {}
         nexts: dict[str, NextWidget] = {}
@@ -5519,8 +5697,11 @@ class DrawingBoard(ttk.Frame):
 
     def _style_pdf_open_preview(self, block: _Block, row: MatchedRow) -> None:
         state = "normal" if row.pdf else "disabled"
+        preview = "disabled"
+        if row.pdf is not None and row.pdf.path.suffix.casefold() == ".pdf":
+            preview = "normal"
         block.open_btn.configure(state=state)
-        block.preview_btn.configure(state=state)
+        block.preview_btn.configure(state=preview)
 
     def _preview_pdf(self, key: str) -> None:
         if self._on_preview_pdf is None:

@@ -35,7 +35,7 @@ from ctypes import (
 )
 from pathlib import Path
 
-from doccon.drop_pdfs import DropSource, is_pdf_filename
+from doccon.drop_pdfs import DropSource, is_email_attachment
 
 try:
     from ctypes import windll
@@ -692,7 +692,7 @@ def _folder_pdf_state(folder: Path) -> dict[str, tuple[Path, int, int]]:
     found: dict[str, tuple[Path, int, int]] = {}
     try:
         for path in Path(folder).iterdir():
-            if not path.is_file() or not is_pdf_filename(path.name):
+            if not path.is_file() or not is_email_attachment(path.name):
                 continue
             try:
                 stat = path.stat()

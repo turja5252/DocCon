@@ -199,11 +199,29 @@ def _multiword_weld_id(text: str) -> tuple[str, str] | None:
     return None
 
 
+# ``2026-070`` and ``2026-070-1`` are job numbers, not a drawing ID.
+_JOB_ONLY_ID = re.compile(r"^\d{4}-\d+(?:-\d+)?$")
+# A document code after that job number: ``TC-2026-070-1``, ``EIS-1``, ``DB``, ``DBI``.
+_CODE_AFTER_JOB = re.compile(r"^[A-Za-z]{1,12}-[A-Za-z0-9][A-Za-z0-9-]*$")
+_SHORT_CODE_AFTER_JOB = re.compile(r"^[A-Z]{2,4}$")
+
+
+def _job_only_id(token: str) -> bool:
+    return _JOB_ONLY_ID.fullmatch(token or "") is not None
+
+
+def _code_after_job(token: str) -> bool:
+    text = token or ""
+    return _CODE_AFTER_JOB.fullmatch(text) is not None or _SHORT_CODE_AFTER_JOB.fullmatch(text) is not None
+
+
 def parse_summary(summary: str) -> tuple[str, str]:
     """Split a Jira summary into drawing ID and optional description.
 
-    The ID is the text before the first space. A dash stays on the ID
-    (``2026-118-1-1-TJ``). Wording after the space is the description.
+    A complete drawing number stops at the first space (``2026-118-1-1-TJ``).
+    A dash stays on the ID. ``2026-070`` and ``2026-070-1`` are only the job,
+    so the code after the space stays on the ID (``2026-070 TC-2026-070-1``, ``2026-070-1 DB``)
+    and the words after that code are the description.
     ``CWB Certificate`` stays a two-word ID.
     """
     text = re.sub(r"\s+", " ", (summary or "").strip())
@@ -212,8 +230,26 @@ def parse_summary(summary: str) -> tuple[str, str]:
     weld_id = _multiword_weld_id(text)
     if weld_id is not None:
         return weld_id
-    drawing_id, _, title = text.partition(" ")
-    return drawing_id.strip(" \t-–—:"), title.strip(" -–—")
+    parts = text.split(" ")
+    drawing_id = parts[0].strip(" \t-–—:")
+    rest = parts[1:]
+    if _job_only_id(drawing_id):
+        codes: list[str] = []
+        while rest and _code_after_job(rest[0]):
+            codes.append(rest.pop(0))
+        if codes:
+            drawing_id = f"{drawing_id} {' '.join(codes)}"
+    title = " ".join(rest).strip(" -–—")
+    return drawing_id, title
+
+
+def id_space_is_job_and_code(drawing_id: str) -> bool:
+    """True when the only space is the one between a job number and its code."""
+    token = re.sub(r"\s+", " ", (drawing_id or "").strip())
+    if " " not in token:
+        return False
+    ident, title = parse_summary(token)
+    return ident == token and not title
 
 
 def adopted_summary(current_summary: str, pdf_drawing_id: str) -> str:
@@ -237,15 +273,14 @@ def summary_from_parts(drawing_id: str, description: str) -> str:
 def drawing_id_error(issue_key: str, drawing_id: str) -> str:
     """Operator message for a rejected JIRA ID Next. Empty string when it is usable.
 
-    Light on purpose: the ID is the single leading code of the summary, so blank
-    leaves nothing to write and an inner space would silently push the rest into
-    the description. Elite numbering itself is not enforced here.
+    A space is allowed only between a job number and its code
+    (``2026-070 TC-2026-070-1``). Wording in the ID is rejected.
     """
     token = (drawing_id or "").strip()
     who = (issue_key or "").strip() or "This issue"
     if not token:
         return f"{who}: JIRA ID cannot be blank. Type the leading code, or restore Now."
-    if any(char.isspace() for char in token):
+    if any(char.isspace() for char in token) and not id_space_is_job_and_code(token):
         return f"{who}: JIRA ID cannot contain a space (got {token}). Put wording in Description."
     return ""
 
@@ -255,7 +290,7 @@ def new_issue_id_error(drawing_id: str) -> str:
     token = (drawing_id or "").strip()
     if not token:
         return "JIRA ID cannot be blank. Type the leading code."
-    if any(char.isspace() for char in token):
+    if any(char.isspace() for char in token) and not id_space_is_job_and_code(token):
         return f"JIRA ID cannot contain a space (got {token}). Put wording in Description."
     return ""
 

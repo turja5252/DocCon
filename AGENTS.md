@@ -29,8 +29,9 @@ Jira remains the source of truth. DocCon is the execution layer, in the same pro
 
 The summary is an ID, then optional wording. Empty description is allowed.
 
-- ID is the text before the first space: `2026-075-1-STWD`, `2026-118-1-1-TJ`, `2026-075-ITP-1-1`, dummy `2026-Tanzim-1-1`. A dash stays on the ID. No extra English required.
-- Description is everything after that space (`TANK JACKING AND SHELL STIFFENERS DETAIL`, `Inspection and Testing Plan for Roof`). Empty description is fine.
+- A complete drawing number stops at the first space: `2026-075-1-STWD`, `2026-118-1-1-TJ`, `2026-075-ITP-1-1`, `2026-011-1-6`, dummy `2026-Tanzim-1-1`. A dash stays on the ID. No extra English required.
+- `2026-070` and `2026-070-1` are job numbers, not the ID. The code after the space stays on the ID: `2026-070 TC-2026-070-1 Tank Calculation Package` is ID `2026-070 TC-2026-070-1` and description `Tank Calculation Package`. `2026-070-1 DB Databook` is ID `2026-070-1 DB` and description `Databook`. `2026-070-1 DBI Databook Index` is ID `2026-070-1 DBI` and description `Databook Index`. `2026-070-1 EIS-1` is the whole ID. `2026-075 ITP-1-1 Inspection and Testing Plan` is ID `2026-075 ITP-1-1`.
+- Description is the wording after that ID (`TANK JACKING AND SHELL STIFFENERS DETAIL`, `Tank Calculation Package`). Empty description is fine. Create transmittal allows the space in `2026-070 TC-2026-070-1` and rejects wording typed into the ID.
 - Live drawing: `2026-075-1-STWD SPIRAL STAIRWAY: INSIDE HANDRAIL DETAIL`
 - `customfield_10300` Job Number (`2026-075`) — group a transmittal
 
@@ -38,7 +39,9 @@ The summary is an ID, then optional wording. Empty description is allowed.
 
 No extra Jira status or custom trigger field. Engineer emails Sarah the pack list; she runs DocCon.
 
-**Next:** Source and the frozen exe are **2.19**. Load `2026-Tanzim`. Do not Confirm 075.
+**Next:** Source and the frozen exe are **2.20**. Load `2026-Tanzim`. Do not Confirm 075.
+
+**2.20 A job number stays with its code, Non Jira rows stay on the list, and a pasted attachment keeps its file type.** `2026-070` and `2026-070-1` are not the ID by themselves. `2026-070 TC-2026-070-1 Tank Calculation Package` is ID `2026-070 TC-2026-070-1` and description `Tank Calculation Package`. `2026-070-1 DB Databook` is ID `2026-070-1 DB` and description `Databook`. **Add row** shows under Non Jira, and Packed only keeps those editors fully visible. Paste from email keeps xlsx, docx, and the rest under their own names. The Outlook message file is still skipped. Preview stays for PDFs. Drag is not back.
 
 **2.19 A preview box can build the ID or the description, and Signed stays off the revision.** The JIRA ID is the text before the first space. **Delete from start** takes one character off each packed JIRA ID, and **↶** puts it back. Preview **ID** and **Description** take a box; a later box adds on, and right-click clears. A box with no text layer is read with Tesseract. `REV 0 Signed` is rev `0`. Drag is not back.
 

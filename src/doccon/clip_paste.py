@@ -24,7 +24,7 @@ from doccon.winproc import hidden_popen_kwargs
 PASTE_TIMEOUT_S = 20
 RESULT_PREFIX = "DOCCON_PASTE "
 NO_PDF_ON_CLIPBOARD = (
-    "No PDF on the clipboard. In Outlook, select one or more PDF attachments, "
+    "No file on the clipboard. In Outlook, select one or more attachments, "
     "right-click and choose Copy, then click Paste PDF again."
 )
 PASTE_FAILED = "Could not read the clipboard."
