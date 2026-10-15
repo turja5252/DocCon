@@ -33,6 +33,7 @@ class PackExtra:
     email_dropped: bool = False
     id: str = ""
     packed: bool = True
+    fields: dict[str, str] = field(default_factory=dict)
 
     def label(self) -> str:
         name = Path(self.path).name
@@ -45,6 +46,26 @@ def default_extra_status(kind: str) -> str:
     if "INFORMATION" in allowed:
         return "INFORMATION"
     return allowed[0] if allowed else "INFORMATION"
+
+
+def extra_field(item: PackExtra, name: str) -> str:
+    """One typed Jira-shaped value on a Non Jira row. Empty when she left it blank."""
+    return str((item.fields or {}).get(name) or "").strip()
+
+
+def packed_issue_date(items: list[PackExtra] | tuple[PackExtra, ...], field: str) -> str:
+    """The Shop or Field issue date typed on packed Non Jira rows, when they agree."""
+    found: list[str] = []
+    for item in items:
+        if not item.packed:
+            continue
+        raw = extra_field(item, field)
+        if raw and raw.casefold() not in {"n/a", "na"}:
+            found.append(raw)
+    unique = list(dict.fromkeys(found))
+    if len(unique) == 1:
+        return unique[0]
+    return ""
 
 
 def letter_status(kind: str, status: str) -> str:
@@ -251,9 +272,16 @@ def _pack_extras(raw: object) -> tuple[PackExtra, ...]:
             continue
         path = str(entry.get("path") or "").strip()
         document_no = str(entry.get("document_no") or "").strip()
-        if not path or not document_no:
+        if not document_no:
             continue
         packed = entry.get("packed")
+        raw_fields = entry.get("fields")
+        fields: dict[str, str] = {}
+        if isinstance(raw_fields, dict):
+            for key, value in raw_fields.items():
+                text = str(value or "").strip()
+                if text:
+                    fields[str(key)] = text
         items.append(
             PackExtra(
                 path=path,
@@ -266,6 +294,7 @@ def _pack_extras(raw: object) -> tuple[PackExtra, ...]:
                 email_dropped=bool(entry.get("email_dropped")),
                 id=str(entry.get("id") or "").strip() or f"x:{uuid.uuid4().hex[:12]}",
                 packed=True if packed is None else bool(packed),
+                fields=fields,
             )
         )
     return tuple(items)
@@ -284,6 +313,7 @@ def _dump_pack_extras(items: tuple[PackExtra, ...]) -> list[dict[str, object]]:
             "email_dropped": bool(item.email_dropped),
             "id": item.id,
             "packed": bool(item.packed),
+            "fields": {key: value for key, value in (item.fields or {}).items() if str(value).strip()},
         }
         for item in items
     ]

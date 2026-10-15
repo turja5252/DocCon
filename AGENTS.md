@@ -39,7 +39,9 @@ The summary is an ID, then optional wording. Empty description is allowed.
 
 No extra Jira status or custom trigger field. Engineer emails Sarah the pack list; she runs DocCon.
 
-**Next:** Source and the frozen exe are **2.20**. Load `2026-Tanzim`. Do not Confirm 075.
+**Next:** Source and the frozen exe are **2.21**. Load `2026-Tanzim`. Do not Confirm 075.
+
+**2.21 Shop and Field letters use their own date and status, and Excel or Word can be previewed.** The Shop form date is Shop Issue Date. The Field form date is Field Issue Date. Client still uses Submission Date. A blank shop or field date prints today. The client letter status is Submitted to Client For. NA prints N/A, and a blank cell stays blank. Shop status is Submitted to Shop For. Field status is Submitted to Field For. A blank status stays blank. Non Jira rows have the same Next fields. Create transmittal reads them and does not write Jira. Preview prints Excel or Word to a temporary PDF, including every printable tab. The ID and description boxes work on that PDF. The source file is not saved. Drag is not back.
 
 **2.20 A job number stays with its code, Non Jira rows stay on the list, and a pasted attachment keeps its file type.** `2026-070` and `2026-070-1` are not the ID by themselves. `2026-070 TC-2026-070-1 Tank Calculation Package` is ID `2026-070 TC-2026-070-1` and description `Tank Calculation Package`. `2026-070-1 DB Databook` is ID `2026-070-1 DB` and description `Databook`. **Add row** shows under Non Jira, and Packed only keeps those editors fully visible. Paste from email keeps xlsx, docx, and the rest under their own names. The Outlook message file is still skipped. Preview stays for PDFs. Drag is not back.
 

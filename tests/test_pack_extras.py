@@ -18,6 +18,7 @@ from doccon.pack_state import (
     extra_from_path,
     letter_status,
     load_client_pack,
+    packed_issue_date,
     save_client_pack,
 )
 from doccon.register import DrawingRow
@@ -47,17 +48,58 @@ def test_lines_follow_packed_drawings() -> None:
         rev="",
         description="North side",
         status="INFORMATION",
+        fields={"purpose": "Info"},
     )
     lines = lines_from_extras([item], CLIENT)
     assert lines[0].document_no == "Site photo"
     assert lines[0].description == "North side"
     assert lines[0].status == "INFORMATION"
+    blank = lines_from_extras(
+        [PackExtra(path="notes.pdf", document_no="Site photo", status="INFORMATION")],
+        CLIENT,
+    )
+    assert blank[0].status == ""
+    na = lines_from_extras(
+        [PackExtra(path="notes.pdf", document_no="Site photo", fields={"purpose": "NA"})],
+        CLIENT,
+    )
+    assert na[0].status == "N/A"
     assert lines[0].notes == ""
     noted = lines_from_extras(
         [PackExtra(path="notes.pdf", document_no="Site photo", notes="See markup")],
         CLIENT,
     )
     assert noted[0].notes == "See markup"
+    shop = lines_from_extras(
+        [
+            PackExtra(
+                path="calc.xlsx",
+                document_no="TC-2026-070-1",
+                rev="0",
+                description="Tank Calculation Package",
+                status="INFORMATION",
+                fields={"shop_purpose": "IFC", "shop_ifc_date": "2026-10-15"},
+            )
+        ],
+        SHOP,
+    )
+    assert shop[0].status == "IFC"
+    assert shop[0].rev == "0"
+
+
+def test_non_jira_issue_date_is_used_when_the_rows_agree() -> None:
+    dated = PackExtra(
+        path="calc.xlsx",
+        document_no="TC-2026-070-1",
+        fields={"shop_ifc_date": "2026-10-15"},
+    )
+    assert packed_issue_date([dated], "shop_ifc_date") == "2026-10-15"
+    other = PackExtra(
+        path="other.pdf",
+        document_no="Other",
+        fields={"shop_ifc_date": "2026-10-16"},
+    )
+    assert packed_issue_date([dated, other], "shop_ifc_date") == ""
 
 
 def test_pack_extras_round_trip(tmp_path: Path) -> None:
@@ -72,6 +114,7 @@ def test_pack_extras_round_trip(tmp_path: Path) -> None:
         note_color="Red",
         email_dropped=True,
         id="x:mail",
+        fields={"shop_ifc_date": "2026-10-15", "shop_purpose": "IFC"},
     )
     save_client_pack(tmp_path, ClientPack(job_number="2026-Tanzim", pack_extras=(item,)))
     loaded = load_client_pack(tmp_path, "2026-Tanzim")
@@ -125,7 +168,12 @@ def test_non_jira_row_is_its_own_group() -> None:
         assert painted[0].status == "INFORMATION"
         assert painted[0].packed is True
         assert board._blocks[painted[0].id].group == NON_JIRA_GROUP
-        assert str(board._blocks[painted[0].id].nexts["client_document_number"].cget("state")) == "disabled"
+        doc_no = board._blocks[painted[0].id].nexts["client_document_number"]
+        shop_date = board._blocks[painted[0].id].nexts["shop_ifc_date"]
+        assert str(doc_no.cget("state")) != "disabled"
+        assert str(shop_date.cget("state")) != "disabled"
+        shop_date.set("2026-10-15")
+        assert board.pack_extras()[0].fields["shop_ifc_date"] == "2026-10-15"
         assert board.pending_rows() == []
         board.focus_key(painted[0].id)
         assert board.explicit_focus_key() == painted[0].id

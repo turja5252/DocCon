@@ -61,7 +61,11 @@ def _drawing(**kwargs) -> DrawingRow:
 def test_status_maps_jira_purpose() -> None:
     assert client_status_from_jira("Approval") == "APPROVAL"
     assert client_status_from_jira("Info") == "INFORMATION"
-    assert client_status_from_jira("") == "APPROVAL"
+    assert client_status_from_jira("NA") == "N/A"
+    assert client_status_from_jira("N/A") == "N/A"
+    assert client_status_from_jira("") == ""
+    assert line_status("", SHOP) == ""
+    assert line_status("", FIELD) == ""
     assert line_status("IFC", SHOP) == "IFC"
     assert line_status("IFI", SHOP) == "IFI"
     assert line_status("IFU", SHOP) == "IFU"

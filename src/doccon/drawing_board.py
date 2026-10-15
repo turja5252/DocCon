@@ -19,6 +19,7 @@ from doccon.date_picker import CalendarPopup, attach_calendar
 from doccon.client_log import note_color_is_red, note_color_name
 from doccon.kinds import CLIENT, FIELD, INCOMING, SHOP
 from doccon.drop_pdfs import dropped_pdf_filename
+from doccon.office_preview import can_preview
 from doccon.match import (
     MatchedRow,
     is_dropped_pdf_path,
@@ -236,7 +237,7 @@ STATUS_COL_INDEX = 3
 MATCH_COL_INDEX = 4
 PDF_COL_INDEX = 5
 NON_JIRA_GROUP = "Non Jira"
-EXTRA_EDIT_FIELDS = frozenset({"drawing_id", "title", "outgoing_rev", "letter_notes", "letter_note_color"})
+EXTRA_EDIT_FIELDS = frozenset({"drawing_id", "title", "status"}) | frozenset(key for key, *_rest in FIELD_KEYS)
 FIELD_COL_START = 6
 BOARD_COLUMNS = FIELD_COL_START + len(FIELD_KEYS)
 FROZEN_COLS = 2
@@ -4188,9 +4189,7 @@ class DrawingBoard(ttk.Frame):
         shop_folder = self._make_shop_picker(pdf_actions)
         pdf_state = "normal" if row.pdf else "disabled"
         open_btn.configure(state=pdf_state)
-        preview_state = "disabled"
-        if row.pdf is not None and row.pdf.path.suffix.casefold() == ".pdf":
-            preview_state = "normal"
+        preview_state = "normal" if row.pdf is not None and can_preview(row.pdf.path) else "disabled"
         preview_btn.configure(state=preview_state)
         self._place(pdf_actions, next_row, PDF_COL_INDEX)
         self._bind_overflow(drawing_label, lambda w=drawing_label: str(w.cget("text")), 12)
@@ -4357,6 +4356,18 @@ class DrawingBoard(ttk.Frame):
     def extras_painted(self) -> bool:
         return self._extras_painted
 
+    def _extra_fields(self, block: _Block) -> dict[str, str]:
+        """Every filled Next box on a Non Jira row. Jira is never written from these."""
+        fields: dict[str, str] = {}
+        for name, box in block.nexts.items():
+            try:
+                text = box.get().strip()
+            except tk.TclError:
+                continue
+            if text:
+                fields[name] = text
+        return fields
+
     def pack_extras(self) -> list[PackExtra]:
         items: list[PackExtra] = []
         for block in self._blocks.values():
@@ -4378,6 +4389,7 @@ class DrawingBoard(ttk.Frame):
                     email_dropped=block.extra_dropped,
                     id=block.key,
                     packed=bool(block.include.get()),
+                    fields=self._extra_fields(block),
                 )
             )
         return items
@@ -4567,25 +4579,26 @@ class DrawingBoard(ttk.Frame):
         pdf_state = "normal" if Path(item.path).is_file() else "disabled"
         open_btn.configure(state=pdf_state)
         preview_btn.configure(
-            state="normal" if pdf_state == "normal" and Path(item.path).suffix.casefold() == ".pdf" else "disabled"
+            state="normal" if pdf_state == "normal" and can_preview(Path(item.path)) else "disabled"
         )
         self._place(pdf_actions, next_row, PDF_COL_INDEX)
         originals: dict[str, ttk.Label] = {}
         nexts: dict[str, NextWidget] = {}
         for offset, (field, _title, values, _width, kind) in enumerate(FIELD_KEYS):
             col = FIELD_COL_START + offset
+            saved = str((item.fields or {}).get(field) or "").strip()
             if field == "outgoing_rev":
-                initial = item.rev
+                initial = saved or item.rev
             elif field == "letter_notes":
-                initial = item.notes
+                initial = saved or item.notes
             elif field == "letter_note_color":
-                initial = note_color_name(item.note_color)
+                initial = note_color_name(saved or item.note_color)
             else:
-                initial = ""
-            original = self._clip_label(initial or "—")
+                initial = saved
+            original = self._clip_label("—")
             self._place(original, now_row, col)
             originals[field] = original
-            list_values = values if field == "outgoing_rev" else ()
+            list_values = values
             box = self._next_box(
                 next_row,
                 col,
@@ -4596,9 +4609,6 @@ class DrawingBoard(ttk.Frame):
                 kind=kind,
                 readonly=field in PICK_ONLY_FIELDS,
             )
-            if field not in EXTRA_EDIT_FIELDS:
-                with contextlib.suppress(tk.TclError):
-                    box.configure(state="disabled")
             nexts[field] = box
         h_bot, h_bot_f = self._hline(top + 3)
         next_cells = [
@@ -4749,18 +4759,14 @@ class DrawingBoard(ttk.Frame):
         status_value = (status or "").strip()
         if not status_value and not updates:
             return 0
-        letter = {
-            key: value
-            for key, value in updates.items()
-            if key in {"letter_notes", "letter_note_color"}
-        }
         count = 0
         for block in self._states():
             if not block.include.get():
                 continue
             if block.extra:
-                if letter:
-                    self._apply_next_to_block(block, fields=letter)
+                # Jira Status has no issue to write. The other Next boxes still feed the letter.
+                if updates:
+                    self._apply_next_to_block(block, fields=updates)
                     count += 1
                 continue
             self._apply_next_to_block(block, status=status_value, fields=updates)
@@ -5066,7 +5072,14 @@ class DrawingBoard(ttk.Frame):
         if not text:
             count = 0
             for block in self._states():
-                if not block.include.get() or block.extra:
+                if not block.include.get():
+                    continue
+                if block.extra:
+                    box = block.nexts.get(field)
+                    if box is not None and box.get().strip():
+                        box.set("")
+                        self._refresh_next_marks(block)
+                        count += 1
                     continue
                 if self.restore_next_field(block.key, field):
                     count += 1
@@ -5130,7 +5143,7 @@ class DrawingBoard(ttk.Frame):
                 continue
             for key in keys:
                 block = self._state(key)
-                if block is None or not block.include.get() or block.extra:
+                if block is None or not block.include.get():
                     continue
                 self._apply_next_to_block(block, fields={field: value})
 
@@ -5218,7 +5231,7 @@ class DrawingBoard(ttk.Frame):
         count = 0
         for key in keys:
             block = self._state(key)
-            if block is None or not block.include.get() or block.extra:
+            if block is None or not block.include.get():
                 continue
             self._apply_next_to_block(block, fields={target: value})
             count += 1
@@ -5231,7 +5244,13 @@ class DrawingBoard(ttk.Frame):
         if not value:
             count = 0
             for block in self._states():
-                if not block.include.get() or block.extra:
+                if not block.include.get():
+                    continue
+                if block.extra:
+                    box = block.nexts.get(target)
+                    if box is not None and box.get().strip():
+                        box.set("")
+                        count += 1
                     continue
                 if self.restore_next_field(block.key, target):
                     count += 1
@@ -5697,9 +5716,7 @@ class DrawingBoard(ttk.Frame):
 
     def _style_pdf_open_preview(self, block: _Block, row: MatchedRow) -> None:
         state = "normal" if row.pdf else "disabled"
-        preview = "disabled"
-        if row.pdf is not None and row.pdf.path.suffix.casefold() == ".pdf":
-            preview = "normal"
+        preview = "normal" if row.pdf is not None and can_preview(row.pdf.path) else "disabled"
         block.open_btn.configure(state=state)
         block.preview_btn.configure(state=preview)
 
@@ -6085,9 +6102,13 @@ class DrawingBoard(ttk.Frame):
 
     def _refresh_next_marks(self, block: _Block) -> None:
         if block.extra:
-            notes = block.nexts.get("letter_notes")
-            if notes is not None:
-                self._style_next(notes, False, red=self._note_entry_is_red(block))
+            red_notes = self._note_entry_is_red(block)
+            for name, box in block.nexts.items():
+                try:
+                    filled = bool(box.get().strip())
+                except tk.TclError:
+                    continue
+                self._style_next(box, filled, red=red_notes and name == "letter_notes")
             self._notify_draft()
             return
         row = self._matches.get(block.key)

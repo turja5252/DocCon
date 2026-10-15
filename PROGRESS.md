@@ -2,6 +2,14 @@
 
 Newest first. Append a dated entry when a decision is locked, a test runs, or the next step changes.
 
+## 2026-10-15 — Shipped 2.21
+
+Source and the frozen exe are 2.21. Shop and Field letters use their own issue date and Submitted to list. NA on a client letter prints N/A, and a blank status stays blank. Non Jira rows carry the letter fields and do not write Jira. Preview prints Excel or Word to a temporary PDF. Load `2026-Tanzim`. Do not Confirm 075.
+
+## 2026-10-15 — Shop and Field letters use their own issue date
+
+The Shop transmittal date is Batch Next Shop Issue Date. The Field transmittal date is Batch Next Field Issue Date. Client still uses Submission Date. A blank shop or field issue date still prints today. Non Jira rows now have the same Next fields. Create transmittal reads them onto the letter and does not write Jira. The client letter status is Submitted to Client For: NA prints N/A, and a blank cell stays blank. Shop uses Submitted to Shop For. Field uses Submitted to Field For. A blank shop or field status stays blank. Preview prints an Excel or Word file to a temporary PDF so the ID and description boxes work. The source file is not saved. Shipped in 2.21.
+
 ## 2026-10-15 — Shipped 2.20
 
 Source and the frozen exe are 2.20. A job number stays with the code after it, including DB and DBI. Non Jira Add row shows on the list, and Packed only keeps those editors fully visible. Paste from email keeps the attachment’s own file type. Load `2026-Tanzim`. Do not Confirm 075.

@@ -10,6 +10,7 @@ import sys
 import threading
 import time
 import tkinter as tk
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import date
 from pathlib import Path
@@ -119,10 +120,12 @@ from doccon.pack_state import (
     document_no_for_file,
     extra_from_path,
     load_client_pack,
+    packed_issue_date,
     pack_cover_initialized,
     save_client_pack,
     with_cover_recipients,
 )
+from doccon.office_preview import OfficePreviewError, office_to_preview_pdf
 from doccon.pdf_preview import close_pdf_preview, open_pdf_preview
 from doccon.pep import (
     DOC_CONTROL_FROM,
@@ -4039,7 +4042,8 @@ class DocConApp(tk.Tk):
             messagebox.showerror(label, str(exc))
             return
         try:
-            issued = parse_issued_date(self.issued.get())
+            shop_issued = parse_issued_date(self._form_issued_text(SHOP))
+            field_issued = parse_issued_date(self._form_issued_text(FIELD))
             expected = parse_expected_return(self.expected.get())
         except LogError as exc:
             messagebox.showerror(label, str(exc))
@@ -4090,7 +4094,9 @@ class DocConApp(tk.Tk):
                 f"{field_book.name}: {field_info.cover_id}\n"
                 f"TO: {field_cover.to_line or '(none)'}\n"
                 f"CC: {field_cover.cc_line or '(none)'}\n\n"
-                f"Elite Contact: {contact}\n\n"
+                f"Elite Contact: {contact}\n"
+                f"Shop Issue Date: {shop_issued.isoformat()}\n"
+                f"Field Issue Date: {field_issued.isoformat()}\n\n"
                 "Close both books first. Two Outlook drafts open. Nothing is sent until you click Send."
             ),
         ):
@@ -4131,7 +4137,7 @@ class DocConApp(tk.Tk):
                     book=shop_book,
                     job=job,
                     lines=shop_lines,
-                    issued=issued,
+                    issued=shop_issued,
                     expected_return=expected,
                     cover=shop_cover,
                     rows=rows,
@@ -4172,7 +4178,7 @@ class DocConApp(tk.Tk):
                         book=field_book,
                         job=job,
                         lines=field_lines,
-                        issued=issued,
+                        issued=field_issued,
                         expected_return=expected,
                         cover=field_cover,
                         rows=rows,
@@ -4289,6 +4295,40 @@ class DocConApp(tk.Tk):
         self._set_status("Confirm failed.")
         messagebox.showerror(LABELS[BOTH], shop_error or "The shop letter was not filed.")
 
+    def _form_issued_text(self, kind: str) -> str:
+        """Client letter uses Submission Date. Shop and Field use their own issue date.
+
+        The Batch Next box wins. When that box is blank, a single date typed on the
+        packed rows — including Non Jira — is the letter date. Those rows are not written to Jira.
+        """
+        if kind == CLIENT:
+            return self.issued.get().strip()
+        field = "shop_ifc_date" if kind == SHOP else "field_ifc_date"
+        batch = self.board.batch_value(field)
+        if (batch or "").strip() and not cover_date_is_na(batch):
+            return batch
+        if cover_date_is_na(batch):
+            return ""
+        found: list[str] = []
+        for row in self._selected_rows():
+            raw = str(getattr(row.drawing, field, "") or "").strip()
+            if raw and not cover_date_is_na(raw):
+                found.append(raw)
+        extra = packed_issue_date(self._current_extras(), field)
+        if extra:
+            found.append(extra)
+        unique = list(dict.fromkeys(found))
+        if len(unique) == 1:
+            return unique[0]
+        return ""
+
+    def _form_issued_label(self, kind: str) -> str:
+        if kind == SHOP:
+            return "Shop Issue Date"
+        if kind == FIELD:
+            return "Field Issue Date"
+        return "Submission Date"
+
     def _issue_pack(self) -> None:
         if self._note_if_busy():
             return
@@ -4335,11 +4375,12 @@ class DocConApp(tk.Tk):
         except (LogError, OSError) as exc:
             messagebox.showerror(label, str(exc))
             return
-        if kind == CLIENT and cover_date_is_na(self.issued.get()):
+        issued_text = self._form_issued_text(kind)
+        if kind == CLIENT and cover_date_is_na(issued_text):
             messagebox.showinfo(label, "Pick a Submission Date.")
             return
         try:
-            issued = parse_issued_date(self.issued.get())
+            issued = parse_issued_date(issued_text)
             expected = parse_expected_return(self.expected.get())
         except LogError as exc:
             messagebox.showerror(label, str(exc))
@@ -4442,7 +4483,7 @@ class DocConApp(tk.Tk):
                 f"TO: {cover.to_line}\n"
                 f"CC: {cover.cc_line or '(none)'}\n"
                 f"{cover.project_description}\n"
-                f"Date issued: {issued.isoformat()}\n"
+                f"{self._form_issued_label(kind)}: {issued.isoformat()}\n"
                 f"Expected return: {expected_label}\n"
                 f"Subject: {subject}\n"
                 f"{attach_line}"
@@ -5398,7 +5439,7 @@ class DocConApp(tk.Tk):
                 if self.board.clear_grabbed_next(issue_key, target):
                     self._save_pack(quiet=True)
 
-            open_pdf_preview(self, pdf, heading=heading, on_grab=on_grab, on_clear=on_clear)
+            self._open_preview(pdf, heading, on_grab, on_clear)
             return
         self.board.focus_key(key)
         row = self._matches.get(key) or self.board.focused_row()
@@ -5435,7 +5476,27 @@ class DocConApp(tk.Tk):
         def on_clear(target: str, issue_key: str = key) -> None:
             self.board.clear_grabbed_next(issue_key, target)
 
-        open_pdf_preview(self, pdf, heading=heading, on_grab=on_grab, on_clear=on_clear)
+        self._open_preview(pdf, heading, on_grab, on_clear)
+
+    def _open_preview(
+        self,
+        path: Path,
+        heading: str,
+        on_grab: Callable[..., bool],
+        on_clear: Callable[[str], None],
+    ) -> None:
+        """Open Preview. Excel and Word are printed to a temporary PDF first."""
+        preview = path
+        if path.suffix.casefold() != ".pdf":
+            self._set_status(f"Preparing preview of {path.name}…")
+            self.update_idletasks()
+            try:
+                preview = office_to_preview_pdf(path)
+            except OfficePreviewError as exc:
+                messagebox.showerror("Preview", str(exc))
+                self._set_status(str(exc))
+                return
+        open_pdf_preview(self, preview, heading=heading, on_grab=on_grab, on_clear=on_clear)
 
 
 def main() -> int:

@@ -26,7 +26,7 @@ from doccon.jobs import find_job_folder, job_folder_keys
 from doccon.kinds import BOOK_DIR, CLIENT, FIELD, PREFIX, SHOP
 from doccon.log_layout import CLIENT_LAYOUT, BookLayout, layout_for
 from doccon.match import MatchedRow
-from doccon.pack_state import PackExtra, letter_status
+from doccon.pack_state import PackExtra, extra_field
 from doccon.pep import DOC_CONTROL_FROM, PepCover, email_line, form_contact
 from doccon.transmittal_books import adopt_transmittal_books
 
@@ -106,13 +106,15 @@ class BookCover:
 
 def client_status_from_jira(purpose: str) -> str:
     token = (purpose or "").strip().casefold().replace("_", " ")
+    if not token:
+        return ""
+    if token in {"na", "n/a"}:
+        return "N/A"
     mapping = {
         "approval": "APPROVAL",
         "info": "INFORMATION",
         "information": "INFORMATION",
         "planned": "REVIEW",
-        "na": "INFORMATION",
-        "n/a": "INFORMATION",
         "construction": "CONSTRUCTION",
         "review": "REVIEW",
         "as-built": "AS-BUILT",
@@ -148,14 +150,17 @@ def lines_from_extras(items: list[PackExtra] | tuple[PackExtra, ...], kind: str 
     lines: list[LogLine] = []
     for item in items:
         document_no = (item.document_no or "").strip() or Path(item.path).stem
+        purpose_key = {SHOP: "shop_purpose", FIELD: "field_purpose"}.get(kind, "purpose")
+        picked = extra_field(item, purpose_key)
+        status = line_status(picked, kind)
         lines.append(
             LogLine(
                 document_no=document_no,
-                rev=(item.rev or "").strip(),
+                rev=(extra_field(item, "outgoing_rev") or item.rev or "").strip(),
                 description=(item.description or "").strip(),
-                status=letter_status(kind, item.status),
-                notes=(item.notes or "").strip(),
-                note_color=note_color_name(item.note_color),
+                status=status,
+                notes=(extra_field(item, "letter_notes") or item.notes or "").strip(),
+                note_color=note_color_name(extra_field(item, "letter_note_color") or item.note_color),
             )
         )
     return lines
@@ -180,6 +185,8 @@ def _purpose_for_kind(drawing: object, kind: str) -> str:
 
 def shop_status_from_jira(purpose: str, *, statuses: tuple[str, ...] = ()) -> str:
     token = (purpose or "").strip().casefold().replace("_", " ")
+    if not token:
+        return ""
     allowed = statuses or layout_for(SHOP).statuses
     mapping = {
         "ifc": "IFC",
