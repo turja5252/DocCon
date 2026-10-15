@@ -2780,6 +2780,45 @@ def test_jira_id_next_turns_yellow_and_restores_now() -> None:
         root.destroy()
 
 
+def test_delete_from_start_trims_only_packed_jira_ids() -> None:
+    root = _board_root()
+    try:
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.set_rows(
+            [
+                _row(key="P2024-1", drawing_id="2026-050-1 CIPT-2026-051-1-1"),
+                _row(key="P2024-2", drawing_id="2026-050-1-STWD"),
+            ]
+        )
+        board._blocks["P2024-2"].include.set(False)
+        assert board.trim_packed_id_start() == 1
+        assert board._blocks["P2024-1"].drawing_id_next.get() == "026-050-1 CIPT-2026-051-1-1"
+        assert board._blocks["P2024-2"].drawing_id_next.get() == "2026-050-1-STWD"
+        for _ in range(10):
+            board.trim_packed_id_start()
+        box = board._blocks["P2024-1"].drawing_id_next
+        assert box.get() == "CIPT-2026-051-1-1"
+        root.update_idletasks()
+        assert box.cget("style") == "Pending.TEntry"
+        assert board.pending_rows()[0].drawing.drawing_id == "CIPT-2026-051-1-1"
+        box.set("X")
+        assert board.trim_packed_id_start() == 0
+        assert box.get() == "X"
+        board._blocks["P2024-1"].drawing_id_next.set("2026-050-1 CIPT")
+        board.trim_packed_id_start()
+        board.trim_packed_id_start()
+        assert board.undo_packed_id_start() == 1
+        assert board._blocks["P2024-1"].drawing_id_next.get() == "026-050-1 CIPT"
+        assert board.undo_packed_id_start() == 1
+        assert board._blocks["P2024-1"].drawing_id_next.get() == "2026-050-1 CIPT"
+        for _ in range(10):
+            board.trim_packed_id_start()
+        assert board._blocks["P2024-1"].drawing_id_next.get() == " CIPT"
+        assert board.pending_rows()[0].drawing.drawing_id == "CIPT"
+    finally:
+        root.destroy()
+
+
 def test_cancel_next_restores_jira_id() -> None:
     root = _board_root()
     try:
@@ -3306,6 +3345,25 @@ def test_preview_grab_writes_yellow_next_description() -> None:
         assert board.next_edits() == {"P2024-1": {"title": "FLOOR REPAIR DETAIL"}}
         assert board.set_next_description("P2024-1", "1") is False
         assert block.title_next.get() == "FLOOR REPAIR DETAIL"
+        assert board.set_next_description("P2024-1", "CNRL", append=True) is True
+        assert block.title_next.get() == "FLOOR REPAIR DETAIL CNRL"
+        assert board.set_next_description("P2024-1", "CNRL", append=True) is True
+        assert block.title_next.get() == "FLOOR REPAIR DETAIL CNRL"
         assert board.set_next_description("missing", "FLOOR REPAIR DETAIL") is False
+        assert board.set_next_id("P2024-1", "2026-118-1-1-TJ") is True
+        assert block.drawing_id_next.get() == "2026-118-1-1-TJ"
+        assert block.drawing_id_next.cget("style") == "Pending.TEntry"
+        assert board.set_next_id("P2024-1", "2026-118-1-1") is True
+        assert block.drawing_id_next.get() == "2026-118-1-1"
+        assert board.set_next_id("P2024-1", "---") is False
+        assert block.drawing_id_next.get() == "2026-118-1-1"
+        assert board.set_next_id("P2024-1", "TJ", append=True) is True
+        assert block.drawing_id_next.get() == "2026-118-1-1 TJ"
+        assert board.set_next_id("P2024-1", "TJ", append=True) is True
+        assert block.drawing_id_next.get() == "2026-118-1-1 TJ"
+        assert board.clear_grabbed_next("P2024-1", "id") is True
+        assert block.drawing_id_next.get() == "2026-Tanzim-1-1"
+        assert board.clear_grabbed_next("P2024-1", "description") is True
+        assert block.title_next.get() == "Drawing"
     finally:
         root.destroy()

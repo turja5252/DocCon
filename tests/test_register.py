@@ -150,10 +150,13 @@ def test_parse_summary_language_after_id() -> None:
     assert title == "Inspection and Testing Plan for Roof"
 
 
-def test_parse_summary_keeps_code_tokens_then_language() -> None:
+def test_parse_summary_space_starts_the_description() -> None:
+    drawing_id, title = parse_summary("2026-118-1-1-TJ TANK JACKING AND SHELL STIFFENERS DETAIL")
+    assert drawing_id == "2026-118-1-1-TJ"
+    assert title == "TANK JACKING AND SHELL STIFFENERS DETAIL"
     drawing_id, title = parse_summary("2026-075 ITP-1-1 Inspection and Testing Plan")
-    assert drawing_id == "2026-075 ITP-1-1"
-    assert title == "Inspection and Testing Plan"
+    assert drawing_id == "2026-075"
+    assert title == "ITP-1-1 Inspection and Testing Plan"
 
 
 def test_parse_summary_size_after_the_id_is_description() -> None:

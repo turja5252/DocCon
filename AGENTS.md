@@ -29,8 +29,8 @@ Jira remains the source of truth. DocCon is the execution layer, in the same pro
 
 The summary is an ID, then optional wording. Empty description is allowed.
 
-- ID is the leading code: `2026-075-1-STWD`, `2026-075-ITP-1-1`, dummy `2026-Tanzim-1-1`. No extra English required.
-- Description is whatever language follows that code (`Inspection and Testing Plan for Roof`). Not a strict title format.
+- ID is the text before the first space: `2026-075-1-STWD`, `2026-118-1-1-TJ`, `2026-075-ITP-1-1`, dummy `2026-Tanzim-1-1`. A dash stays on the ID. No extra English required.
+- Description is everything after that space (`TANK JACKING AND SHELL STIFFENERS DETAIL`, `Inspection and Testing Plan for Roof`). Empty description is fine.
 - Live drawing: `2026-075-1-STWD SPIRAL STAIRWAY: INSIDE HANDRAIL DETAIL`
 - `customfield_10300` Job Number (`2026-075`) — group a transmittal
 
@@ -38,7 +38,9 @@ The summary is an ID, then optional wording. Empty description is allowed.
 
 No extra Jira status or custom trigger field. Engineer emails Sarah the pack list; she runs DocCon.
 
-**Next:** Source and the frozen exe are **2.18**. Load `2026-Tanzim`. Do not Confirm 075.
+**Next:** Source and the frozen exe are **2.19**. Load `2026-Tanzim`. Do not Confirm 075.
+
+**2.19 A preview box can build the ID or the description, and Signed stays off the revision.** The JIRA ID is the text before the first space. **Delete from start** takes one character off each packed JIRA ID, and **↶** puts it back. Preview **ID** and **Description** take a box; a later box adds on, and right-click clears. A box with no text layer is read with Tesseract. `REV 0 Signed` is rev `0`. Drag is not back.
 
 **2.18 The project description is built from the job fields, and Elite Contact is a name from the email.** The client letter project description defaults to `{client} | Loc: {location} | Ref. Tag: {tag} | PO#: {po} | WO#: {wo} | MOC#: {moc}`. A description she types herself stays. Shop and Field Elite Contact prints a name taken from each PM and Engineering address (`breydon.kokas@…` becomes `Breydon Kokas`). Drag is not back.
 

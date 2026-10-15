@@ -24,6 +24,10 @@ def test_parse_pdf_stem() -> None:
     drawing_id, rev = parse_pdf_stem("2026-075-STWD REV 0")
     assert drawing_id == "2026-075-STWD"
     assert rev == "0"
+    assert parse_pdf_stem("ITP-2026-101-1-2 REV 0 Signed") == ("ITP-2026-101-1-2", "0")
+    assert parse_pdf_stem("ITP-2026-101-1-2 REV 0Signed") == ("ITP-2026-101-1-2", "0")
+    assert parse_pdf_stem("ITP-2026-101-1-2 REV 0A draft") == ("ITP-2026-101-1-2", "0A")
+    assert parse_pdf_stem("ITP-2026-101-1-2 REV 10 note") == ("ITP-2026-101-1-2", "10")
 
 
 def test_parse_eis_procedure_stem() -> None:

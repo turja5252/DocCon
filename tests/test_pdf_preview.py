@@ -38,13 +38,25 @@ def test_preview_window_opens_and_closes(tmp_path: Path) -> None:
             root,
             pdf,
             heading="2026-Tanzim-1-1",
-            on_grab=lambda text: grabbed.append(text) or True,
+            on_grab=lambda text, _target="description": grabbed.append(text) or True,
         )
         root.update_idletasks()
         assert dialog.winfo_exists()
         assert "2026-Tanzim-1-1" in str(dialog._heading.cget("text"))
-        again = open_pdf_preview(root, pdf, heading="retarget", on_grab=lambda _text: True)
+        again = open_pdf_preview(root, pdf, heading="retarget", on_grab=lambda _text, _target="description": True)
         assert again is dialog
+        assert dialog._grab_target == "description"
+        assert str(dialog._description_btn.cget("style")) == "Accent.TButton"
+        dialog._set_grab_target("id")
+        assert dialog._grab_target == "id"
+        assert str(dialog._id_btn.cget("style")) == "Accent.TButton"
+        cleared: list[str] = []
+        dialog._on_clear = cleared.append
+        dialog._grab_follow = True
+        assert dialog._on_clear_grab(None) == "break"
+        assert cleared == ["id"]
+        assert dialog._grab_follow is False
+        assert "B3-Motion" not in dialog.canvas.bind()
         close_pdf_preview()
         root.update_idletasks()
         assert not dialog.winfo_exists()

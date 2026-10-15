@@ -129,6 +129,17 @@ def _next_alpha(token: str) -> str:
     return prefix + "".join(chars)
 
 
+def id_without_first_character(text: str) -> str | None:
+    """The ID after one character is taken off the front. One character left stays."""
+    raw = text or ""
+    if len(raw) <= 1:
+        return None
+    nxt = raw[1:]
+    if not nxt.strip():
+        return None
+    return nxt
+
+
 def next_outgoing_rev(now: str) -> str:
     """Next Outgoing Rev after Jira Now. Does not invent a drawing-number scheme.
 
@@ -813,6 +824,7 @@ class DrawingBoard(ttk.Frame):
         self._pack_purpose_field = "purpose"
         self._return_urgency = ""
         self._return_urgency_hold = False
+        self._id_trim_undo: deque[dict[str, str]] = deque(maxlen=30)
         self._stamp_submission = True
         self._batch_visible: set[str] = set()
         self._incoming_row = ttk.Frame(self)
@@ -878,6 +890,8 @@ class DrawingBoard(ttk.Frame):
         self._quiet_dropdown(self._batch_status)
         self._pack_status = self._batch_status
         self._batch_status.bind("<<ComboboxSelected>>", self._on_pack_status_change)
+        ttk.Button(actions, text="Delete from start", command=self.trim_packed_id_start).pack(side="left")
+        ttk.Button(actions, text="↶", width=3, command=self.undo_packed_id_start).pack(side="left", padx=(2, 8))
 
         fields_host = ttk.Frame(top)
         fields_host.pack(side="left", fill="x", expand=True)
@@ -3297,6 +3311,7 @@ class DrawingBoard(ttk.Frame):
         self._pack_status_loading = True
         self._pack_purpose_loading = True
         self._return_urgency = ""
+        self._id_trim_undo.clear()
         self._pack_status.set("")
         box = self._purpose_box()
         if box is not None:
@@ -4668,6 +4683,57 @@ class DrawingBoard(ttk.Frame):
         """Set Next Submission Date on every packed row. Blank does not clear. Does not write Jira."""
         return self.stamp_packed_date("submission_date", date)
 
+    def trim_packed_id_start(self) -> int:
+        """Take one character off the front of each packed JIRA ID. Does not write Jira."""
+        count = 0
+        snapshot: dict[str, str] = {}
+        for block in self._states():
+            if not block.include.get() or block.extra:
+                continue
+            try:
+                current = block.drawing_id_next.get()
+            except tk.TclError:
+                continue
+            nxt = id_without_first_character(current)
+            if nxt is None:
+                continue
+            snapshot[block.key] = current
+            block.drawing_id_next.set(nxt)
+            if isinstance(block, _Block):
+                self._refresh_next_marks(block)
+            count += 1
+        if snapshot:
+            self._id_trim_undo.append(snapshot)
+        if count:
+            self._batch_note.configure(text=f"Removed 1 character from {count} packed JIRA ID(s).")
+        else:
+            self._batch_note.configure(text="Tick Pack on a JIRA ID that still has more than one character.")
+        return count
+
+    def undo_packed_id_start(self) -> int:
+        """Put back the last character Delete from start removed. Does not write Jira."""
+        if not self._id_trim_undo:
+            self._batch_note.configure(text="Nothing to undo.")
+            return 0
+        previous = self._id_trim_undo.pop()
+        count = 0
+        for key, value in previous.items():
+            block = self._state(key)
+            if block is None or block.extra:
+                continue
+            try:
+                block.drawing_id_next.set(value)
+            except tk.TclError:
+                continue
+            if isinstance(block, _Block):
+                self._refresh_next_marks(block)
+            count += 1
+        if count:
+            self._batch_note.configure(text=f"Put back 1 character on {count} packed JIRA ID(s).")
+        else:
+            self._batch_note.configure(text="Nothing to undo.")
+        return count
+
     def bump_packed_revs(self) -> int:
         """Set Next Outgoing Rev to the step after each packed row's Now. Does not write Jira."""
         count = 0
@@ -5050,6 +5116,25 @@ class DrawingBoard(ttk.Frame):
             return False
         if current != now:
             box.set(now)
+        self._refresh_next_marks(block)
+        return True
+
+    def clear_grabbed_next(self, key: str, target: str) -> bool:
+        """Put Now back on the ID or Description a preview box just wrote."""
+        field = "drawing_id" if (target or "").strip().lower() == "id" else "title"
+        if self.restore_next_field(key, field):
+            return True
+        block = self._blocks.get((key or "").strip())
+        if block is None:
+            return False
+        box = block.drawing_id_next if field == "drawing_id" else block.title_next
+        label = block.drawing_label if field == "drawing_id" else block.title_label
+        try:
+            now = str(label.cget("text") or "")
+            if box.get() != now:
+                box.set(now)
+        except tk.TclError:
+            return False
         self._refresh_next_marks(block)
         return True
 
@@ -5442,9 +5527,25 @@ class DrawingBoard(ttk.Frame):
             return
         self._on_preview_pdf(key)
 
-    def set_next_description(self, key: str, text: str) -> bool:
-        """Write Next Description (yellow until Confirm). Empty or unusable text is ignored."""
-        from doccon.pdf_grab import clean_grabbed_text, grabbed_text_is_usable
+    def set_next_id(self, key: str, text: str, *, append: bool = False) -> bool:
+        """Write Next JIRA ID (yellow until Confirm). A later box adds onto it."""
+        from doccon.pdf_grab import append_grabbed_text, clean_grabbed_text
+
+        block = self._blocks.get((key or "").strip())
+        if block is None:
+            return False
+        cleaned = clean_grabbed_text(text)
+        if append:
+            cleaned = append_grabbed_text(block.drawing_id_next.get(), cleaned)
+        if not any(char.isalnum() for char in cleaned):
+            return False
+        block.drawing_id_next.set(cleaned)
+        self._refresh_next_marks(block)
+        return True
+
+    def set_next_description(self, key: str, text: str, *, append: bool = False) -> bool:
+        """Write Next Description (yellow until Confirm). A later box adds onto it."""
+        from doccon.pdf_grab import append_grabbed_text, clean_grabbed_text, grabbed_text_is_usable
 
         block = self._blocks.get((key or "").strip())
         if block is None:
@@ -5452,6 +5553,8 @@ class DrawingBoard(ttk.Frame):
         cleaned = clean_grabbed_text(text)
         if not grabbed_text_is_usable(cleaned):
             return False
+        if append:
+            cleaned = append_grabbed_text(block.title_next.get(), cleaned)
         block.title_next.set(cleaned)
         self._refresh_next_marks(block)
         return True

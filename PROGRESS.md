@@ -2,6 +2,42 @@
 
 Newest first. Append a dated entry when a decision is locked, a test runs, or the next step changes.
 
+## 2026-10-15 — Shipped 2.19
+
+Source and the frozen exe are 2.19. A space starts the description. Delete from start trims a packed JIRA ID. Preview grabs an ID or a description, a later box adds on, right-click clears, and a scanned box is read with Tesseract. `REV 0 Signed` is rev `0`. Load `2026-Tanzim`. Do not Confirm 075.
+
+## 2026-10-15 — A filename rev stops at two characters
+
+`ITP-2026-101-1-2 REV 0 Signed.pdf` is rev `0` on the letter and on Next Outgoing Rev. Words after the rev are left off. `0A` and `10` stay. Not shipped yet.
+
+## 2026-10-15 — A later Description box adds on too
+
+Description follows ID. The first box writes it. Each later box adds on with a space. Boxing the same words again leaves it. Right-click clears it. Not shipped yet.
+
+## 2026-10-15 — Right-click on Preview clears the grab
+
+Right-click on the preview puts Now back on the selected ID or Description and the next box starts over. The wheel button still pans. Not shipped yet.
+
+## 2026-10-15 — A later ID box adds onto the ID
+
+With ID selected, the first box writes Next JIRA ID. The next box adds onto that ID with a space. Boxing the same words again leaves it. Switching to Description and back starts a new ID. Description still replaces. Not shipped yet.
+
+## 2026-10-15 — Preview OCR reads the boxed pixels
+
+A box with no PDF text layer is read with the bundled Tesseract, the same clip read Databook uses. Description still needs letters. An ID can be a drawing number. Not shipped yet.
+
+## 2026-10-15 — Preview can grab an ID
+
+Preview starts on Description. ID beside it switches the box. The next box writes Next JIRA ID and turns it yellow. Description still writes Next Description. Not shipped yet.
+
+## 2026-10-15 — A space starts the description
+
+The JIRA ID is the text before the first space. A dash stays on the ID, so `2026-118-1-1-TJ TANK JACKING AND SHELL STIFFENERS DETAIL` is document number `2026-118-1-1-TJ` and description `TANK JACKING AND SHELL STIFFENERS DETAIL`. `CWB Certificate` stays a two-word ID. Not shipped yet.
+
+## 2026-10-15 — Batch Next can trim the front of a JIRA ID
+
+**Delete from start** on Batch Next takes one character off the front of each packed JIRA ID. **↶** beside it puts that character back, one click per step, for the last 30 clicks. There is no trim from the end. A leading space is not written: Create transmittal starts the ID at the first letter. A click that would erase the last character does nothing. The cell turns yellow. One row can still be edited. Right-click or Cancel Next restores Now. Jira is written on Create transmittal. Not shipped yet.
+
 ## 2026-10-14 — Shipped 2.18
 
 Source and the frozen exe are 2.18. The client project description defaults from Client, Location, Tag, PO, WO, and MOC. Shop and Field Elite Contact is a name taken from each PM and Engineering email. Load `2026-Tanzim`. Do not Confirm 075.

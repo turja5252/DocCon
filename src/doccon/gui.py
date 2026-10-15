@@ -5377,14 +5377,28 @@ class DocConApp(tk.Tk):
                 return
             heading = f"{extra.document_no}  ·  {pdf.name}"
 
-            def on_grab(text: str, issue_key: str = key) -> bool:
-                wrote = self.board.set_next_description(issue_key, text)
+            def on_grab(
+                text: str,
+                target: str = "description",
+                append: bool = False,
+                issue_key: str = key,
+            ) -> bool:
+                if target == "id":
+                    wrote = self.board.set_next_id(issue_key, text, append=append)
+                    kind = "ID"
+                else:
+                    wrote = self.board.set_next_description(issue_key, text, append=append)
+                    kind = "description"
                 if wrote:
-                    self._set_status(f"Grabbed description onto {extra.document_no}.")
+                    self._set_status(f"Grabbed {kind} onto {extra.document_no}.")
                     self._save_pack(quiet=True)
                 return wrote
 
-            open_pdf_preview(self, pdf, heading=heading, on_grab=on_grab)
+            def on_clear(target: str, issue_key: str = key) -> None:
+                if self.board.clear_grabbed_next(issue_key, target):
+                    self._save_pack(quiet=True)
+
+            open_pdf_preview(self, pdf, heading=heading, on_grab=on_grab, on_clear=on_clear)
             return
         self.board.focus_key(key)
         row = self._matches.get(key) or self.board.focused_row()
@@ -5401,14 +5415,27 @@ class DocConApp(tk.Tk):
         drawing = row.drawing
         heading = f"{drawing.drawing_id or drawing.key}  ·  {pdf.name}"
 
-        def on_grab(text: str, issue_key: str = key) -> bool:
-            wrote = self.board.set_next_description(issue_key, text)
+        def on_grab(
+            text: str,
+            target: str = "description",
+            append: bool = False,
+            issue_key: str = key,
+        ) -> bool:
+            if target == "id":
+                wrote = self.board.set_next_id(issue_key, text, append=append)
+                kind = "ID"
+            else:
+                wrote = self.board.set_next_description(issue_key, text, append=append)
+                kind = "description"
             if wrote:
                 ident = drawing.drawing_id or drawing.key
-                self._set_status(f"Grabbed description onto {ident}.")
+                self._set_status(f"Grabbed {kind} onto {ident}.")
             return wrote
 
-        open_pdf_preview(self, pdf, heading=heading, on_grab=on_grab)
+        def on_clear(target: str, issue_key: str = key) -> None:
+            self.board.clear_grabbed_next(issue_key, target)
+
+        open_pdf_preview(self, pdf, heading=heading, on_grab=on_grab, on_clear=on_clear)
 
 
 def main() -> int:

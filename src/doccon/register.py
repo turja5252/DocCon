@@ -173,37 +173,6 @@ WELD_MULTIWORD_IDS = (CWB_CERTIFICATE_ID,)
 WELD_PROCEDURE_ID_PREFIXES = ("EIS-", "FM-WPS-", "SM-WPS-")
 
 
-def _looks_like_language(token: str) -> bool:
-    """True when this token starts description text, not another ID fragment."""
-    piece = token.strip(".,;:()[]")
-    if not piece or piece in {"-", "–", "—", "/", "&"}:
-        return False
-    letters = "".join(ch for ch in piece if ch.isalpha())
-    if len(letters) >= 4 and any(ch.islower() for ch in piece):
-        return True
-    return len(letters) >= 5 and not any(ch.isdigit() for ch in piece)
-
-
-def _looks_like_id_fragment(token: str) -> bool:
-    """True when a later token is still the drawing code, not a size or title.
-
-    ``ITP-1-1`` and ``STWD`` continue ``2026-075``. ``48"``, ``x``, and ``36"`` do not.
-    """
-    if any(ch in token for ch in "\"'″′×"):
-        return False
-    piece = token.strip(".,;:()[]\"'″′")
-    if not piece or piece.casefold() in {"x", "by", "-", "–", "—", "/", "&"}:
-        return False
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", piece):
-        return False
-    letters = "".join(ch for ch in piece if ch.isalpha())
-    if not letters:
-        return False
-    if piece[0].isdigit() and letters.casefold() in {"in", "mm", "cm", "ft", "m"}:
-        return False
-    return True
-
-
 def weld_package_description(drawing_id: str) -> str:
     """Set wording for a welding-package document number. Empty if it is not one."""
     token = (drawing_id or "").strip()
@@ -233,24 +202,18 @@ def _multiword_weld_id(text: str) -> tuple[str, str] | None:
 def parse_summary(summary: str) -> tuple[str, str]:
     """Split a Jira summary into drawing ID and optional description.
 
-    The ID is the leading code (``2026-075-ITP-1-1``, ``2026-075-1-STWD``). It may
-    be the whole summary. Description is any wording after that code. Empty is
-    fine — there is no required title format. Welding-package ``CWB Certificate``
-    is a two-word ID.
+    The ID is the text before the first space. A dash stays on the ID
+    (``2026-118-1-1-TJ``). Wording after the space is the description.
+    ``CWB Certificate`` stays a two-word ID.
     """
-    tokens = [part for part in re.split(r"\s+", (summary or "").strip()) if part]
-    if not tokens:
+    text = re.sub(r"\s+", " ", (summary or "").strip())
+    if not text:
         return "", ""
-    text = " ".join(tokens)
     weld_id = _multiword_weld_id(text)
     if weld_id is not None:
         return weld_id
-    end = 1
-    while end < len(tokens) and _looks_like_id_fragment(tokens[end]) and not _looks_like_language(tokens[end]):
-        end += 1
-    drawing_id = " ".join(tokens[:end]).strip(" \t-–—:")
-    title = " ".join(tokens[end:]).strip(" -–—")
-    return drawing_id, title
+    drawing_id, _, title = text.partition(" ")
+    return drawing_id.strip(" \t-–—:"), title.strip(" -–—")
 
 
 def adopted_summary(current_summary: str, pdf_drawing_id: str) -> str:

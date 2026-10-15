@@ -2,7 +2,7 @@
 # Copyright (c) 2026 Tanzim Nasir.
 # Built for Elite Integrity Services.
 # Unauthorized use by other companies is prohibited.
-"""PDF preview window: zoom, pan, draw a box, grab Description. Not a console pane."""
+"""PDF preview window: zoom, pan, draw a box, grab ID or Description."""
 from __future__ import annotations
 
 import contextlib
@@ -15,7 +15,9 @@ import pymupdf
 
 from doccon.pdf_grab import (
     canvas_box_to_page_rect,
-    grabbed_text_is_usable,
+    canvas_box_to_pix_irect,
+    grab_target_accepts,
+    ocr_pixmap_box,
     text_from_page_clip,
 )
 from doccon.popups import place_on_parent
@@ -24,7 +26,9 @@ from doccon.theme import ACCENT, apply_theme
 ZOOM_MIN = 0.4
 ZOOM_MAX = 4.0
 ZOOM_STEP = 1.25
-GRAB_HINT = "Draw a box to grab Description. Wheel zooms. Middle-drag pans."
+GRAB_HINT = "Draw a box. Wheel zooms. Middle-drag pans. Right-click clears."
+GRAB_ID = "id"
+GRAB_DESCRIPTION = "description"
 MAX_PIX_EDGE = 3600
 
 
@@ -39,7 +43,8 @@ class PdfPreviewDialog(tk.Toplevel):
         path: Path,
         *,
         heading: str = "",
-        on_grab: Callable[[str], bool] | None = None,
+        on_grab: Callable[..., bool] | None = None,
+        on_clear: Callable[[str], None] | None = None,
     ) -> None:
         previous = PdfPreviewDialog._open
         if previous is not None:
@@ -55,6 +60,9 @@ class PdfPreviewDialog(tk.Toplevel):
         self.transient(host)
         apply_theme(self)
         self._on_grab = on_grab
+        self._on_clear = on_clear
+        self._grab_target = GRAB_DESCRIPTION
+        self._grab_follow = False
         self._doc: pymupdf.Document | None = None
         self._path: Path | None = None
         self._page = 0
@@ -62,6 +70,7 @@ class PdfPreviewDialog(tk.Toplevel):
         self._pan_x = 0
         self._pan_y = 0
         self._photo: tk.PhotoImage | None = None
+        self._pix: pymupdf.Pixmap | None = None
         self._pix_size = (0, 0)
         self._matrix_zoom = 1.0
         self._page_size = (1.0, 1.0)
@@ -91,6 +100,13 @@ class PdfPreviewDialog(tk.Toplevel):
         self._page_label = ttk.Label(tools, text="page 1/1", width=12, anchor="center")
         self._page_label.pack(side="left", padx=4)
         ttk.Button(tools, text=">", width=3, command=lambda: self._page_delta(1)).pack(side="left")
+        self._id_btn = ttk.Button(tools, text="ID", width=6, command=lambda: self._set_grab_target(GRAB_ID))
+        self._id_btn.pack(side="left", padx=(16, 0))
+        self._description_btn = ttk.Button(
+            tools, text="Description", width=14, command=lambda: self._set_grab_target(GRAB_DESCRIPTION)
+        )
+        self._description_btn.pack(side="left", padx=(4, 0))
+        self._paint_grab_target()
         hint = ttk.Label(tools, text=GRAB_HINT)
         hint.pack(side="left", padx=(16, 0))
 
@@ -112,9 +128,7 @@ class PdfPreviewDialog(tk.Toplevel):
         self.canvas.bind("<ButtonPress-2>", self._on_pan_press)
         self.canvas.bind("<B2-Motion>", self._on_pan_drag)
         self.canvas.bind("<ButtonRelease-2>", self._on_pan_release)
-        self.canvas.bind("<ButtonPress-3>", self._on_pan_press)
-        self.canvas.bind("<B3-Motion>", self._on_pan_drag)
-        self.canvas.bind("<ButtonRelease-3>", self._on_pan_release)
+        self.canvas.bind("<Button-3>", self._on_clear_grab)
         self.bind("<Escape>", lambda _event: self.destroy())
         self.protocol("WM_DELETE_WINDOW", self.destroy)
         self._load(path, heading=heading)
@@ -127,9 +141,11 @@ class PdfPreviewDialog(tk.Toplevel):
         path: Path,
         *,
         heading: str = "",
-        on_grab: Callable[[str], bool] | None = None,
+        on_grab: Callable[..., bool] | None = None,
+        on_clear: Callable[[str], None] | None = None,
     ) -> None:
         self._on_grab = on_grab
+        self._on_clear = on_clear
         self._load(path, heading=heading)
         self.lift()
 
@@ -155,6 +171,8 @@ class PdfPreviewDialog(tk.Toplevel):
         self._pan_x = 0
         self._pan_y = 0
         self._photo = None
+        self._pix = None
+        self._grab_follow = False
         target = Path(path)
         self._heading.configure(text=heading or target.name)
         try:
@@ -217,6 +235,7 @@ class PdfPreviewDialog(tk.Toplevel):
             pix = page_obj.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), alpha=False)
             photo = tk.PhotoImage(data=pix.tobytes("ppm"))
             self._photo = photo
+            self._pix = pix
             self._pix_size = (int(pix.width), int(pix.height))
             self._matrix_zoom = float(zoom)
             self._page_size = (float(page_obj.rect.width), float(page_obj.rect.height))
@@ -329,23 +348,67 @@ class PdfPreviewDialog(tk.Toplevel):
             return
         self._status.set("Reading box…")
         self.update_idletasks()
+        target = self._grab_target
         try:
             page_obj = handle[self._page]
             grabbed = text_from_page_clip(page_obj, pymupdf.Rect(*box))
+            if not grab_target_accepts(grabbed, target):
+                irect = canvas_box_to_pix_irect(
+                    x0,
+                    y0,
+                    x1,
+                    y1,
+                    center=center,
+                    pix_size=self._pix_size,
+                )
+                shown = self._pix
+                if isinstance(shown, pymupdf.Pixmap) and irect is not None:
+                    grabbed = ocr_pixmap_box(shown, irect)
         except Exception as exc:
             self._status.set(f"Could not read that box: {exc}")
             return
-        if not grabbed_text_is_usable(grabbed):
+        if not grab_target_accepts(grabbed, target):
             self._status.set("No text in that box.")
             return
         hook = self._on_grab
         wrote = True
+        name = "ID" if target == GRAB_ID else "Description"
+        append = self._grab_follow
         if hook is not None:
-            wrote = bool(hook(grabbed))
+            wrote = bool(hook(grabbed, target, append))
         if wrote:
-            self._status.set(f"Description: {grabbed}")
+            self._grab_follow = True
+            self._status.set(f"{name}: {grabbed}")
         else:
-            self._status.set("Could not write Description.")
+            self._status.set(f"Could not write {name}.")
+
+    def _on_clear_grab(self, _event: object) -> str:
+        """Right-click throws away the grabbed ID or Description, as Databook does."""
+        self._boxing = False
+        self.canvas.delete("grab-box")
+        self._grab_follow = False
+        target = self._grab_target
+        name = "ID" if target == GRAB_ID else "Description"
+        hook = self._on_clear
+        if hook is not None:
+            hook(target)
+        self._status.set(f"Cleared {name}. Draw a box to grab it again.")
+        return "break"
+
+    def _set_grab_target(self, target: str) -> None:
+        chosen = GRAB_ID if target == GRAB_ID else GRAB_DESCRIPTION
+        if chosen != self._grab_target:
+            self._grab_follow = False
+        self._grab_target = chosen
+        self._paint_grab_target()
+        name = "ID" if self._grab_target == GRAB_ID else "Description"
+        self._status.set(f"Next box writes {name}.")
+
+    def _paint_grab_target(self) -> None:
+        self._id_btn.configure(style="Accent.TButton" if self._grab_target == GRAB_ID else "TButton")
+        self._description_btn.configure(
+            style="Accent.TButton" if self._grab_target == GRAB_DESCRIPTION else "TButton"
+        )
 
 
 def open_pdf_preview(
@@ -353,18 +416,19 @@ def open_pdf_preview(
     path: Path,
     *,
     heading: str = "",
-    on_grab: Callable[[str], bool] | None = None,
+    on_grab: Callable[..., bool] | None = None,
+    on_clear: Callable[[str], None] | None = None,
 ) -> PdfPreviewDialog:
     """Open or retarget the single Preview window."""
     existing = PdfPreviewDialog._open
     if existing is not None:
         try:
             if existing.winfo_exists():
-                existing.retarget(path, heading=heading, on_grab=on_grab)
+                existing.retarget(path, heading=heading, on_grab=on_grab, on_clear=on_clear)
                 return existing
         except tk.TclError:
             PdfPreviewDialog._open = None
-    return PdfPreviewDialog(master, path, heading=heading, on_grab=on_grab)
+    return PdfPreviewDialog(master, path, heading=heading, on_grab=on_grab, on_clear=on_clear)
 
 
 def close_pdf_preview() -> None:

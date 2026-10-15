@@ -15,6 +15,8 @@ from doccon.register import DrawingRow
 
 REV_IN_NAME = re.compile(r"^(.*?)\s+REV\s+(.+)$", re.IGNORECASE)
 REV_IN_PARENS = re.compile(r"^(.*?)\s*\(\s*Rev\.?\s*([^)]+?)\s*\)\s*$", re.IGNORECASE)
+# A rev is at most two characters (``0``, ``A``, ``10``, ``0A``). Words after it stay off the letter.
+REV_TOKEN = re.compile(r"^(\d{1,2}A|\d{1,2}|[A-Z])", re.IGNORECASE)
 EIS_TOKEN = re.compile(r"\beis-\d+(?:-[a-z0-9]+|[a-z]+)?\b", re.IGNORECASE)
 SKIP_DIR_NAMES = frozenset({"old procedures", "original wps"})
 EMAIL_DROPPED_LABEL = "email dropped"
@@ -46,28 +48,36 @@ class MatchedRow:
     confidence: str  # High | Missing
 
 
+def revision_token(text: str) -> str:
+    """The rev only: at most two characters, and nothing written after it.
+
+    ``REV 0 Signed`` and ``REV 0Signed`` are both ``0``. ``0A`` and ``10`` stay.
+    """
+    first = (text or "").strip().split(None, 1)[0]
+    match = REV_TOKEN.match(first)
+    if match is None:
+        return ""
+    return match.group(1).upper()
+
+
 def parse_pdf_stem(stem: str) -> tuple[str, str]:
     text = (stem or "").strip()
     match = REV_IN_NAME.match(text)
     if match:
-        return match.group(1).strip(), match.group(2).strip()
+        return match.group(1).strip(), revision_token(match.group(2))
     match = REV_IN_PARENS.match(text)
     if match:
-        return match.group(1).strip(), match.group(2).strip()
+        return match.group(1).strip(), revision_token(match.group(2))
     return text, ""
 
 
 def outgoing_rev_from_filename(name: str) -> str:
     """Outgoing Rev token in a PDF filename (`… REV 0.pdf`, `EIS-1 (Rev 4).pdf`). Empty if none.
 
-    Prefer the first token (`ITP-… REV 0 Signed.pdf` → `0`, not `0 Signed`).
+    Words after the rev are dropped (``ITP-… REV 0 Signed.pdf`` → ``0``).
     """
-    stem = Path(name or "").stem
-    _drawing_id, rev = parse_pdf_stem(stem)
-    token = (rev or "").strip()
-    if not token:
-        return ""
-    return token.split(None, 1)[0]
+    _drawing_id, rev = parse_pdf_stem(Path(name or "").stem)
+    return rev
 
 
 def compact_drawing_id(drawing_id: str, job_number: str) -> str:

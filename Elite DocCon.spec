@@ -11,6 +11,7 @@ datas += pdf_datas
 binaries += pdf_bins
 hiddenimports += pdf_hidden
 hiddenimports += collect_submodules("doccon")
+datas.append(("vendor/tesseract/tessdata/eng.traineddata", "vendor/tesseract/tessdata"))
 hiddenimports += [
     "keyring.backends.Windows",
     "keyring.backends.fail",
