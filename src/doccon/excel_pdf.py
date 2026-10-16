@@ -1083,6 +1083,7 @@ def file_client_with_excel(
     archive: bool = True,
     kind: str = CLIENT,
     urgent: bool = False,
+    doc_heights: list[float] | None = None,
 ) -> None:
     """Copy TRANSMITTAL with Excel so the logo and macro buttons stay intact."""
     if os.name != "nt":
@@ -1142,8 +1143,9 @@ def file_client_with_excel(
                 "status": line.status,
                 "notes": line.notes or "",
                 "note_color": "Red" if (getattr(line, "note_color", "") or "").strip().casefold() == "red" else "Black",
+                "doc_height": float(doc_heights[index]) if doc_heights and index < len(doc_heights) else 0,
             }
-            for line in lines
+            for index, line in enumerate(lines)
         ],
         **layout.payload(),
     }
@@ -1320,9 +1322,18 @@ def _write_file_script(
             "      if ($col -eq [int]$p.notes_col) { $area.Font.Color = 0 }\n"
             "    }\n"
             "  }\n"
+            "  $formHeight = @{}\n"
+            "  for ($r = $start; $r -le $end; $r++) {\n"
+            "    $formHeight[$r] = [double]$ws.Rows.Item($r).RowHeight\n"
+            "  }\n"
             "  $row = $start\n"
             "  foreach ($line in @($p.lines)) {\n"
-            "    $ws.Cells.Item($row, [int]$p.doc_no_col).Value = [string]$line.document_no\n"
+            "    $docArea = $ws.Cells.Item($row, [int]$p.doc_no_col).MergeArea\n"
+            "    $docArea.Value = [string]$line.document_no\n"
+            "    $docArea.WrapText = $true\n"
+            "    if ([double]$line.doc_height -gt 0 -and $ws.Rows.Item($row).RowHeight -lt [double]$line.doc_height) {\n"
+            "      $ws.Rows.Item($row).RowHeight = [double]$line.doc_height\n"
+            "    }\n"
             "    $ws.Cells.Item($row, [int]$p.rev_col).Value = [string]$line.rev\n"
             "    $ws.Cells.Item($row, [int]$p.desc_col).Value = [string]$line.description\n"
             "    $ws.Cells.Item($row, [int]$p.status_col).Value = [string]$line.status\n"
@@ -1352,6 +1363,8 @@ def _write_file_script(
             "        $area.ClearContents()\n"
             "        if ($col -eq [int]$p.notes_col) { $area.Font.Color = 0 }\n"
             "      }\n"
+            "      $ws.Cells.Item($r, [int]$p.doc_no_col).MergeArea.WrapText = $false\n"
+            "      if ($formHeight.ContainsKey($r)) { $ws.Rows.Item($r).RowHeight = [double]$formHeight[$r] }\n"
             "    }\n"
             "    if ($p.reset_hide) { $ws.Rows([string]$p.reset_hide).EntireRow.Hidden = $true }\n"
             "    $ws.Range([string]$p.number_cell).Value = ([int]$p.number + 1)\n"

@@ -13,13 +13,16 @@ from __future__ import annotations
 import contextlib
 import os
 import re
+import shutil
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.cell.cell import MergedCell
+from openpyxl.styles import Alignment
 from openpyxl.styles.colors import Color
+from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
 
 from doccon.jobs import find_job_folder, job_folder_keys
@@ -32,6 +35,8 @@ from doccon.transmittal_books import adopt_transmittal_books
 
 CLIENT_OUT = BOOK_DIR[CLIENT]
 WORKING_SHEET = "TRANSMITTAL"
+DOC_LINE_PT = 15.0
+DEFAULT_COL_WIDTH = 8.43
 TEMPLATE_BOOK_NAMES = ("CT-202X-XXX.xlsm", "CT-20XX-XXX.xlsm", "CT-202X-XXX.xlsx")
 PLACEHOLDER_JOBS = {"", "202X-XXX", "20XX-XXX", "202X-0XX"}
 
@@ -453,6 +458,66 @@ def file_client_transmittal(
     )
 
 
+def fill_transmittal_copy(
+    book: Path,
+    dest: Path,
+    job_number: str,
+    lines: list[LogLine],
+    *,
+    issued: date | None = None,
+    expected_return: date | str | None = None,
+    cover: PepCover | None = None,
+    kind: str = CLIENT,
+    urgent: bool = False,
+) -> Path:
+    """Fill TRANSMITTAL on a copy. The source book is not saved and no tab is filed."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(book, dest)
+    _commit_transmittal(
+        dest,
+        job_number,
+        lines,
+        issued=issued,
+        expected_return=expected_return,
+        cover=cover,
+        archive=False,
+        kind=kind,
+        urgent=urgent,
+    )
+    return dest
+
+
+def preview_transmittal_pdf(
+    book: Path,
+    job_number: str,
+    lines: list[LogLine],
+    *,
+    issued: date | None = None,
+    expected_return: date | str | None = None,
+    cover: PepCover | None = None,
+    kind: str = CLIENT,
+    urgent: bool = False,
+) -> Path:
+    """Print the letter to a temporary PDF. The live book is not opened for saving."""
+    from doccon.excel_pdf import doccon_temp_dir, export_sheet_pdf
+
+    hold = doccon_temp_dir("ct-preview-")
+    copy_path = hold / Path(book).name
+    fill_transmittal_copy(
+        book,
+        copy_path,
+        job_number,
+        lines,
+        issued=issued,
+        expected_return=expected_return,
+        cover=cover,
+        kind=kind,
+        urgent=urgent,
+    )
+    pdf = hold / f"{PREFIX.get(kind, 'letter')}-preview.pdf"
+    return export_sheet_pdf(copy_path, WORKING_SHEET, pdf)
+
+
 def fill_client_transmittal(
     path: Path,
     job_number: str,
@@ -506,6 +571,7 @@ def _commit_transmittal(
         if archive and sheet_name in wb.sheetnames:
             raise LogError(f"{path.name} already has a tab named {sheet_name}.")
         if path.suffix.casefold() == ".xlsm" and os.name == "nt":
+            doc_heights = document_no_heights(ws, lines, layout)
             wb.close()
             from doccon.excel_pdf import file_client_with_excel
 
@@ -522,6 +588,7 @@ def _commit_transmittal(
                 archive=archive,
                 kind=kind,
                 urgent=urgent,
+                doc_heights=doc_heights,
             )
             cover_id = f"{PREFIX[kind]}-{job}-{number}"
             return FileClientResult(
@@ -531,7 +598,7 @@ def _commit_transmittal(
                 line_count=len(lines),
                 pdf_path=None,
             )
-        _write_working_sheet(
+        saved_heights = _write_working_sheet(
             ws,
             layout=layout,
             job=job,
@@ -549,7 +616,12 @@ def _commit_transmittal(
             _strip_action_buttons(archived)
             current_index = wb.sheetnames.index(sheet_name)
             wb.move_sheet(archived, offset=1 - current_index)
-            _reset_working_sheet(ws, layout=layout, next_number=number + 1)
+            _reset_working_sheet(
+                ws,
+                layout=layout,
+                next_number=number + 1,
+                row_heights=saved_heights,
+            )
         wb.save(path)
     finally:
         with contextlib.suppress(Exception):
@@ -640,6 +712,52 @@ def _date_cell(value: date) -> datetime:
     return datetime(value.year, value.month, value.day)
 
 
+def document_no_height(text: str, column_width: float, base_height: float | None) -> float | None:
+    """Point height when a Document No. needs more than the form row. None keeps that row."""
+    token = (text or "").strip()
+    if not token:
+        return None
+    from doccon.eddi import _wrapped_line_count
+
+    room = column_width if column_width and column_width >= 1 else DEFAULT_COL_WIDTH
+    lines = _wrapped_line_count(token, int(room))
+    if lines <= 1:
+        return None
+    need = lines * DOC_LINE_PT
+    base = float(base_height) if base_height else DOC_LINE_PT
+    if need <= base:
+        return None
+    return need
+
+
+def _document_column_width(ws: Worksheet, row: int, col: int) -> float:
+    """Width of the Document No. cell, including a merged shop or field cell."""
+    start = end = col
+    for merged in ws.merged_cells.ranges:
+        if merged.min_row <= row <= merged.max_row and merged.min_col <= col <= merged.max_col:
+            start, end = merged.min_col, merged.max_col
+            break
+    total = 0.0
+    for index in range(start, end + 1):
+        width = ws.column_dimensions[get_column_letter(index)].width
+        total += float(width) if width else DEFAULT_COL_WIDTH
+    return total
+
+
+def document_no_heights(ws: Worksheet, lines: list[LogLine], layout: BookLayout) -> list[float]:
+    """0 keeps the form row. A positive value is the taller wrapped height, in points."""
+    heights: list[float] = []
+    for index, line in enumerate(lines):
+        row = layout.doc_start_row + index
+        need = document_no_height(
+            line.document_no,
+            _document_column_width(ws, row, layout.doc_no_col),
+            ws.row_dimensions[row].height,
+        )
+        heights.append(float(need or 0))
+    return heights
+
+
 def _expected_cell(value: date | str | None) -> object:
     if value is None or value == "":
         return "N/A"
@@ -662,7 +780,8 @@ def _write_working_sheet(
     expected_return: date | str | None = None,
     cover: PepCover | None = None,
     urgent: bool = False,
-) -> None:
+) -> dict[int, float | None]:
+    """Fill the working sheet. Returns each written row's height from before the wrap."""
     ws[layout.number_cell] = number
     ws[layout.pages_cell] = pages
     ws[layout.job_cell] = job
@@ -695,18 +814,55 @@ def _write_working_sheet(
             _set_value(ws, coord, None)
             if col == layout.notes_col:
                 _set_note_color(ws, coord, False)
+    saved_heights: dict[int, float | None] = {}
     for index, line in enumerate(lines):
         row = layout.doc_start_row + index
+        saved_heights[row] = ws.row_dimensions[row].height
         _set_value(ws, ws.cell(row, layout.doc_no_col).coordinate, line.document_no)
+        _wrap_document_no(ws, row, layout.doc_no_col, line.document_no)
         _set_value(ws, ws.cell(row, layout.rev_col).coordinate, _rev_value(line.rev))
         _set_value(ws, ws.cell(row, layout.desc_col).coordinate, line.description)
         _set_value(ws, ws.cell(row, layout.status_col).coordinate, line.status)
         note_coord = ws.cell(row, layout.notes_col).coordinate
         _set_value(ws, note_coord, line.notes or None)
         _set_note_color(ws, note_coord, note_color_is_red(line.note_color) and bool((line.notes or "").strip()))
+    return saved_heights
 
 
-def _reset_working_sheet(ws: Worksheet, *, layout: BookLayout, next_number: int) -> None:
+def _wrap_document_no(ws: Worksheet, row: int, col: int, text: str) -> None:
+    """Wrap Document No. in the existing cell and grow the row when the form height is too short."""
+    cell = ws.cell(row, col)
+    if isinstance(cell, MergedCell):
+        return
+    base = ws.row_dimensions[row].height
+    cell.alignment = Alignment(
+        horizontal=cell.alignment.horizontal or "center",
+        vertical=cell.alignment.vertical or "center",
+        wrap_text=True,
+    )
+    need = document_no_height(text, _document_column_width(ws, row, col), base)
+    if need is not None:
+        ws.row_dimensions[row].height = need
+
+
+def _clear_document_wrap(ws: Worksheet, row: int, col: int) -> None:
+    cell = ws.cell(row, col)
+    if isinstance(cell, MergedCell):
+        return
+    cell.alignment = Alignment(
+        horizontal=cell.alignment.horizontal or "center",
+        vertical=cell.alignment.vertical or "center",
+        wrap_text=False,
+    )
+
+
+def _reset_working_sheet(
+    ws: Worksheet,
+    *,
+    layout: BookLayout,
+    next_number: int,
+    row_heights: dict[int, float | None] | None = None,
+) -> None:
     ws[layout.number_cell] = next_number
     ws[layout.pages_cell] = 1
     for coord in layout.reset_cells:
@@ -721,6 +877,9 @@ def _reset_working_sheet(ws: Worksheet, *, layout: BookLayout, next_number: int)
             _set_value(ws, coord, None)
             if col == layout.notes_col:
                 _set_note_color(ws, coord, False)
+        if row_heights and row in row_heights:
+            _clear_document_wrap(ws, row, layout.doc_no_col)
+            ws.row_dimensions[row].height = row_heights[row]
 
 
 def _set_note_color(ws: Worksheet, coord: str, red: bool) -> None:

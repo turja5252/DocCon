@@ -294,6 +294,93 @@ def test_file_real_template_copy_if_sandbox_exists(tmp_path: Path) -> None:
     return
 
 
+def test_long_document_number_wraps_and_the_blank_sheet_returns(tmp_path: Path) -> None:
+    path = tmp_path / "CT-2026-Tanzim.xlsx"
+    book = empty_client_workbook()
+    sheet = book.active
+    sheet.column_dimensions["A"].width = 18.44
+    sheet.row_dimensions[15].height = 30
+    book.save(path)
+    long_id = "X" * 40
+    file_client_transmittal(
+        path,
+        "2026-Tanzim",
+        [LogLine(long_id, "A", "Drawing-1", "APPROVAL")],
+        issued=date(2026, 10, 16),
+    )
+    wb = load_workbook(path)
+    filed = wb["1"]
+    assert filed["A15"].value == long_id
+    assert filed["A15"].alignment.wrap_text is True
+    assert filed.row_dimensions[15].height == 45
+    working = wb["TRANSMITTAL"]
+    assert working["A15"].value is None
+    assert working.row_dimensions[15].height == 30
+    assert working["A15"].alignment.wrap_text is not True
+    wb.close()
+
+
+def test_short_document_number_keeps_the_form_row(tmp_path: Path) -> None:
+    path = tmp_path / "CT-2026-Tanzim.xlsx"
+    book = empty_client_workbook()
+    sheet = book.active
+    sheet.column_dimensions["A"].width = 18.44
+    sheet.row_dimensions[15].height = 30
+    book.save(path)
+    file_client_transmittal(
+        path,
+        "2026-Tanzim",
+        [LogLine("2026-Tanzim-1-1", "A", "Drawing-1", "APPROVAL")],
+        issued=date(2026, 10, 16),
+    )
+    wb = load_workbook(path)
+    filed = wb["1"]
+    assert filed["A15"].alignment.wrap_text is True
+    assert filed.row_dimensions[15].height == 30
+    assert wb["TRANSMITTAL"].row_dimensions[15].height == 30
+    wb.close()
+
+
+def test_shop_document_width_uses_the_merged_cell() -> None:
+    from doccon.client_log import _document_column_width, document_no_height
+
+    book = empty_shop_workbook()
+    sheet = book.active
+    sheet.merge_cells("A9:F9")
+    sheet.column_dimensions["A"].width = 3.44
+    for letter in "BCDEF":
+        sheet.column_dimensions[letter].width = 13
+    width = _document_column_width(sheet, 9, 1)
+    assert abs(width - 68.44) < 0.01
+    assert document_no_height("2026-Tanzim-1-1-VERY-LONG-NAME", width, 30) is None
+    assert document_no_height("X" * 40, 18.44, 30) == 45
+
+
+def test_preview_copy_fills_the_letter_and_leaves_the_book(tmp_path: Path) -> None:
+    from doccon.client_log import fill_transmittal_copy
+
+    source = tmp_path / "CT-2026-Tanzim.xlsx"
+    empty_client_workbook().save(source)
+    before = source.read_bytes()
+    copy = fill_transmittal_copy(
+        source,
+        tmp_path / "copy" / "CT-2026-Tanzim.xlsx",
+        "2026-Tanzim",
+        [LogLine("2026-Tanzim-1-1", "A", "Drawing-1", "APPROVAL")],
+        issued=date(2026, 10, 16),
+        expected_return=date(2026, 10, 23),
+    )
+    assert source.read_bytes() == before
+    wb = load_workbook(copy)
+    assert "1" not in wb.sheetnames
+    working = wb["TRANSMITTAL"]
+    assert working["A15"].value == "2026-Tanzim-1-1"
+    assert working["D15"].value == "APPROVAL"
+    assert working["C12"].value.date() == date(2026, 10, 16)
+    assert working["A2"].value == 1
+    wb.close()
+
+
 def test_file_writes_pep_cover_and_return_date(tmp_path: Path) -> None:
     path = tmp_path / "CT-2026-Tanzim.xlsx"
     empty_client_workbook().save(path)

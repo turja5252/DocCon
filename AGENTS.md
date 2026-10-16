@@ -39,7 +39,9 @@ The summary is an ID, then optional wording. Empty description is allowed.
 
 No extra Jira status or custom trigger field. Engineer emails Sarah the pack list; she runs DocCon.
 
-**Next:** Source and the frozen exe are **2.21**. Load `2026-Tanzim`. Do not Confirm 075.
+**Next:** Source and the frozen exe are **2.22**. Load `2026-Tanzim`. Do not Confirm 075.
+
+**2.22 Create transmittal shows the letter, and a long Document No. wraps.** Create transmittal prints the letter from a copy. Confirm files it. Back returns to the list. ST + FT shows the shop letter and the field letter. A Document No. that does not fit the cell wraps inside that column and the row grows to fit. A number that fits stays on the form row. The blank working sheet goes back to the form row height. The CT, ST, and FT books are not edited. Drag is not back.
 
 **2.21 Shop and Field letters use their own date and status, and Excel or Word can be previewed.** The Shop form date is Shop Issue Date. The Field form date is Field Issue Date. Client still uses Submission Date. A blank shop or field date prints today. The client letter status is Submitted to Client For. NA prints N/A, and a blank cell stays blank. Shop status is Submitted to Shop For. Field status is Submitted to Field For. A blank status stays blank. Non Jira rows have the same Next fields. Create transmittal reads them and does not write Jira. Preview prints Excel or Word to a temporary PDF, including every printable tab. The ID and description boxes work on that PDF. The source file is not saved. Drag is not back.
 

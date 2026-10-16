@@ -34,6 +34,7 @@ from doccon.client_log import (
     parse_issued_date,
     pick_cover_fields,
     prepare_book,
+    preview_transmittal_pdf,
 )
 from doccon.clip_paste import NO_PDF_ON_CLIPBOARD, clipboard_pdfs
 from doccon.confirm import ConfirmDeliveryError, run_confirm_client_pack
@@ -95,7 +96,6 @@ from doccon.pack_mail import (
     MAIL_MARKERS,
     default_mail_body,
     default_mail_subject,
-    draft_subject,
     issued_for_text,
     job_mail_override,
     load_mail_formats,
@@ -126,7 +126,7 @@ from doccon.pack_state import (
     with_cover_recipients,
 )
 from doccon.office_preview import OfficePreviewError, office_to_preview_pdf
-from doccon.pdf_preview import close_pdf_preview, open_pdf_preview
+from doccon.pdf_preview import close_pdf_preview, open_letter_preview, open_pdf_preview
 from doccon.pep import (
     DOC_CONTROL_FROM,
     SALES_DIR,
@@ -3480,6 +3480,8 @@ class DocConApp(tk.Tk):
             self._set_status("Still syncing Dropbox files.")
         elif self._work == "delete":
             self._set_status("Still deleting that transmittal tab.")
+        elif self._work == "preview":
+            self._set_status("The letter preview is open.")
         else:
             self._set_status("Still rendering this list.")
         return True
@@ -4012,6 +4014,56 @@ class DocConApp(tk.Tk):
             elite_contact=self._shop_field_contact(pack),
         )
 
+    def _clear_preview_wait(self) -> None:
+        self._busy = False
+        self._work = ""
+        self._finish_confirm_button()
+
+    def _begin_letter_preview(
+        self,
+        jobs: tuple[tuple[str, Path, str, list, date, date | str, object, str, bool], ...],
+        on_confirm,
+        on_back,
+    ) -> None:
+        """Print each letter from a copy, then let her confirm or go back."""
+        self._busy = True
+        self._work = "preview"
+        self._set_status("Preparing the letter…")
+        self.send_btn.start("Preparing the letter")
+        self.update_idletasks()
+
+        def prepare() -> None:
+            made: list[tuple[str, Path]] = []
+            error = ""
+            try:
+                for label, book, job, lines, issued, expected, cover, kind, urgent in jobs:
+                    pdf = preview_transmittal_pdf(
+                        book,
+                        job,
+                        lines,
+                        issued=issued,
+                        expected_return=expected,
+                        cover=cover,  # type: ignore[arg-type]
+                        kind=kind,
+                        urgent=urgent,
+                    )
+                    made.append((label, pdf))
+            except (LogError, OSError) as exc:
+                error = str(exc)
+            self.after(0, lambda: self._show_letter_preview(made, error, on_confirm, on_back))
+
+        threading.Thread(target=prepare, daemon=True).start()
+
+    def _show_letter_preview(self, letters, error: str, on_confirm, on_back) -> None:
+        self._finish_confirm_button()
+        if error or not letters:
+            self._clear_preview_wait()
+            messagebox.showerror("Create transmittal", error or "Could not prepare the letter.")
+            return
+        self._busy = True
+        self._work = "preview"
+        open_letter_preview(self, letters, on_confirm=on_confirm, on_back=on_back)
+
     def _issue_both(self) -> None:
         """File the shop letter and the field letter. Jira is written once."""
         label = LABELS[BOTH]
@@ -4081,34 +4133,79 @@ class DocConApp(tk.Tk):
             messagebox.showinfo("Settings", "Open Settings and save your Jira email and API token first.")
             self._settings()
             return
-        contact = shop_cover.elite_contact or "(blank)"
-        if not messagebox.askyesno(
-            "Confirm?",
-            (
-                "One click files the shop transmittal and the field transmittal.\n"
-                "Jira is written once. Each letter keeps its own TO and CC.\n"
-                "If a check fails before either letter is filed, nothing is written.\n\n"
-                f"{shop_book.name}: {shop_info.cover_id}\n"
-                f"TO: {shop_cover.to_line or '(none)'}\n"
-                f"CC: {shop_cover.cc_line or '(none)'}\n\n"
-                f"{field_book.name}: {field_info.cover_id}\n"
-                f"TO: {field_cover.to_line or '(none)'}\n"
-                f"CC: {field_cover.cc_line or '(none)'}\n\n"
-                f"Elite Contact: {contact}\n"
-                f"Shop Issue Date: {shop_issued.isoformat()}\n"
-                f"Field Issue Date: {field_issued.isoformat()}\n\n"
-                "Close both books first. Two Outlook drafts open. Nothing is sent until you click Send."
-            ),
-        ):
-            return
-        if not self._save_pack(quiet=True, force=True):
-            return
         shop_lines = lines_from_rows(rows, SHOP) + lines_from_extras(pack_extras, SHOP)
         field_lines = lines_from_rows(rows, FIELD) + lines_from_extras(pack_extras, FIELD)
         extra_pdfs = [Path(item.path) for item in pack_extras]
-        self._busy = True
-        self._work = "confirm"
-        self.send_btn.start("Checking the pack")
+        urgent = bool(self.board.return_urgency())
+
+        def back() -> None:
+            self._clear_preview_wait()
+            self._set_status("Back to the list. Nothing was filed.")
+
+        def file_now() -> None:
+            if not self._save_pack(quiet=True, force=True):
+                self._clear_preview_wait()
+                return
+            self._busy = True
+            self._work = "confirm"
+            self.send_btn.start("Checking the pack")
+            self._file_both_now(
+                job=job,
+                folder=folder,
+                rows=rows,
+                jira_rows=jira_rows,
+                originals=originals,
+                settings=settings,
+                token=token,
+                shop_book=shop_book,
+                field_book=field_book,
+                shop_info=shop_info,
+                shop_issued=shop_issued,
+                field_issued=field_issued,
+                expected=expected,
+                shop_cover=shop_cover,
+                field_cover=field_cover,
+                shop_lines=shop_lines,
+                field_lines=field_lines,
+                extra_pdfs=extra_pdfs,
+                eddi_drawings=eddi_drawings,
+                shop_copies=shop_copies,
+                field_copies=field_copies,
+                urgent=urgent,
+            )
+
+        self._begin_letter_preview(
+            (
+                ("Shop", shop_book, job, shop_lines, shop_issued, expected, shop_cover, SHOP, urgent),
+                ("Field", field_book, job, field_lines, field_issued, expected, field_cover, FIELD, urgent),
+            ),
+            file_now,
+            back,
+        )
+
+    def _file_both_now(self, **kw) -> None:
+        job = kw["job"]
+        folder = kw["folder"]
+        rows = kw["rows"]
+        jira_rows = kw["jira_rows"]
+        originals = kw["originals"]
+        settings = kw["settings"]
+        token = kw["token"]
+        shop_book = kw["shop_book"]
+        field_book = kw["field_book"]
+        shop_info = kw["shop_info"]
+        shop_issued = kw["shop_issued"]
+        field_issued = kw["field_issued"]
+        expected = kw["expected"]
+        shop_cover = kw["shop_cover"]
+        field_cover = kw["field_cover"]
+        shop_lines = kw["shop_lines"]
+        field_lines = kw["field_lines"]
+        extra_pdfs = kw["extra_pdfs"]
+        eddi_drawings = kw["eddi_drawings"]
+        shop_copies = kw["shop_copies"]
+        field_copies = kw["field_copies"]
+        urgent = kw["urgent"]
         pairs = [(originals.get(row.drawing.key, row.drawing), row.drawing) for row in jira_rows]
         eddi_contexts = dict(self._eddi_contexts)
         shop_wording = self._effective_wording(SHOP)
@@ -4148,7 +4245,7 @@ class DocConApp(tk.Tk):
                     extra_pdfs=extra_pdfs,
                     shop_root=self._shop_root,
                     shop_copies=shop_copies,
-                    urgent=bool(self.board.return_urgency()),
+                    urgent=urgent,
                     keep_dropped=True,
                     mail=shop_facts,
                     mail_subject=shop_wording[0],
@@ -4187,7 +4284,7 @@ class DocConApp(tk.Tk):
                         extra_pdfs=extra_pdfs,
                         field_root=self._field_root,
                         field_copies=field_copies,
-                        urgent=bool(self.board.return_urgency()),
+                        urgent=urgent,
                         skip_eddi=True,
                         keep_dropped=True,
                         mail=field_facts,
@@ -4402,22 +4499,8 @@ class DocConApp(tk.Tk):
             messagebox.showinfo("Settings", "Open Settings and save your Jira email and API token first.")
             self._settings()
             return
-        names = "\n".join(f"  {row.drawing.drawing_id or row.drawing.key}" for row in rows)
-        if pack_extras:
-            extra_names = "\n".join(f"  {item.document_no} (no Jira)" for item in pack_extras)
-            names = f"{names}\n{extra_names}".strip()
-        extra = ""
-        if info.filed_tabs:
-            extra = f"\nThis book already has filed tabs: {', '.join(info.filed_tabs)}."
-        missing = sum(1 for row in rows if row.pdf is None)
-        if missing:
-            extra += f"\n{missing} packed drawing(s) have no PDF and will not be attached."
-        extra += self._jira_change_note(jira_rows, packed=True)
-        expected_label = expected.isoformat() if isinstance(expected, date) else expected
         wording = self._effective_wording(kind)
         facts = self._mail_facts(rows, kind)
-        subject = draft_subject(info.cover_id, info.job_number, template=wording[0], facts=facts)
-        cover_pdf = f"{info.cover_id}.pdf"
         shop_root: Path | None = None
         shop_copies: list[tuple[Path, str]] = []
         field_root: Path | None = None
@@ -4445,58 +4528,77 @@ class DocConApp(tk.Tk):
                     field_copies.append(row.pdf.path)
             for item in pack_extras:
                 field_copies.append(Path(item.path))
-        if kind == SHOP:
-            file_line = (
-                f"file {info.cover_id}, copy the drawings into the shop folder, "
-                f"attach only the transmittal form, "
-            )
-            attach_line = (
-                f"Attachments: {cover_pdf} only. Drawings are copied into {shop_root.name}, not zipped.\n"
-            )
-        elif kind == FIELD:
-            file_line = (
-                f"file {info.cover_id}, copy the drawings into the field folder, "
-                f"attach only the transmittal form, "
-            )
-            attach_line = (
-                f"Attachments: {cover_pdf} only. Drawings are copied into {field_root.name}, not zipped.\n"
-            )
-        else:
-            file_line = (
-                f"file {info.cover_id}, attach the transmittal PDF and a zip of the drawing PDFs, "
-            )
-            attach_line = (
-                f"Attachments: {cover_pdf} plus {info.cover_id}.zip "
-                f"(drawings only; not the transmittal form).\n"
-            )
-        if not messagebox.askyesno(
-            "Confirm?",
-            (
-                f"One click: check that Jira and the log can be written, then update Jira, "
-                f"{file_line}"
-                f"open an Outlook draft from THIS PC.\n"
-                f"If a check fails, nothing is written.\n\n"
-                f"{book}\n\n"
-                f"{names}{extra}\n\n"
-                f"PEP: {cover.path.name}\n"
-                f"FROM: {cover.from_address}\n"
-                f"TO: {cover.to_line}\n"
-                f"CC: {cover.cc_line or '(none)'}\n"
-                f"{cover.project_description}\n"
-                f"{self._form_issued_label(kind)}: {issued.isoformat()}\n"
-                f"Expected return: {expected_label}\n"
-                f"Subject: {subject}\n"
-                f"{attach_line}"
-                "Also prints a dated copy of the EDDI form "
-                "(matched PDFs only, not only this pack; live book unchanged; not attached).\n\n"
-                f"Close the {PREFIX[kind]} book first. Nothing is sent until you click Send in Outlook."
-            ),
-        ):
-            return
-        if not self._save_pack(quiet=True, force=True):
-            return
         lines = lines_from_rows(rows, kind) + lines_from_extras(pack_extras, kind)
         extra_pdfs = [Path(item.path) for item in pack_extras]
+        urgent = bool(self.board.return_urgency())
+        letter_label = {"shop": "Shop", "field": "Field"}.get(kind, info.cover_id)
+
+        def back() -> None:
+            self._clear_preview_wait()
+            self._set_status("Back to the list. Nothing was filed.")
+
+        def file_now() -> None:
+            if not self._save_pack(quiet=True, force=True):
+                self._clear_preview_wait()
+                return
+            self._file_pack_now(
+                job=job,
+                folder=folder,
+                rows=rows,
+                kind=kind,
+                book=book,
+                info=info,
+                issued=issued,
+                expected=expected,
+                cover=cover,
+                jira_rows=jira_rows,
+                originals=originals,
+                eddi_drawings=eddi_drawings,
+                eddi_contexts=eddi_contexts,
+                settings=settings,
+                token=token,
+                shop_root=shop_root,
+                shop_copies=shop_copies,
+                field_root=field_root,
+                field_copies=field_copies,
+                lines=lines,
+                extra_pdfs=extra_pdfs,
+                wording=wording,
+                facts=facts,
+                urgent=urgent,
+            )
+
+        self._begin_letter_preview(
+            ((letter_label, book, job, lines, issued, expected, cover, kind, urgent),),
+            file_now,
+            back,
+        )
+
+    def _file_pack_now(self, **kw) -> None:
+        job = kw["job"]
+        folder = kw["folder"]
+        rows = kw["rows"]
+        kind = kw["kind"]
+        book = kw["book"]
+        info = kw["info"]
+        issued = kw["issued"]
+        expected = kw["expected"]
+        cover = kw["cover"]
+        jira_rows = kw["jira_rows"]
+        originals = kw["originals"]
+        eddi_drawings = kw["eddi_drawings"]
+        eddi_contexts = kw["eddi_contexts"]
+        settings = kw["settings"]
+        token = kw["token"]
+        shop_root = kw["shop_root"]
+        shop_copies = kw["shop_copies"]
+        field_root = kw["field_root"]
+        field_copies = kw["field_copies"]
+        lines = kw["lines"]
+        extra_pdfs = kw["extra_pdfs"]
+        wording = kw["wording"]
+        facts = kw["facts"]
+        urgent = kw["urgent"]
         self._busy = True
         self._work = "confirm"
         self._job_number = job
@@ -4539,7 +4641,7 @@ class DocConApp(tk.Tk):
                     issued=issued,
                     expected_return=expected,
                     cover=cover,
-                    urgent=bool(self.board.return_urgency()),
+                    urgent=urgent,
                     rows=rows,
                     kind=kind,
                     job_folder=folder,

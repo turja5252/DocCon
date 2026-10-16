@@ -27,6 +27,7 @@ ZOOM_MIN = 0.4
 ZOOM_MAX = 4.0
 ZOOM_STEP = 1.25
 GRAB_HINT = "Draw a box. Wheel zooms. Middle-drag pans. Right-click clears."
+LETTER_HINT = "Confirm files the letter. Back returns to the list."
 GRAB_ID = "id"
 GRAB_DESCRIPTION = "description"
 MAX_PIX_EDGE = 3600
@@ -45,6 +46,9 @@ class PdfPreviewDialog(tk.Toplevel):
         heading: str = "",
         on_grab: Callable[..., bool] | None = None,
         on_clear: Callable[[str], None] | None = None,
+        letters: tuple[tuple[str, Path], ...] = (),
+        on_confirm: Callable[[], None] | None = None,
+        on_back: Callable[[], None] | None = None,
     ) -> None:
         previous = PdfPreviewDialog._open
         if previous is not None:
@@ -53,14 +57,21 @@ class PdfPreviewDialog(tk.Toplevel):
         super().__init__(master)
         PdfPreviewDialog._open = self
         self.withdraw()
-        self.title("Preview PDF")
+        self._on_grab = on_grab
+        self._on_clear = on_clear
+        self._letters = tuple(letters)
+        self._on_confirm = on_confirm
+        self._on_back = on_back
+        self._review = on_confirm is not None
+        self.title("Transmittal preview" if self._review else "Preview PDF")
         self.geometry("920x720")
         self.minsize(640, 480)
         host = master.winfo_toplevel()
         self.transient(host)
         apply_theme(self)
-        self._on_grab = on_grab
-        self._on_clear = on_clear
+        self._settled = False
+        self._letter_index = 0
+        self._letter_buttons: list[ttk.Button] = []
         self._grab_target = GRAB_DESCRIPTION
         self._grab_follow = False
         self._doc: pymupdf.Document | None = None
@@ -85,7 +96,13 @@ class PdfPreviewDialog(tk.Toplevel):
         chrome.pack(fill="x")
         self._heading = ttk.Label(chrome, text=heading or path.name, wraplength=700)
         self._heading.pack(side="left", fill="x", expand=True)
-        ttk.Button(chrome, text="Close", command=self.destroy, width=8).pack(side="right")
+        if self._review:
+            ttk.Button(chrome, text="Back", command=self._dismiss, width=8).pack(side="right")
+            ttk.Button(chrome, text="Confirm", command=self._confirm_letter, style="Accent.TButton", width=10).pack(
+                side="right", padx=(0, 6)
+            )
+        else:
+            ttk.Button(chrome, text="Close", command=self.destroy, width=8).pack(side="right")
 
         tools = ttk.Frame(self, padding=(10, 0, 10, 4))
         tools.pack(fill="x")
@@ -100,37 +117,55 @@ class PdfPreviewDialog(tk.Toplevel):
         self._page_label = ttk.Label(tools, text="page 1/1", width=12, anchor="center")
         self._page_label.pack(side="left", padx=4)
         ttk.Button(tools, text=">", width=3, command=lambda: self._page_delta(1)).pack(side="left")
-        self._id_btn = ttk.Button(tools, text="ID", width=6, command=lambda: self._set_grab_target(GRAB_ID))
-        self._id_btn.pack(side="left", padx=(16, 0))
-        self._description_btn = ttk.Button(
-            tools, text="Description", width=14, command=lambda: self._set_grab_target(GRAB_DESCRIPTION)
-        )
-        self._description_btn.pack(side="left", padx=(4, 0))
-        self._paint_grab_target()
-        hint = ttk.Label(tools, text=GRAB_HINT)
-        hint.pack(side="left", padx=(16, 0))
+        if self._review and len(self._letters) > 1:
+            for index, (label, _letter_path) in enumerate(self._letters):
+                button = ttk.Button(tools, text=label, command=lambda item=index: self._show_letter(item))
+                button.pack(side="left", padx=(12 if index == 0 else 4, 0))
+                self._letter_buttons.append(button)
+            self._paint_letter_buttons()
+        if not self._review:
+            self._id_btn = ttk.Button(tools, text="ID", width=6, command=lambda: self._set_grab_target(GRAB_ID))
+            self._id_btn.pack(side="left", padx=(16, 0))
+            self._description_btn = ttk.Button(
+                tools, text="Description", width=14, command=lambda: self._set_grab_target(GRAB_DESCRIPTION)
+            )
+            self._description_btn.pack(side="left", padx=(4, 0))
+            self._paint_grab_target()
+            hint = ttk.Label(tools, text=GRAB_HINT)
+            hint.pack(side="left", padx=(16, 0))
 
         hold = ttk.Frame(self, padding=(10, 4, 10, 8))
         hold.pack(fill="both", expand=True)
-        self.canvas = tk.Canvas(hold, background="#1B2733", highlightthickness=0, cursor="crosshair")
+        self.canvas = tk.Canvas(
+            hold,
+            background="#1B2733",
+            highlightthickness=0,
+            cursor="arrow" if self._review else "crosshair",
+        )
         self.canvas.pack(fill="both", expand=True)
 
-        self._status = tk.StringVar(value=GRAB_HINT)
+        self._status = tk.StringVar(value=LETTER_HINT if self._review else GRAB_HINT)
         ttk.Label(self, textvariable=self._status, padding=(10, 0, 10, 8)).pack(fill="x")
 
         self.canvas.bind("<Configure>", self._on_configure)
         self.canvas.bind("<MouseWheel>", self._on_wheel)
         self.canvas.bind("<Button-4>", lambda _e: self._zoom_by(ZOOM_STEP))
         self.canvas.bind("<Button-5>", lambda _e: self._zoom_by(1 / ZOOM_STEP))
-        self.canvas.bind("<ButtonPress-1>", self._on_box_press)
-        self.canvas.bind("<B1-Motion>", self._on_box_drag)
-        self.canvas.bind("<ButtonRelease-1>", self._on_box_release)
+        if not self._review:
+            self.canvas.bind("<ButtonPress-1>", self._on_box_press)
+            self.canvas.bind("<B1-Motion>", self._on_box_drag)
+            self.canvas.bind("<ButtonRelease-1>", self._on_box_release)
         self.canvas.bind("<ButtonPress-2>", self._on_pan_press)
         self.canvas.bind("<B2-Motion>", self._on_pan_drag)
         self.canvas.bind("<ButtonRelease-2>", self._on_pan_release)
-        self.canvas.bind("<Button-3>", self._on_clear_grab)
-        self.bind("<Escape>", lambda _event: self.destroy())
-        self.protocol("WM_DELETE_WINDOW", self.destroy)
+        if not self._review:
+            self.canvas.bind("<Button-3>", self._on_clear_grab)
+        if self._review:
+            self.bind("<Escape>", self._dismiss)
+            self.protocol("WM_DELETE_WINDOW", self._dismiss)
+        else:
+            self.bind("<Escape>", lambda _event: self.destroy())
+            self.protocol("WM_DELETE_WINDOW", self.destroy)
         self._load(path, heading=heading)
         place_on_parent(self)
         self.deiconify()
@@ -249,7 +284,8 @@ class PdfPreviewDialog(tk.Toplevel):
             )
             name = self._path.name if self._path is not None else "PDF"
             self._page_label.configure(text=f"page {idx + 1}/{count}")
-            self._status.set(f"{name}  ·  page {idx + 1}/{count}  ·  zoom {self._zoom:.0%}  ·  {GRAB_HINT}")
+            hint = LETTER_HINT if self._review else GRAB_HINT
+            self._status.set(f"{name}  ·  page {idx + 1}/{count}  ·  zoom {self._zoom:.0%}  ·  {hint}")
         except Exception as exc:
             self.canvas.delete("all")
             self._status.set(f"Could not preview: {exc}")
@@ -290,7 +326,7 @@ class PdfPreviewDialog(tk.Toplevel):
 
     def _on_pan_release(self, _event: tk.Event) -> None:  # type: ignore[type-arg]
         self._panning = False
-        self.canvas.configure(cursor="crosshair")
+        self.canvas.configure(cursor="arrow" if self._review else "crosshair")
 
     def _on_box_press(self, event: tk.Event) -> None:  # type: ignore[type-arg]
         self._boxing = True
@@ -404,6 +440,40 @@ class PdfPreviewDialog(tk.Toplevel):
         name = "ID" if self._grab_target == GRAB_ID else "Description"
         self._status.set(f"Next box writes {name}.")
 
+    def _show_letter(self, index: int) -> None:
+        if not self._letters:
+            return
+        self._letter_index = max(0, min(len(self._letters) - 1, index))
+        label, path = self._letters[self._letter_index]
+        self._paint_letter_buttons()
+        self._load(path, heading=label)
+
+    def _paint_letter_buttons(self) -> None:
+        for index, button in enumerate(self._letter_buttons):
+            button.configure(style="Accent.TButton" if index == self._letter_index else "TButton")
+
+    def _confirm_letter(self) -> None:
+        if self._settled:
+            return
+        self._settled = True
+        confirm = self._on_confirm
+        self._on_confirm = None
+        self._on_back = None
+        self.destroy()
+        if confirm is not None:
+            confirm()
+
+    def _dismiss(self, _event: object | None = None) -> None:
+        if self._settled:
+            return
+        self._settled = True
+        back = self._on_back
+        self._on_confirm = None
+        self._on_back = None
+        self.destroy()
+        if back is not None:
+            back()
+
     def _paint_grab_target(self) -> None:
         self._id_btn.configure(style="Accent.TButton" if self._grab_target == GRAB_ID else "TButton")
         self._description_btn.configure(
@@ -429,6 +499,26 @@ def open_pdf_preview(
         except tk.TclError:
             PdfPreviewDialog._open = None
     return PdfPreviewDialog(master, path, heading=heading, on_grab=on_grab, on_clear=on_clear)
+
+
+def open_letter_preview(
+    master: tk.Misc,
+    letters: tuple[tuple[str, Path], ...] | list[tuple[str, Path]],
+    *,
+    on_confirm: Callable[[], None],
+    on_back: Callable[[], None] | None = None,
+) -> PdfPreviewDialog:
+    """Show one or two transmittal PDFs. Confirm files them. Back files nothing."""
+    items = tuple(letters)
+    label, path = items[0]
+    return PdfPreviewDialog(
+        master,
+        path,
+        heading=label,
+        letters=items,
+        on_confirm=on_confirm,
+        on_back=on_back,
+    )
 
 
 def close_pdf_preview() -> None:

@@ -2,6 +2,18 @@
 
 Newest first. Append a dated entry when a decision is locked, a test runs, or the next step changes.
 
+## 2026-10-16 — Shipped 2.22
+
+Source and the frozen exe are 2.22. Create transmittal shows the letter before anything is filed. A long Document No. wraps in the cell and that row grows. The blank working sheet returns to the form row height. The CT, ST, and FT books are not edited. Load `2026-Tanzim`. Do not Confirm 075.
+
+## 2026-10-16 — A long Document No. wraps on the letter
+
+Document No. on the client, shop, and field letters wraps inside its cell when the text is longer than the column. The row grows when two lines no longer fit the form height. A short number stays on the form row. After the numbered tab is copied, the working sheet is put back to the form row height. Shop and field use the merged Document No. cell. The form files are not edited. Shipped in 2.22.
+
+## 2026-10-16 — Create transmittal previews the letter
+
+Create transmittal prints the letter from a copy and shows it before anything is filed. Confirm files it. Back returns to the list. ST + FT shows the shop letter and the field letter. The live book is not changed by the preview. Shipped in 2.22.
+
 ## 2026-10-15 — Shipped 2.21
 
 Source and the frozen exe are 2.21. Shop and Field letters use their own issue date and Submitted to list. NA on a client letter prints N/A, and a blank status stays blank. Non Jira rows carry the letter fields and do not write Jira. Preview prints Excel or Word to a temporary PDF. Load `2026-Tanzim`. Do not Confirm 075.
