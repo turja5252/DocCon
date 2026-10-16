@@ -2,6 +2,18 @@
 
 Newest first. Append a dated entry when a decision is locked, a test runs, or the next step changes.
 
+## 2026-10-16 — Shipped 2.24
+
+Source and the frozen exe are 2.24. A Jira status from Set packed to is written only for drawings that stay packed. Unticking Pack puts that status back. The cover TO follows the Transmittal Editor. Load `2026-Tanzim`. Do not Confirm 075.
+
+## 2026-10-16 — A pack status reaches Jira only while Pack stays ticked
+
+Set packed to was leaving Back from Client on a drawing after Pack was unticked, and Update Jira wrote every yellow status, packed or not. Untick now puts a status that Set packed to applied back to Now. Update Jira writes Jira Status only for drawings that are still packed. A status picked on the row stays on the board, and it is written only when that drawing is packed. Other Next edits still write without a Pack tick. Shipped in 2.24.
+
+## 2026-10-16 — The console TO follows the Transmittal Editor
+
+Typing a TO in the Transmittal Editor updates the cover TO on the console immediately. Accept keeps it in `client-pack.json`. Cancel puts the cover back. A saved TO still wins over the old letter. Shipped in 2.24.
+
 ## 2026-10-16 — Shipped 2.23
 
 Source and the frozen exe are 2.23. A TO saved for this job comes back in the Transmittal Editor. The old letter is used only when this job has not saved a TO. Load `2026-Tanzim`. Do not Confirm 075.

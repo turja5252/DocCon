@@ -1445,6 +1445,50 @@ def test_set_packed_status_stamps_like_cover_dates() -> None:
         root.destroy()
 
 
+def test_unpack_drops_pack_status_and_jira_skips_unpacked_status() -> None:
+    root = _board_root()
+    try:
+        board = DrawingBoard(root, on_open_pdf=lambda _key: None)
+        board.set_rows(
+            [
+                _row(key="P2024-1", drawing_id="2026-Tanzim-1-1"),
+                _row(key="P2024-2", drawing_id="2026-Tanzim-1-2"),
+            ]
+        )
+        board.set_pack(False)
+        board.set_pack_status("Back from Client", stamp=False)
+        board._blocks["P2024-1"].include.set(True)
+        root.update_idletasks()
+        assert board._blocks["P2024-1"].status_next.get() == "Back from Client"
+        assert board._blocks["P2024-2"].status_next.get() == "To Do"
+        pending = {row.drawing.key: row.drawing.status for row in board.pending_rows()}
+        assert pending == {"P2024-1": "Back from Client"}
+        board._blocks["P2024-1"].include.set(False)
+        root.update_idletasks()
+        assert board._blocks["P2024-1"].status_next.get() == "To Do"
+        assert board.pending_rows() == []
+        assert board.unpacked_status_changes() == []
+        board._blocks["P2024-2"].status_next.set("Done")
+        board._blocks["P2024-2"].nexts["client_document_number"].set("CNRL-T-9")
+        root.update_idletasks()
+        assert board.unpacked_status_changes() == ["P2024-2"]
+        held = board.pending_rows()
+        assert len(held) == 1
+        assert held[0].drawing.key == "P2024-2"
+        assert held[0].drawing.status == "To Do"
+        assert held[0].drawing.client_document_number == "CNRL-T-9"
+        board._blocks["P2024-1"].include.set(True)
+        board._blocks["P2024-1"].status_next.set("OFA")
+        board._blocks["P2024-1"].status_next.event_generate("<<ComboboxSelected>>")
+        board._blocks["P2024-1"].include.set(False)
+        root.update_idletasks()
+        assert board._blocks["P2024-1"].status_next.get() == "OFA"
+        assert "P2024-1" in board.unpacked_status_changes()
+        assert all(row.drawing.status != "OFA" for row in board.pending_rows())
+    finally:
+        root.destroy()
+
+
 def test_submitted_to_client_for_stamps_packed_rows() -> None:
     root = _board_root()
     try:

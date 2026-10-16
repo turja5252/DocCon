@@ -831,6 +831,7 @@ class DrawingBoard(ttk.Frame):
         self._return_urgency = ""
         self._return_urgency_hold = False
         self._id_trim_undo: deque[dict[str, str]] = deque(maxlen=30)
+        self._status_from_pack: set[str] = set()
         self._stamp_submission = True
         self._batch_visible: set[str] = set()
         self._incoming_row = ttk.Frame(self)
@@ -2435,6 +2436,7 @@ class DrawingBoard(ttk.Frame):
                 elif not self._suspend_layout:
                     self._draw_sheet()
             else:
+                self._clear_packed_status(key)
                 if key in self._row_frame_pair:
                     self._release_drawn_editor(key)
                 if not self._suspend_layout:
@@ -2446,6 +2448,8 @@ class DrawingBoard(ttk.Frame):
             if block is not None and not block.extra:
                 if block.include.get():
                     self._stamp_pack_tick(key)
+                else:
+                    self._clear_packed_status(key)
                 fresh = self._blocks.get(key)
                 target = fresh if fresh is not None else block
                 # A single tick leaves the Next line closed, so the row height stays put.
@@ -3422,6 +3426,7 @@ class DrawingBoard(ttk.Frame):
         self._pack_purpose_loading = True
         self._return_urgency = ""
         self._id_trim_undo.clear()
+        self._status_from_pack.clear()
         self._pack_status.set("")
         box = self._purpose_box()
         if box is not None:
@@ -4770,6 +4775,8 @@ class DrawingBoard(ttk.Frame):
                     count += 1
                 continue
             self._apply_next_to_block(block, status=status_value, fields=updates)
+            if status_value:
+                self._status_from_pack.add(block.key)
             count += 1
         if no_return_status(status_value):
             self.stamp_packed_date("return_request_date", "N/A")
@@ -4817,6 +4824,8 @@ class DrawingBoard(ttk.Frame):
         for block in self._states():
             if not block.include.get():
                 continue
+            if field == "status":
+                self._status_from_pack.discard(block.key)
             if self.restore_next_field(block.key, field):
                 count += 1
         return count
@@ -4855,7 +4864,8 @@ class DrawingBoard(ttk.Frame):
             hook()
 
     def _on_row_status_picked(self, block: _Block) -> None:
-        """Picking IFI or IFC on one row clears that row's return date. Does not write Jira."""
+        """A status picked on the row is hers. Untick does not put it back. Does not write Jira."""
+        self._status_from_pack.discard(block.key)
         if not no_return_status(block.status_next.get()):
             return
         box = block.nexts.get("return_request_date")
@@ -4985,6 +4995,7 @@ class DrawingBoard(ttk.Frame):
             if block is None or not block.include.get():
                 continue
             self._apply_next_to_block(block, status=value)
+            self._status_from_pack.add(key)
             count += 1
         if no_return_status(value):
             self.stamp_date_on_keys("return_request_date", "N/A", keys)
@@ -5001,6 +5012,13 @@ class DrawingBoard(ttk.Frame):
         if not value:
             return self.restore_packed_next_field("status")
         return self.set_packed_status(value)
+
+    def _clear_packed_status(self, key: str) -> None:
+        """Untick drops a status Set packed to put on this row. A status she picked on the row stays."""
+        if key not in self._status_from_pack:
+            return
+        self._status_from_pack.discard(key)
+        self.restore_next_field(key, "status")
 
     def _on_pack_status_change(self, _event: object | None = None) -> None:
         if self._pack_status_loading:
@@ -6175,8 +6193,10 @@ class DrawingBoard(ttk.Frame):
                 continue
             drawing = row.drawing
             changed = False
+            packed = bool(block.include.get())
             nxt_status = block.status_next.get().strip()
-            if nxt_status and nxt_status != (drawing.status or "").strip():
+            now_status = (drawing.status or "").strip()
+            if packed and nxt_status and nxt_status != now_status:
                 changed = True
             if not changed and block.drawing_id_next.get().strip() != (drawing.drawing_id or "").strip():
                 changed = True
@@ -6194,5 +6214,25 @@ class DrawingBoard(ttk.Frame):
                         changed = True
                         break
             if changed:
-                pending.append(self._with_next(row, block))
+                updated = self._with_next(row, block)
+                if not packed:
+                    updated = replace(updated, drawing=replace(updated.drawing, status=drawing.status))
+                pending.append(updated)
         return pending
+
+    def unpacked_status_changes(self) -> list[str]:
+        """Drawings whose Next Status differs while Pack is off. Jira Status is not written for these."""
+        keys: list[str] = []
+        for block in self._states():
+            if block.extra or block.include.get():
+                continue
+            row = self._matches.get(block.key)
+            if row is None:
+                continue
+            try:
+                nxt_status = block.status_next.get().strip()
+            except tk.TclError:
+                continue
+            if nxt_status and nxt_status != (row.drawing.status or "").strip():
+                keys.append(block.key)
+        return keys

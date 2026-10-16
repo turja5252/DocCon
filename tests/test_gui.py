@@ -1394,3 +1394,43 @@ def test_saved_cover_without_recipients_reads_that_pep(
         assert app._cover_initialized is True
     finally:
         app.destroy()
+
+
+def test_editor_to_updates_the_console_and_stays_saved(tmp_path: Path) -> None:
+    try:
+        from doccon.client_log import BookCover
+        from doccon.gui import DocConApp
+        from doccon.pack_state import ClientPack, load_client_pack, save_client_pack
+    except tk.TclError:
+        pytest.skip("Tk is not available")
+    save_client_pack(
+        tmp_path,
+        ClientPack(job_number="2026-Tanzim", to_line="tanzim@ijij.com", cover_initialized=True),
+    )
+    try:
+        app = DocConApp()
+    except tk.TclError:
+        pytest.skip("Tk is not available")
+    app.withdraw()
+    try:
+        app._job_number = "2026-Tanzim"
+        app._job_folder = tmp_path
+        app.kind.set("client")
+        app._book_covers["client"] = BookCover(to_line="Zach.Hilsendager@cnrl.com")
+        app._restore_pack(tmp_path, "2026-Tanzim", None)
+        assert app._email_value(app.to_box) == "tanzim@ijij.com"
+        app._edit_transmittal()
+        editor = next(child for child in app.winfo_children() if type(child).__name__ == "TransmittalEditor")
+        editor._tos["client"].insert("end", "; new.person@client.com")
+        editor._paint_dirty()
+        assert app._email_value(app.to_box) == "tanzim@ijij.com; new.person@client.com"
+        editor._accept()
+        assert app._email_value(app.to_box) == "tanzim@ijij.com; new.person@client.com"
+        loaded = load_client_pack(tmp_path, "2026-Tanzim")
+        assert loaded is not None
+        assert loaded.to_line == "tanzim@ijij.com; new.person@client.com"
+        app._book_covers["client"] = BookCover(to_line="Zach.Hilsendager@cnrl.com")
+        app._restore_pack(tmp_path, "2026-Tanzim", None)
+        assert app._email_value(app.to_box) == "tanzim@ijij.com; new.person@client.com"
+    finally:
+        app.destroy()

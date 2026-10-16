@@ -567,6 +567,8 @@ class TransmittalEditor(tk.Toplevel):
         client_cc: dict[str, str] | None = None,
         kind_cc: dict[str, dict[str, str]] | None = None,
         on_read_pep=None,
+        on_cover_change=None,
+        on_cancel=None,
     ) -> None:
         super().__init__(master)
         self.withdraw()
@@ -577,6 +579,9 @@ class TransmittalEditor(tk.Toplevel):
         apply_theme(self)
         self._on_save = on_save
         self._on_read_pep = on_read_pep
+        self._on_cover_change = on_cover_change
+        self._on_cancel = on_cancel
+        self._accepted = False
         self._watched: dict[tk.Misc, str] = {}
         self._subjects: dict[str, ttk.Entry] = {}
         self._bodies: dict[str, tk.Text] = {}
@@ -638,7 +643,7 @@ class TransmittalEditor(tk.Toplevel):
         buttons.pack(side="bottom", fill="x")
         if on_read_pep is not None:
             ttk.Button(buttons, text="Read from PEP", command=self._read_pep).pack(side="left")
-        ttk.Button(buttons, text="Cancel", command=self.destroy).pack(side="right")
+        ttk.Button(buttons, text="Cancel", command=self._close).pack(side="right")
         ttk.Button(buttons, text="Accept", style="Accent.TButton", command=self._accept).pack(
             side="right", padx=(0, 8)
         )
@@ -701,7 +706,7 @@ class TransmittalEditor(tk.Toplevel):
                 box.pack(fill="x", pady=(2, 6))
                 style_text(box)
                 self._kind_cc_boxes[key][part] = box
-        self.protocol("WM_DELETE_WINDOW", self.destroy)
+        self.protocol("WM_DELETE_WINDOW", self._close)
         self.geometry("780x720")
         self._remember_clean()
         reveal_on_parent(self)
@@ -839,6 +844,42 @@ class TransmittalEditor(tk.Toplevel):
                 widget.configure(background=PENDING_BG if dirty else SURFACE)
             else:
                 widget.configure(style="Pending.TEntry" if dirty else "TEntry")
+        self._notify_covers()
+
+    def _lines_for(self, key: str) -> tuple[str, str]:
+        """TO is the text she is typing. CC stays the address list."""
+        to_line = self._widget_text(self._tos[key])
+        if key == "client" and self._cc_parts:
+            cc_line = compose_cc(
+                *(
+                    email_line(self._cc_parts[part].get("1.0", "end"))
+                    for part in ("permanent", "engineering", "pm", "pep", "additional")
+                    if part in self._cc_parts
+                )
+            )
+        else:
+            slots = self._kind_cc_boxes.get(key, {})
+            cc_line = compose_cc(
+                email_line(slots["permanent"].get("1.0", "end")) if "permanent" in slots else "",
+                email_line(slots["additional"].get("1.0", "end")) if "additional" in slots else "",
+            )
+        return to_line, cc_line
+
+    def _notify_covers(self) -> None:
+        """The cover TO on the console follows the editor while it is open."""
+        if self._on_cover_change is None or not self._tos:
+            return
+        for key, _title in MAIL_KIND_LABELS:
+            if key not in self._tos:
+                continue
+            to_line, cc_line = self._lines_for(key)
+            self._on_cover_change(key, to_line, cc_line)
+
+    def _close(self) -> None:
+        accepted = self._accepted
+        self.destroy()
+        if not accepted and self._on_cancel is not None:
+            self._on_cancel()
 
     def _read_pep(self) -> None:
         if self._on_read_pep is None:
@@ -907,6 +948,7 @@ class TransmittalEditor(tk.Toplevel):
             project = resolve_project_description("", *pieces)
         else:
             project = resolve_project_description(typed, *pieces)
+        self._accepted = True
         self._on_save(formats, covers, project, fields, client_cc, kind_cc)
         self.destroy()
 
@@ -1254,6 +1296,8 @@ class DocConApp(tk.Tk):
         self._pep_cover: PepCover | None = None
         self._elite_contact = ""
         self._cover_stamp: tuple[str, str, str] = ("", "", "")
+        self._cover_kind = CLIENT
+        self._editor_cover_backup: tuple[str, str] | None = None
         self._load_pump = ""
         self._matches: dict[str, MatchedRow] = {}
         self._job_folder: Path | None = None
@@ -1586,6 +1630,9 @@ class DocConApp(tk.Tk):
         self._save_pack(quiet=True)
 
     def _kind_changed(self) -> None:
+        kind = self.kind.get()
+        if kind in (CLIENT, SHOP, FIELD):
+            self._cover_kind = kind
         if self.kind.get() == BOTH:
             self.cover_hint.configure(
                 text=(
@@ -1699,10 +1746,12 @@ class DocConApp(tk.Tk):
     def _email_value(self, box: tk.Text) -> str:
         return email_line(self._text_value(box))
 
-    def _set_text(self, box: tk.Text, value: str) -> None:
+    def _set_text(self, box: tk.Text, value: str, *, reveal_end: bool = False) -> None:
         box.delete("1.0", "end")
         if value:
             box.insert("1.0", value)
+            if reveal_end:
+                box.see("end")
 
     def _job_field(self, key: str) -> str:
         return str(self._job_fields.get(key) or "").strip()
@@ -2445,6 +2494,36 @@ class DocConApp(tk.Tk):
         if hasattr(self, "pep_label"):
             self.pep_label.configure(style="AttentionMuted.TLabel" if pending else "Muted.TLabel")
 
+    def _shown_cover_kind(self) -> str:
+        """The transmittal whose TO and CC are on the cover strip."""
+        kind = self.kind.get()
+        if kind in (CLIENT, SHOP, FIELD):
+            return kind
+        return self._cover_kind or CLIENT
+
+    def _mirror_editor_cover(self, kind: str, to_line: str, cc_line: str) -> None:
+        """A TO typed in the Transmittal Editor shows on the console immediately."""
+        if kind != self._shown_cover_kind():
+            return
+        self._cover_loading = True
+        try:
+            self._set_text(self.to_box, to_line, reveal_end=True)
+            self._set_text(self.cc_box, cc_line)
+        finally:
+            self._cover_loading = False
+
+    def _revert_editor_cover(self) -> None:
+        backup = self._editor_cover_backup
+        self._editor_cover_backup = None
+        if backup is None:
+            return
+        self._cover_loading = True
+        try:
+            self._set_text(self.to_box, backup[0])
+            self._set_text(self.cc_box, backup[1])
+        finally:
+            self._cover_loading = False
+
     def _edit_transmittal(self) -> None:
         pep = self._pep_cover
         pack = load_client_pack(self._job_folder, self._job_number) if self._job_folder else None
@@ -2487,6 +2566,10 @@ class DocConApp(tk.Tk):
                 )
             covers[key] = (to_line, cc_line)
         urgent = "URGENT" if self.board.return_urgency() else "Not urgent"
+        self._editor_cover_backup = (
+            self._email_value(self.to_box),
+            self._email_value(self.cc_box),
+        )
         TransmittalEditor(
             self,
             formats=self._editor_wording(pack),
@@ -2499,6 +2582,8 @@ class DocConApp(tk.Tk):
             kind_cc=kind_parts,
             on_save=self._apply_transmittal_edit,
             on_read_pep=self._pep_editor_values,
+            on_cover_change=self._mirror_editor_cover,
+            on_cancel=self._revert_editor_cover,
         )
 
     def _editor_wording(self, pack: ClientPack | None) -> dict[str, tuple[str, str]]:
@@ -2561,10 +2646,11 @@ class DocConApp(tk.Tk):
                 value_or_na(fields.get("moc", "")),
             )
             self._set_text(self.project_box, value_or_na(project))
-            current = self.kind.get()
-            if current in covers:
-                self._set_text(self.to_box, covers[current][0])
-                self._set_text(self.cc_box, covers[current][1])
+            self._editor_cover_backup = None
+            shown = self._shown_cover_kind()
+            if shown in covers:
+                self._set_text(self.to_box, covers[shown][0], reveal_end=True)
+                self._set_text(self.cc_box, covers[shown][1])
         finally:
             self._cover_loading = False
         if self._job_folder is None:
@@ -3837,11 +3923,19 @@ class DocConApp(tk.Tk):
             messagebox.showinfo("Update Jira", "Load a job first.")
             return
         pending = self.board.pending_rows()
+        held = self.board.unpacked_status_changes()
         if not pending:
+            if held:
+                messagebox.showinfo(
+                    "Update Jira",
+                    "Jira Status on drawings that are not packed was left as it is.\n"
+                    "Tick Pack on the drawings whose status should change, then Update Jira.",
+                )
+                return
             messagebox.showinfo(
                 "Update Jira",
                 "No Next edits to write. Change a Next box, then Update Jira.\n"
-                "Pack ticks are not required (those are for Confirm).",
+                "Jira Status is written only for packed drawings. Other Next edits do not need a Pack tick.",
             )
             return
         settings, token = _session()
@@ -3854,6 +3948,7 @@ class DocConApp(tk.Tk):
             "Update Jira?",
             (
                 f"Write Next values to Jira for {job} ({len(pending)} item(s)).\n"
+                "Jira Status changes only for drawings that are still packed.\n"
                 "Does not file a transmittal, print EDDI, or open Outlook.\n"
                 "If a check fails, nothing is written."
                 f"{extra}"
