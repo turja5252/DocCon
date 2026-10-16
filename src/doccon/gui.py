@@ -582,6 +582,7 @@ class TransmittalEditor(tk.Toplevel):
         self._on_cover_change = on_cover_change
         self._on_cancel = on_cancel
         self._accepted = False
+        self._mute_cover = False
         self._watched: dict[tk.Misc, str] = {}
         self._subjects: dict[str, ttk.Entry] = {}
         self._bodies: dict[str, tk.Text] = {}
@@ -867,7 +868,7 @@ class TransmittalEditor(tk.Toplevel):
 
     def _notify_covers(self) -> None:
         """The cover TO on the console follows the editor while it is open."""
-        if self._on_cover_change is None or not self._tos:
+        if self._mute_cover or self._on_cover_change is None or not self._tos:
             return
         for key, _title in MAIL_KIND_LABELS:
             if key not in self._tos:
@@ -876,6 +877,7 @@ class TransmittalEditor(tk.Toplevel):
             self._on_cover_change(key, to_line, cc_line)
 
     def _close(self) -> None:
+        self._mute_cover = True
         accepted = self._accepted
         self.destroy()
         if not accepted and self._on_cancel is not None:
@@ -948,6 +950,7 @@ class TransmittalEditor(tk.Toplevel):
             project = resolve_project_description("", *pieces)
         else:
             project = resolve_project_description(typed, *pieces)
+        self._mute_cover = True
         self._accepted = True
         self._on_save(formats, covers, project, fields, client_cc, kind_cc)
         self.destroy()
@@ -1631,6 +1634,9 @@ class DocConApp(tk.Tk):
 
     def _kind_changed(self) -> None:
         kind = self.kind.get()
+        previous = self._cover_kind if self._cover_kind in (CLIENT, SHOP, FIELD) else ""
+        if previous and kind != previous:
+            self._persist_cover_boxes(previous)
         if kind in (CLIENT, SHOP, FIELD):
             self._cover_kind = kind
         if self.kind.get() == BOTH:
@@ -1855,7 +1861,7 @@ class DocConApp(tk.Tk):
         finally:
             self._cover_loading = False
 
-    def _pack_from_console(self) -> ClientPack:
+    def _pack_from_console(self, *, keep_blank: bool = False) -> ClientPack:
         existing = (
             load_client_pack(self._job_folder, self._current_job()) if self._job_folder else None
         )
@@ -1920,15 +1926,47 @@ class DocConApp(tk.Tk):
             field_folder=self._field_folder_saved or (existing.field_folder if existing is not None else ""),
             job_folder=str(self._job_folder) if self._job_folder else "",
         )
-        kind_now = self.kind.get()
+        kind_now = self._recipient_kind()
         live_to = self._email_value(self.to_box)
         live_cc = self._email_value(self.cc_box)
         saved_to, saved_cc = cover_recipients(base, kind_now)
-        if self._work == "load" and not live_to:
-            live_to = saved_to
-        if self._work == "load" and not live_cc:
-            live_cc = saved_cc
+        if not keep_blank:
+            if not live_to:
+                live_to = saved_to
+            if not live_cc:
+                live_cc = saved_cc
         return with_cover_recipients(pack, kind_now, live_to, live_cc)
+
+    def _recipient_kind(self) -> str:
+        """Client, Shop, or Field for the TO and CC on the cover strip."""
+        kind = self.kind.get()
+        if kind in (CLIENT, SHOP, FIELD):
+            return kind
+        return self._shown_cover_kind()
+
+    def _persist_cover_boxes(self, kind: str) -> None:
+        """Keep the addresses on screen when the transmittal changes."""
+        if self._cover_loading or kind not in (CLIENT, SHOP, FIELD):
+            return
+        if not self._job_number or self._job_folder is None:
+            return
+        live_to = self._email_value(self.to_box)
+        live_cc = self._email_value(self.cc_box)
+        if not live_to and not live_cc:
+            return
+        try:
+            existing = load_client_pack(self._job_folder, self._job_number)
+        except (OSError, ValueError, TypeError):
+            existing = None
+        base = existing or ClientPack(job_number=self._job_number)
+        saved_to, saved_cc = cover_recipients(base, kind)
+        try:
+            save_client_pack(
+                self._job_folder,
+                with_cover_recipients(base, kind, live_to or saved_to, live_cc or saved_cc),
+            )
+        except OSError:
+            return
 
     def _write_cover_date_defaults(self) -> None:
         self.issued.delete(0, "end")
@@ -2016,11 +2054,16 @@ class DocConApp(tk.Tk):
         if not quiet:
             self._cover_initialized = True
         try:
-            dest = save_client_pack(folder, self._pack_from_console())
+            dest = save_client_pack(folder, self._pack_from_console(keep_blank=not quiet))
         except OSError as exc:
             self._cover_initialized = was_initialized
             messagebox.showerror("Save", str(exc))
             return False
+        if not quiet and self._editor_cover_backup is not None:
+            self._editor_cover_backup = (
+                self._email_value(self.to_box),
+                self._email_value(self.cc_box),
+            )
         if not quiet:
             self._paint_cover_attention()
             messagebox.showinfo("Save", f"Saved {dest.relative_to(folder)}")

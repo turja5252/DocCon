@@ -2,6 +2,14 @@
 
 Newest first. Append a dated entry when a decision is locked, a test runs, or the next step changes.
 
+## 2026-10-16 — Shipped 2.26
+
+Source and the frozen exe are 2.26. A saved TO stays after the console closes. Load `2026-Tanzim`. Do not Confirm 075.
+
+## 2026-10-16 — A saved TO stays after the console closes
+
+Save writes the TO that is on the cover. Closing the console, or any quiet save, does not replace that address with a blank box. Save with the box cleared removes it. Switching to ST + FT or another transmittal keeps the TO that was on screen. Shipped in 2.26.
+
 ## 2026-10-16 — Shipped 2.25
 
 Source and the frozen exe are 2.25. Ctrl+Shift+L lists CT, ST, FT, Jira updates, and EDDI creations, and leaves Tanzim Nasir out. The dated EDDI sheet has no manual page break. Load `2026-Tanzim`. Do not Confirm 075.

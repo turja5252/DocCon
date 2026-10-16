@@ -1434,3 +1434,98 @@ def test_editor_to_updates_the_console_and_stays_saved(tmp_path: Path) -> None:
         assert app._email_value(app.to_box) == "tanzim@ijij.com; new.person@client.com"
     finally:
         app.destroy()
+
+
+def test_saved_to_survives_close_and_the_next_load(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    try:
+        import doccon.gui as gui_mod
+        from doccon.gui import DocConApp
+        from doccon.pack_state import ClientPack, load_client_pack, save_client_pack
+    except tk.TclError:
+        pytest.skip("Tk is not available")
+    monkeypatch.setattr(gui_mod.messagebox, "showinfo", lambda *_a, **_k: None)
+    monkeypatch.setattr(gui_mod.messagebox, "showerror", lambda *_a, **_k: None)
+    save_client_pack(
+        tmp_path,
+        ClientPack(job_number="2026-Tanzim", cc_line="cc@client.com", cover_initialized=True),
+    )
+    try:
+        app = DocConApp()
+    except tk.TclError:
+        pytest.skip("Tk is not available")
+    app.withdraw()
+    closed = False
+    try:
+        app._job_folder = tmp_path
+        app._job_number = "2026-Tanzim"
+        app.kind.set("client")
+        app._cover_kind = "client"
+        app._restore_pack(tmp_path, "2026-Tanzim", None)
+        app._set_text(app.to_box, "person@client.com")
+        assert app._save_pack() is True
+        saved = load_client_pack(tmp_path, "2026-Tanzim")
+        assert saved is not None
+        assert saved.to_line == "person@client.com"
+        assert "cc@client.com" in saved.cc_line
+        app._set_text(app.to_box, "")
+        app._on_close()
+        closed = True
+    finally:
+        if not closed:
+            app.destroy()
+    kept = load_client_pack(tmp_path, "2026-Tanzim")
+    assert kept is not None
+    assert kept.to_line == "person@client.com"
+    assert "cc@client.com" in kept.cc_line
+    try:
+        again = DocConApp()
+    except tk.TclError:
+        pytest.skip("Tk is not available")
+    again.withdraw()
+    try:
+        again._job_folder = tmp_path
+        again._job_number = "2026-Tanzim"
+        again.kind.set("client")
+        again._restore_pack(tmp_path, "2026-Tanzim", None)
+        assert again._email_value(again.to_box) == "person@client.com"
+        again._set_text(again.to_box, "")
+        assert again._save_pack() is True
+        cleared = load_client_pack(tmp_path, "2026-Tanzim")
+        assert cleared is not None
+        assert cleared.to_line == ""
+    finally:
+        again.destroy()
+
+
+def test_cover_to_is_kept_when_the_transmittal_changes(tmp_path: Path) -> None:
+    try:
+        from doccon.gui import DocConApp
+        from doccon.pack_state import ClientPack, load_client_pack, save_client_pack
+    except tk.TclError:
+        pytest.skip("Tk is not available")
+    save_client_pack(tmp_path, ClientPack(job_number="2026-Tanzim", cover_initialized=True))
+    try:
+        app = DocConApp()
+    except tk.TclError:
+        pytest.skip("Tk is not available")
+    app.withdraw()
+    try:
+        app._job_folder = tmp_path
+        app._job_number = "2026-Tanzim"
+        app.kind.set("client")
+        app._cover_kind = "client"
+        app._set_text(app.to_box, "person@client.com")
+        app.kind.set("both")
+        app._kind_changed()
+        kept = load_client_pack(tmp_path, "2026-Tanzim")
+        assert kept is not None
+        assert kept.to_line == "person@client.com"
+        app._set_text(app.to_box, "other@client.com")
+        assert app._save_pack(quiet=True, force=True)
+        saved = load_client_pack(tmp_path, "2026-Tanzim")
+        assert saved is not None
+        assert saved.to_line == "other@client.com"
+    finally:
+        app.destroy()

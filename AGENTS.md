@@ -39,7 +39,9 @@ The summary is an ID, then optional wording. Empty description is allowed.
 
 No extra Jira status or custom trigger field. Engineer emails Sarah the pack list; she runs DocCon.
 
-**Next:** Source and the frozen exe are **2.25**. Load `2026-Tanzim`. Do not Confirm 075.
+**Next:** Source and the frozen exe are **2.26**. Load `2026-Tanzim`. Do not Confirm 075.
+
+**2.26 A saved TO stays after close.** Save writes the cover TO. Quit and a quiet save leave a saved TO in place when the box is blank. Save with the box cleared removes it. ST + FT and Incoming write the TO that is on the cover. Switching transmittal keeps the addresses that were on screen. Drag is not back.
 
 **2.25 Ctrl+Shift+L lists the counts, and the EDDI PDF has no manual page break.** The shortcut shows CT, ST, FT, Jira updates, and EDDI creations. Tanzim Nasir is left out. Older Jira updates and EDDI creations were not written down, so those two start at the next one. The dated EDDI sheet does not copy the form's page break, and that break is off the template. Drag is not back.
 
