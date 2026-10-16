@@ -39,7 +39,9 @@ The summary is an ID, then optional wording. Empty description is allowed.
 
 No extra Jira status or custom trigger field. Engineer emails Sarah the pack list; she runs DocCon.
 
-**Next:** Source and the frozen exe are **2.24**. Load `2026-Tanzim`. Do not Confirm 075.
+**Next:** Source and the frozen exe are **2.25**. Load `2026-Tanzim`. Do not Confirm 075.
+
+**2.25 Ctrl+Shift+L lists the counts, and the EDDI PDF has no manual page break.** The shortcut shows CT, ST, FT, Jira updates, and EDDI creations. Tanzim Nasir is left out. Older Jira updates and EDDI creations were not written down, so those two start at the next one. The dated EDDI sheet does not copy the form's page break, and that break is off the template. Drag is not back.
 
 **2.24 A Jira status stamp only changes drawings that stay packed.** Set packed to still stamps packed rows only. Unticking Pack puts that stamped status back. Update Jira writes Jira Status only while Pack is still ticked. A status picked on the row stays on the board after untick, and it is written only if that drawing is packed again. Other Next edits still write without a Pack tick. The cover TO follows the Transmittal Editor while it is open. Drag is not back.
 

@@ -402,7 +402,7 @@ def test_snapshot_fills_project_form_not_custom_list(tmp_path: Path) -> None:
         cat = ws.cell(min_row, min_col).alignment
         assert cat.horizontal == "center"
         assert cat.vertical == "center"
-    assert 24 in [int(brk.id) for brk in ws.row_breaks.brk]
+    assert [int(brk.id) for brk in ws.row_breaks.brk] == []
     wb.close()
     xml = ZipFile(snap.book).read("xl/worksheets/sheet1.xml").decode("utf-8")
     assert 't="inlineStr"></c>' not in xml

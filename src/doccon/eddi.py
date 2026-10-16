@@ -12,7 +12,8 @@ fills that tab from console Next values (every Jira item in groups 1–9, not
 only Pack, and not only rows with a PDF), and replaces the one PDF, named ``EDDI 3.0 - {job}-{date}.pdf``. The
 date is also written on that sheet, so the PDF shows it. Sheet Project stays the blank
 form. A second run the same day adds ``{date}-2``. Empty 1–9 groups are
-hidden on the new tab. Not attached to Outlook.
+hidden on the new tab. The dated tab has no manual page breaks, so the PDF
+starts a new page only when the page is full. Not attached to Outlook.
 """
 from __future__ import annotations
 
@@ -343,9 +344,8 @@ def build_fill_plan(
     hide = _unique_keep(hide)
     unhide = _unique_keep(unhide)
     merge_headers = _unique_keep(merge_headers)
-    hidden = set(hide) - set(unhide)
-    keep_breaks = [row for row in breaks if not _is_stranded_break(row, hidden, last_row)]
-    drop_breaks = [row for row in breaks if row not in set(keep_breaks)]
+    # The form's manual break (after Engineering) must not reach the PDF.
+    drop_breaks = list(breaks)
     add_columns = cols[1] == 0
     shop_letter = get_column_letter(cols[1]) if cols[1] else ""
     field_letter = get_column_letter(cols[4]) if cols[4] else ""
@@ -370,7 +370,7 @@ def build_fill_plan(
         merge_headers=merge_headers,
         merge_ranges=_snapshot_merges(add_columns),
         drop_breaks=drop_breaks,
-        row_breaks=keep_breaks,
+        row_breaks=[],
         column_inserts=list(PURPOSE_COLUMN_INSERTS) if add_columns else [],
         header_cells=list(PURPOSE_HEADERS) if add_columns else [],
         group_last_rows=group_last_rows,
@@ -495,9 +495,7 @@ def _add_dated_sheet(wb: Workbook, issued: date, source_name: str = PROJECT_SHEE
     name = dated_sheet_name(set(wb.sheetnames), issued)
     copy = wb.copy_worksheet(source)
     copy.title = name
-    # copy_worksheet leaves page breaks behind. The new tab needs the form's breaks.
-    for row in _row_break_ids(source):
-        copy.row_breaks.append(Break(id=row, man=True, max=ITEM_COLS))
+    _clear_page_breaks(copy)
     return name
 
 
@@ -836,8 +834,7 @@ def _copy_form_sheet(source: Worksheet, target: Worksheet) -> None:
     target.print_area = source.print_area
     for dv in source.data_validations.dataValidation:
         target.add_data_validation(copy(dv))
-    for row in _row_break_ids(source):
-        target.row_breaks.append(Break(id=row, man=True, max=ITEM_COLS))
+    _clear_page_breaks(target)
 
 
 def _install_template_form(wb: Workbook) -> str:
@@ -1136,12 +1133,12 @@ def _shift_breaks(breaks: list[int], at: int, count: int) -> None:
             breaks[index] = row + count
 
 
-def _is_stranded_break(after_row: int, hidden: set[int], print_last: int) -> bool:
-    if after_row < 1 or after_row >= print_last:
-        return True
-    before = any(row not in hidden for row in range(5, after_row + 1))
-    after = any(row not in hidden for row in range(after_row + 1, print_last + 1))
-    return (not before) or (not after)
+def _clear_page_breaks(ws: Worksheet) -> None:
+    """The dated sheet paginates with the page. Manual breaks stay off it."""
+    ws.row_breaks.brk = []
+    col_breaks = getattr(ws, "col_breaks", None)
+    if col_breaks is not None:
+        col_breaks.brk = []
 
 
 def _layout_snapshot_sheet(ws: Worksheet, plan: FillPlan) -> None:

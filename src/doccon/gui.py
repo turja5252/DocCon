@@ -181,7 +181,7 @@ from doccon.shop_place import (
     find_shop_ifc_folder,
     shop_folder_choices,
 )
-from doccon.usage import record_transmittal, transmittal_count
+from doccon.usage import record_eddi, record_jira_update, record_transmittal, usage_summary
 from doccon.theme import (
     CONFIRM_STEPS,
     FOLDER,
@@ -3898,6 +3898,7 @@ class DocConApp(tk.Tk):
             messagebox.showerror("EDDI", error)
             return
         self._set_status(note)
+        record_eddi(job=self._job_number)
         messagebox.showinfo("EDDI", f"{note}\nSaved in 3.0 Doc Con. Not attached to Outlook.")
 
     def _jira_change_note(self, rows: list[MatchedRow], *, packed: bool = False) -> str:
@@ -3994,6 +3995,7 @@ class DocConApp(tk.Tk):
         self._save_pack(quiet=True)
         self._refresh_cover_hint()
         self._set_status(f"Updated {len(rows)} item(s) in Jira.")
+        record_jira_update(job=self._job_number)
         messagebox.showinfo(
             "Jira updated",
             f"Jira has been updated.\n\nWrote {len(rows)} item(s). The list now shows what was written.",
@@ -4826,9 +4828,7 @@ class DocConApp(tk.Tk):
         )
 
     def _show_transmittal_count(self) -> None:
-        count = transmittal_count()
-        word = "transmittal" if count == 1 else "transmittals"
-        messagebox.showinfo(APP_DISPLAY_NAME, f"{count} {word} created.")
+        messagebox.showinfo(APP_DISPLAY_NAME, usage_summary())
 
     def _apply_row(self, row: MatchedRow) -> None:
         self._matches[row.drawing.key] = row

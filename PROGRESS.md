@@ -2,6 +2,18 @@
 
 Newest first. Append a dated entry when a decision is locked, a test runs, or the next step changes.
 
+## 2026-10-16 — Shipped 2.25
+
+Source and the frozen exe are 2.25. Ctrl+Shift+L lists CT, ST, FT, Jira updates, and EDDI creations, and leaves Tanzim Nasir out. The dated EDDI sheet has no manual page break. Load `2026-Tanzim`. Do not Confirm 075.
+
+## 2026-10-16 — Ctrl+Shift+L lists CT, ST, FT, Jira updates, and EDDI
+
+The shortcut shows those five counts. Update Jira and Create EDDI are counted once each time they succeed. A Jira write inside Create transmittal, and the EDDI sheet that goes with a letter, stay in the letter count. Tanzim Nasir's Windows account and a log whose PC name contains Tanzim are left out. Older Update Jira and Create EDDI clicks were not written down, so those two start at the next one. Shipped in 2.25.
+
+## 2026-10-16 — EDDI PDF has no manual page break
+
+The EDDI form had a manual break on the blank line under Engineering, so the PDF started a new page there. That break is off `templates/EDDI-template.xlsm`. The dated sheet does not copy a manual break from an older job book. The PDF starts a new page when the page is full. Shipped in 2.25.
+
 ## 2026-10-16 — Shipped 2.24
 
 Source and the frozen exe are 2.24. A Jira status from Set packed to is written only for drawings that stay packed. Unticking Pack puts that status back. The cover TO follows the Transmittal Editor. Load `2026-Tanzim`. Do not Confirm 075.
