@@ -2,9 +2,13 @@
 
 Newest first. Append a dated entry when a decision is locked, a test runs, or the next step changes.
 
+## 2026-10-16 — Shipped 2.23
+
+Source and the frozen exe are 2.23. A TO saved for this job comes back in the Transmittal Editor. The old letter is used only when this job has not saved a TO. Load `2026-Tanzim`. Do not Confirm 075.
+
 ## 2026-10-16 — A saved TO stays on the next session
 
-The Transmittal Editor was keeping the cover box and the old letter ahead of the TO saved for this job. A filled CC was enough to throw away an empty cover TO, so the saved address did not come back. The saved pack TO now wins. The letter is used only when this job has not saved one. Not shipped yet.
+The Transmittal Editor was keeping the cover box and the old letter ahead of the TO saved for this job. A filled CC was enough to throw away an empty cover TO, so the saved address did not come back. The saved pack TO now wins. The letter is used only when this job has not saved one. Shipped in 2.23.
 
 ## 2026-10-16 — Shipped 2.22
 

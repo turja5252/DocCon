@@ -39,7 +39,9 @@ The summary is an ID, then optional wording. Empty description is allowed.
 
 No extra Jira status or custom trigger field. Engineer emails Sarah the pack list; she runs DocCon.
 
-**Next:** Source and the frozen exe are **2.22**. Load `2026-Tanzim`. Do not Confirm 075.
+**Next:** Source and the frozen exe are **2.23**. Load `2026-Tanzim`. Do not Confirm 075.
+
+**2.23 A saved TO stays on the next session.** The TO saved for this job comes back in the Transmittal Editor. The old letter is used only when this job has not saved a TO. Drag is not back.
 
 **2.22 Create transmittal shows the letter, and a long Document No. wraps.** Create transmittal prints the letter from a copy. Confirm files it. Back returns to the list. ST + FT shows the shop letter and the field letter. A Document No. that does not fit the cell wraps inside that column and the row grows to fit. A number that fits stays on the form row. The blank working sheet goes back to the form row height. The CT, ST, and FT books are not edited. Drag is not back.
 
