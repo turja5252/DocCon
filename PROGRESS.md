@@ -2,6 +2,10 @@
 
 Newest first. Append a dated entry when a decision is locked, a test runs, or the next step changes.
 
+## 2026-10-16 — A saved TO stays on the next session
+
+The Transmittal Editor was keeping the cover box and the old letter ahead of the TO saved for this job. A filled CC was enough to throw away an empty cover TO, so the saved address did not come back. The saved pack TO now wins. The letter is used only when this job has not saved one. Not shipped yet.
+
 ## 2026-10-16 — Shipped 2.22
 
 Source and the frozen exe are 2.22. Create transmittal shows the letter before anything is filed. A long Document No. wraps in the cell and that row grows. The blank working sheet returns to the form row height. The CT, ST, and FT books are not edited. Load `2026-Tanzim`. Do not Confirm 075.

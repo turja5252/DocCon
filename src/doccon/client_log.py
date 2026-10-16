@@ -410,9 +410,10 @@ def pick_cover_fields(
     shop_to: str = "",
     shop_cc: str = "",
 ) -> BookCover:
-    """Prefer the letter, then the saved pack, then the default for this kind.
+    """Prefer the saved pack, then the letter, then the default for this kind.
 
-    Client default is the PEP. Shop and Field defaults are their Settings lists.
+    A TO saved on this job stays. Client default is the PEP. Shop and Field
+    defaults are their Settings lists.
     """
     if kind == FIELD:
         pep_to = field_to
@@ -428,9 +429,9 @@ def pick_cover_fields(
         pep_cc = ""
     pep_project = pep.project_description if pep is not None else ""
     return BookCover(
-        to_line=_first_filled(book.to_line, pack_to, pep_to),
-        cc_line=_first_filled(book.cc_line, pack_cc, pep_cc),
-        project_description=_first_filled(book.project_description, pack_project, pep_project),
+        to_line=_first_filled(pack_to, book.to_line, pep_to),
+        cc_line=_first_filled(pack_cc, book.cc_line, pep_cc),
+        project_description=_first_filled(pack_project, book.project_description, pep_project),
     )
 
 

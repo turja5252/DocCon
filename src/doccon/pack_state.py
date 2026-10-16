@@ -497,6 +497,16 @@ def pack_cover_is_saved(pack: ClientPack | None) -> bool:
     )
 
 
+def editor_to_line(saved: str, live: str, *, current: bool) -> str:
+    """The saved job TO stays. A TO typed on the cover is kept with it."""
+    from doccon.pep import email_line
+
+    saved_line = email_line(saved)
+    if current and (live or "").strip():
+        return email_line(f"{saved_line}; {live}")
+    return saved_line
+
+
 def cover_recipients(pack: ClientPack | None, kind: str) -> tuple[str, str]:
     if pack is None:
         return "", ""

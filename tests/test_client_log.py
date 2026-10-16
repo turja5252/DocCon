@@ -589,9 +589,12 @@ def test_pick_cover_prefers_letter_over_pep() -> None:
         pack_project="saved json",
         pep=pep,
     )
-    assert chosen.to_line == "Zach.Hilsendager@cnrl.com"
+    assert chosen.to_line == "tanzim.nasir@eliteintegrityservices.com"
     assert chosen.cc_line == "sarah.chan@eliteintegrityservices.com"
-    assert chosen.project_description == "CNRL letter line"
+    assert chosen.project_description == "saved json"
+    letter = pick_cover_fields(book=book, pep=pep)
+    assert letter.to_line == "Zach.Hilsendager@cnrl.com"
+    assert letter.project_description == "CNRL letter line"
 
 
 def test_pick_cover_falls_back_to_pep_when_letter_blank() -> None:

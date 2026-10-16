@@ -116,6 +116,7 @@ from doccon.pack_state import (
     ClientPack,
     PackExtra,
     cover_recipients,
+    editor_to_line,
     blank_extra,
     document_no_for_file,
     extra_from_path,
@@ -1870,12 +1871,15 @@ class DocConApp(tk.Tk):
             field_folder=self._field_folder_saved or (existing.field_folder if existing is not None else ""),
             job_folder=str(self._job_folder) if self._job_folder else "",
         )
-        return with_cover_recipients(
-            pack,
-            self.kind.get(),
-            self._email_value(self.to_box),
-            self._email_value(self.cc_box),
-        )
+        kind_now = self.kind.get()
+        live_to = self._email_value(self.to_box)
+        live_cc = self._email_value(self.cc_box)
+        saved_to, saved_cc = cover_recipients(base, kind_now)
+        if self._work == "load" and not live_to:
+            live_to = saved_to
+        if self._work == "load" and not live_cc:
+            live_cc = saved_cc
+        return with_cover_recipients(pack, kind_now, live_to, live_cc)
 
     def _write_cover_date_defaults(self) -> None:
         self.issued.delete(0, "end")
@@ -2047,7 +2051,10 @@ class DocConApp(tk.Tk):
         self._cover_loading = True
         try:
             self._set_from_address(DOC_CONTROL_FROM)
-            self._set_text(self.to_box, email_line(chosen.to_line))
+            self._set_text(
+                self.to_box,
+                email_line(self._with_permanent(kind, "to", chosen.to_line, pack)),
+            )
             self._set_text(self.cc_box, self._cover_cc(kind, chosen.cc_line, cover, pack))
             self._set_text(self.project_box, chosen.project_description)
             self._set_job_fields_from(cover, pack)
@@ -2453,12 +2460,10 @@ class DocConApp(tk.Tk):
         rows = self.board.selected_rows()
         for key, _title in MAIL_KIND_LABELS:
             issued[key] = issued_for_text(rows, key)
-            if key == current and (live_to or live_cc):
-                book = BookCover()
-                pack_to, pack_cc = live_to, live_cc
-            else:
-                book = self._book_covers.get(key, BookCover())
-                pack_to, pack_cc = cover_recipients(pack, key)
+            saved_to, saved_cc = cover_recipients(pack, key)
+            pack_to = editor_to_line(saved_to, live_to, current=(key == current))
+            pack_cc = live_cc if key == current and live_cc else saved_cc
+            book = BookCover()
             chosen = pick_cover_fields(
                 book=book,
                 pack_to=pack_to,

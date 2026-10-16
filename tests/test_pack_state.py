@@ -190,3 +190,14 @@ def test_load_skips_junk_next_edits(tmp_path: Path) -> None:
     loaded = load_client_pack(tmp_path, "2026-Tanzim")
     assert loaded is not None
     assert loaded.next_edits == {"P2024-1": {"outgoing_rev": "C"}}
+
+
+def test_editor_keeps_a_saved_to_when_the_cover_box_is_empty() -> None:
+    from doccon.pack_state import editor_to_line
+
+    saved = editor_to_line("tanzim@ijij.com", "", current=True)
+    assert saved == "tanzim@ijij.com"
+    both = editor_to_line("tanzim@ijij.com", "tanzim@ijij.com", current=True)
+    assert both == "tanzim@ijij.com"
+    other = editor_to_line("shop@eliteintegrityservices.com", "ignored@example.com", current=False)
+    assert other == "shop@eliteintegrityservices.com"
