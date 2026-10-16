@@ -160,7 +160,7 @@ from doccon.register import (
     new_issue_id_error,
     new_issue_preflight_error,
 )
-from doccon.field_place import MISSING_FIELD_FOLDER, find_field_folder
+from doccon.field_place import MISSING_FIELD_FOLDER, field_folder_choices, find_field_folder
 from doccon.secrets import load_token, save_token
 from doccon.settings import (
     AppSettings,
@@ -1919,8 +1919,13 @@ class DocConApp(tk.Tk):
             pack_extras=tuple(self._current_extras()),
             shop_folders=(
                 self.board.shop_folder_picks()
-                if self.board.shop_folders_open()
+                if self.board.shop_folders_ready()
                 else (existing.shop_folders if existing is not None else {})
+            ),
+            field_places=(
+                self.board.field_folder_picks()
+                if self.board.field_folders_ready()
+                else (existing.field_places if existing is not None else {})
             ),
             shop_folder=self._shop_folder_saved or (existing.shop_folder if existing is not None else ""),
             field_folder=self._field_folder_saved or (existing.field_folder if existing is not None else ""),
@@ -4257,14 +4262,12 @@ class DocConApp(tk.Tk):
             return
         picks = self.board.shop_folder_picks()
         shop_copies: list[tuple[Path, str]] = []
-        field_copies: list[Path] = []
         for row in rows:
             if row.pdf is not None and row.pdf.path.is_file():
                 shop_copies.append((row.pdf.path, picks.get(row.drawing.key, "Root")))
-                field_copies.append(row.pdf.path)
         for item in pack_extras:
             shop_copies.append((Path(item.path), picks.get(item.id, "Root")))
-            field_copies.append(Path(item.path))
+        field_copies = self._field_copies_for(rows, pack_extras)
         packed_keys = {row.drawing.key for row in rows}
         jira_rows = [row for row in self.board.pending_rows() if row.drawing.key in packed_keys]
         eddi_drawings = eddi_print_drawings(self._eddi_rows())
@@ -4649,7 +4652,7 @@ class DocConApp(tk.Tk):
         shop_root: Path | None = None
         shop_copies: list[tuple[Path, str]] = []
         field_root: Path | None = None
-        field_copies: list[Path] = []
+        field_copies: list[tuple[Path, str]] = []
         if kind == SHOP:
             self._refresh_shop_place()
             shop_root = self._shop_root
@@ -4668,11 +4671,7 @@ class DocConApp(tk.Tk):
             if field_root is None:
                 messagebox.showerror(label, MISSING_FIELD_FOLDER)
                 return
-            for row in rows:
-                if row.pdf is not None and row.pdf.path.is_file():
-                    field_copies.append(row.pdf.path)
-            for item in pack_extras:
-                field_copies.append(Path(item.path))
+            field_copies = self._field_copies_for(rows, pack_extras)
         lines = lines_from_rows(rows, kind) + lines_from_extras(pack_extras, kind)
         extra_pdfs = [Path(item.path) for item in pack_extras]
         urgent = bool(self.board.return_urgency())
@@ -5490,7 +5489,7 @@ class DocConApp(tk.Tk):
         found = find_shop_ifc_folder(self._job_number, self._job_folder, remembered)
         self._shop_root = found
         self._paint_place(self._shop_place, found)
-        if self.kind.get() != SHOP or found is None:
+        if self.kind.get() not in (SHOP, BOTH) or found is None:
             self.board.set_shop_folders(())
             return
         self.board.set_shop_folders(shop_folder_choices(found))
@@ -5521,9 +5520,22 @@ class DocConApp(tk.Tk):
         self._refresh_shop_place()
         self._set_status(f"Shop folder: {path.name}")
 
+    def _field_copies_for(self, rows, extras) -> list[tuple[Path, str]]:
+        """Each packed PDF and the field folder picked on that row. A blank pick is 2.0."""
+        picks = self.board.field_folder_picks()
+        default = self.board.field_folder_default()
+        copies: list[tuple[Path, str]] = []
+        for row in rows:
+            if row.pdf is not None and row.pdf.path.is_file():
+                copies.append((row.pdf.path, picks.get(row.drawing.key, default)))
+        for item in extras:
+            copies.append((Path(item.path), picks.get(item.id, default)))
+        return copies
+
     def _refresh_field_place(self) -> None:
         if not self._job_number:
             self._field_root = None
+            self.board.set_field_folders(())
             self._paint_place(self._field_place, None)
             return
         pack = load_client_pack(self._job_folder, self._job_number) if self._job_folder else None
@@ -5533,6 +5545,12 @@ class DocConApp(tk.Tk):
         remembered = shared or remembered_field_folder(self._job_number)
         self._field_root = find_field_folder(self._job_number, self._job_folder, remembered)
         self._paint_place(self._field_place, self._field_root)
+        if self.kind.get() not in (FIELD, BOTH) or self._field_root is None:
+            self.board.set_field_folders(())
+            return
+        self.board.set_field_folders(field_folder_choices(self._field_root))
+        pack = load_client_pack(self._job_folder, self._job_number)
+        self.board.apply_field_folder_picks(pack.field_places if pack is not None else {})
 
     def _locate_field_folder(self) -> None:
         if not self._job_number:

@@ -54,12 +54,16 @@ def test_shop_and_field_folders_travel_with_the_pack(tmp_path: Path) -> None:
         job_number="2026-Tanzim",
         shop_folder=str(shop),
         field_folder=str(field),
+        shop_folders={"P2024-1": "1.0.1 MID Sheets"},
+        field_places={"P2024-1": "5.0 Weld Procedures & Welder Quals"},
     )
     save_client_pack(tmp_path, pack)
     loaded = load_client_pack(tmp_path, "2026-Tanzim")
     assert loaded is not None
     assert loaded.shop_folder == str(shop)
     assert loaded.field_folder == str(field)
+    assert loaded.shop_folders == {"P2024-1": "1.0.1 MID Sheets"}
+    assert loaded.field_places == {"P2024-1": "5.0 Weld Procedures & Welder Quals"}
 
 
 def test_cover_recipients_stay_per_kind() -> None:

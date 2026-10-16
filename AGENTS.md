@@ -39,7 +39,9 @@ The summary is an ID, then optional wording. Empty description is allowed.
 
 No extra Jira status or custom trigger field. Engineer emails Sarah the pack list; she runs DocCon.
 
-**Next:** Source and the frozen exe are **2.26**. Load `2026-Tanzim`. Do not Confirm 075.
+**Next:** Source and the frozen exe are **2.27**. Load `2026-Tanzim`. Do not Confirm 075.
+
+**2.27 Field gets a folder pick on each drawing.** Shop shows the shop list. Field shows `2.0`, the `3.1`–`3.6` folders that exist under `3.0`, and `5.0`. ST + FT shows both lists, labeled ST and FT, stacked in the PDF column. A pick is saved in `client-pack.json`. The FT form still goes in `Transmittals` under `2.0`. Drag is not back.
 
 **2.26 A saved TO stays after close.** Save writes the cover TO. Quit and a quiet save leave a saved TO in place when the box is blank. Save with the box cleared removes it. ST + FT and Incoming write the TO that is on the cover. Switching transmittal keeps the addresses that were on screen. Drag is not back.
 

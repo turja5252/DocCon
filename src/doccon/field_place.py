@@ -2,7 +2,10 @@
 # Copyright (c) 2026 Tanzim Nasir.
 # Built for Elite Integrity Services.
 # Unauthorized use by other companies is prohibited.
-"""Copy a field pack into the job's Field Construction folder. No per-row folder pick."""
+"""Copy a field pack into the job's Field Construction folder.
+
+Each drawing picks 2.0, a 3.1–3.6 folder, or 5.0. The FT form stays in 2.0 Transmittals.
+"""
 from __future__ import annotations
 
 import shutil
@@ -14,6 +17,8 @@ from doccon.match import parse_pdf_stem
 
 IFC_DIR = "2.0 IFC Drawings & Transmittals"
 TRANSMITTALS = "Transmittals"
+# 3.0 itself is not a destination. Its children 3.1–3.6 are.
+FIELD_PREFIXES = ("2.0", "3.1", "3.2", "3.3", "3.4", "3.5", "3.6", "5.0")
 FIELD_SUFFIX = " Field Construction Folder"
 MISSING_FIELD_FOLDER = (
     "Field folder is not on Dropbox yet. "
@@ -74,11 +79,75 @@ def find_field_folder(
     return ranked[0][1]
 
 
-def place_field_pdf(field_root: Path, source: Path) -> Path:
-    """Copy one drawing into 2.0. A newer rev replaces the older file."""
-    dest_dir = field_ifc_dir(field_root)
+def _prefix_match(name: str, prefix: str) -> bool:
+    token = name.strip().casefold()
+    head = prefix.casefold()
+    return token == head or token.startswith(head + " ") or token.startswith(head + ".")
+
+
+def _field_home(field_root: Path) -> Path:
+    """The 8.0 folder. A Locate pick of 2.0 itself still counts."""
+    root = Path(field_root)
+    if _prefix_match(root.name, "2.0"):
+        return root.parent
+    return root
+
+
+def _child_dirs(folder: Path) -> list[Path]:
+    try:
+        return [child for child in Path(folder).iterdir() if child.is_dir()]
+    except OSError:
+        return []
+
+
+def field_folder_choices(field_root: Path) -> tuple[str, ...]:
+    """2.0, the 3.1–3.6 folders that exist, and 5.0. Missing numbers stay off the list."""
+    home = _field_home(field_root)
+    children = _child_dirs(home)
+    qc = next((child for child in children if _prefix_match(child.name, "3.0")), None)
+    qc_children = _child_dirs(qc) if qc is not None else []
+    names: list[str] = []
+    for prefix in FIELD_PREFIXES:
+        pool = qc_children if prefix.startswith("3.") else children
+        match = next((child for child in pool if _prefix_match(child.name, prefix)), None)
+        if match is not None:
+            names.append(match.name)
+    return tuple(names)
+
+
+def field_default_label(choices: tuple[str, ...]) -> str:
+    """Drawings start in 2.0, which is where every field PDF went before the pick."""
+    for name in choices:
+        if _prefix_match(name, "2.0"):
+            return name
+    return IFC_DIR
+
+
+def field_destination(field_root: Path, folder_label: str = "") -> Path:
+    """The folder a drawing is copied into. A blank label is 2.0."""
+    home = _field_home(field_root)
+    label = (folder_label or "").strip()
+    ifc = home / IFC_DIR
+    if not label or _prefix_match(label, "2.0") or label.casefold() == ifc.name.casefold():
+        return ifc
+    children = _child_dirs(home)
+    qc = next((child for child in children if _prefix_match(child.name, "3.0")), None)
+    pools = [children]
+    if qc is not None:
+        pools.append(_child_dirs(qc))
+    for pool in pools:
+        for child in pool:
+            if child.name.casefold() == label.casefold():
+                return child
+    return home / label
+
+
+def place_field_pdf(field_root: Path, source: Path, folder_label: str = "") -> Path:
+    """Copy one drawing into the picked field folder. A newer rev replaces the older file."""
+    dest_dir = field_destination(field_root, folder_label)
     if not dest_dir.is_dir():
-        raise LogError(f"{IFC_DIR} is not in {Path(field_root).name}.")
+        label = (folder_label or "").strip() or IFC_DIR
+        raise LogError(f"{label} is not in {Path(field_root).name}.")
     _remove_other_revs(dest_dir, source.name)
     dest = dest_dir / source.name
     shutil.copy2(source, dest)

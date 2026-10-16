@@ -2,6 +2,14 @@
 
 Newest first. Append a dated entry when a decision is locked, a test runs, or the next step changes.
 
+## 2026-10-16 — Shipped 2.27
+
+Source and the frozen exe are 2.27. Field gets a folder pick on each drawing. Load `2026-Tanzim`. Do not Confirm 075.
+
+## 2026-10-16 — Field gets a per-drawing folder pick
+
+On Field, and on ST + FT, each drawing picks a folder inside the job’s `8.0` folder. The list is `2.0 IFC Drawings & Transmittals` (the default), the children of `3.0` (`3.1` through `3.6`), and `5.0`. `3.0` itself is not a destination. A numbered folder that is not on that job stays off the list. Shop still shows only the shop list. Field shows only the field list. ST + FT shows both, labeled ST and FT, stacked in the PDF column so that column stays the same width. Each pick is saved in `client-pack.json` (`field_places`). The FT form still goes in `Transmittals` under `2.0`. Shipped in 2.27.
+
 ## 2026-10-16 — Shipped 2.26
 
 Source and the frozen exe are 2.26. A saved TO stays after the console closes. Load `2026-Tanzim`. Do not Confirm 075.

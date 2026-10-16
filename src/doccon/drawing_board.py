@@ -653,6 +653,9 @@ class _Block:
     extra_path: str = ""
     extra_dropped: bool = False
     shop_folder: ttk.Combobox | None = None
+    shop_place: tk.Misc | None = None
+    field_folder: ttk.Combobox | None = None
+    field_place: tk.Misc | None = None
     mounted: bool = True
     grid_top: int = 0
     edit_ids: tuple[int, ...] = ()
@@ -798,6 +801,12 @@ class DrawingBoard(ttk.Frame):
         self._jira_grid_end = 0
         self._extras_painted = False
         self._shop_choices: tuple[str, ...] = ()
+        self._field_choices: tuple[str, ...] = ()
+        self._field_default = "2.0 IFC Drawings & Transmittals"
+        self._shop_saved: dict[str, str] = {}
+        self._field_saved: dict[str, str] = {}
+        self._shop_ready = False
+        self._field_ready = False
         self._packed_only = tk.BooleanVar(value=False)
         self._pack_all_options = False
         self._pack_filter_after = ""
@@ -1995,7 +2004,8 @@ class DrawingBoard(ttk.Frame):
             block.rename_btn,
             block.open_btn,
             block.preview_btn,
-            block.shop_folder,
+            block.shop_place,
+            block.field_place,
         )
         shown: list[tk.Misc] = []
         for widget in widgets:
@@ -2009,7 +2019,9 @@ class DrawingBoard(ttk.Frame):
             visible = True
             if widget is block.rename_btn and not getattr(widget, "_doccon_show", False):
                 visible = False
-            if widget is block.shop_folder and not self._shop_choices:
+            if widget is block.shop_place and not self._shop_choices:
+                visible = False
+            if widget is block.field_place and not self._field_choices:
                 visible = False
             if not visible:
                 with contextlib.suppress(tk.TclError):
@@ -2022,8 +2034,9 @@ class DrawingBoard(ttk.Frame):
         for widget in shown:
             try:
                 wanted = max(int(widget.winfo_reqwidth()), 1)
-                w = min(wanted, width)
-                h = max(int(widget.winfo_reqheight()), 1)
+                place_list = widget in (block.shop_place, block.field_place)
+                w = width if place_list else min(wanted, width)
+                h = max(int(widget.winfo_reqheight()), 26 if place_list else 1)
                 if x > 0 and x + w > width:
                     x = 0
                     y += line_h + gap
@@ -4191,7 +4204,12 @@ class DrawingBoard(ttk.Frame):
         preview_btn = self._pdf_action_button(
             pdf_actions, "preview", lambda key=drawing.key: self._preview_pdf(key)
         )
-        shop_folder = self._make_shop_picker(pdf_actions)
+        shop_place, shop_folder = self._make_place_picker(
+            pdf_actions, drawing.key, caption="ST", tip="Shop folder", kind="shop"
+        )
+        field_place, field_folder = self._make_place_picker(
+            pdf_actions, drawing.key, caption="FT", tip="Field folder", kind="field"
+        )
         pdf_state = "normal" if row.pdf else "disabled"
         open_btn.configure(state=pdf_state)
         preview_state = "normal" if row.pdf is not None and can_preview(row.pdf.path) else "disabled"
@@ -4289,6 +4307,9 @@ class DrawingBoard(ttk.Frame):
             widgets=widgets,
             rules=(h_top, h_top_f, h_bot, h_bot_f),
             shop_folder=shop_folder,
+            shop_place=shop_place,
+            field_folder=field_folder,
+            field_place=field_place,
             mounted=True,
             grid_top=top,
             edit_ids=tuple(id(widget) for widget in (pdf_actions, *next_cells)),
@@ -4304,59 +4325,175 @@ class DrawingBoard(ttk.Frame):
             self._style_row_focus(self._blocks[drawing.key])
         self._follow_hold(drawing.key)
 
-    def _make_shop_picker(self, parent: tk.Misc) -> ttk.Combobox:
+    def _make_place_picker(
+        self,
+        parent: tk.Misc,
+        key: str,
+        *,
+        caption: str,
+        tip: str,
+        kind: str,
+    ) -> tuple[ttk.Frame, ttk.Combobox]:
+        """ST or FT folder pick. The caption and the list stay one unit inside the PDF column."""
         from doccon.shop_place import ROOT_FOLDER
 
-        box = ttk.Combobox(parent, width=18, state="readonly", values=self._shop_choices)
-        box.set(ROOT_FOLDER)
+        frame = ttk.Frame(parent, style="Board.TFrame")
+        label = ttk.Label(frame, text=caption, style="Board.TLabel", width=3)
+        label.pack(side="left", padx=(0, 2))
+        if kind == "field":
+            choices = self._field_choices
+            default = self._field_default
+            saved = self._field_saved
+        else:
+            choices = self._shop_choices
+            default = ROOT_FOLDER
+            saved = self._shop_saved
+        box = ttk.Combobox(frame, width=12, state="readonly", values=choices)
+        current = (saved.get(key) or default).strip() or default
+        if choices and current not in choices:
+            current = default
+        box.set(current)
+        box.pack(side="left", fill="x", expand=True)
         self._quiet_dropdown(box)
-        box.bind("<<ComboboxSelected>>", lambda _event: self._notify_draft(), add="+")
-        return box
+        box.bind(
+            "<<ComboboxSelected>>",
+            lambda _event, item=key, which=kind: self._remember_place_pick(item, which),
+            add="+",
+        )
+        for widget in (frame, label, box):
+            widget.bind(
+                "<Enter>",
+                lambda _event, host=box, text=tip: self._schedule_tip(host, text, 0),
+                add="+",
+            )
+            widget.bind("<Leave>", lambda _event: self._hide_tip(), add="+")
+        return frame, box
+
+    def _remember_place_pick(self, key: str, kind: str) -> None:
+        from doccon.shop_place import ROOT_FOLDER
+
+        block = self._blocks.get(key)
+        if block is None:
+            return
+        if kind == "field":
+            box = block.field_folder
+            default = self._field_default
+            saved = self._field_saved
+        else:
+            box = block.shop_folder
+            default = ROOT_FOLDER
+            saved = self._shop_saved
+        if box is None:
+            return
+        label = (box.get() or "").strip()
+        if label and label.casefold() != default.casefold():
+            saved[key] = label
+        else:
+            saved.pop(key, None)
+        self._notify_draft()
+
+    def _show_place_pick(self, block: _Block, kind: str) -> None:
+        from doccon.shop_place import ROOT_FOLDER
+
+        if kind == "field":
+            box = block.field_folder
+            choices = self._field_choices
+            default = self._field_default
+            saved = self._field_saved
+        else:
+            box = block.shop_folder
+            choices = self._shop_choices
+            default = ROOT_FOLDER
+            saved = self._shop_saved
+        if box is None:
+            return
+        if not choices:
+            return
+        current = (saved.get(block.key) or box.get() or default).strip() or default
+        box.configure(values=choices)
+        if current not in choices:
+            saved.pop(block.key, None)
+            current = default if default in choices else choices[0]
+        box.set(current)
+
+    def _fit_place_rows(self) -> None:
+        """A second folder list makes the Next line taller. Both panes keep that height."""
+        if not self._suspend_layout:
+            with contextlib.suppress(tk.TclError):
+                self.update_idletasks()
+            for block in self._blocks.values():
+                self._reflow_actions(block)
+        self._schedule_frozen_row_sync()
+        if self._drawn_mode and not self._suspend_layout:
+            self._draw_sheet()
 
     def set_shop_folders(self, choices: tuple[str, ...]) -> None:
         """Show a Root / subfolder pick on every row. Empty hides it (not a shop pack)."""
-        from doccon.shop_place import ROOT_FOLDER
-
         self._shop_choices = tuple(choices)
+        if self._shop_choices:
+            self._shop_ready = True
         for block in self._blocks.values():
-            box = block.shop_folder
-            if box is None:
-                continue
-            if not self._shop_choices:
-                self._reflow_actions(block)
-                continue
-            current = (box.get() or ROOT_FOLDER).strip() or ROOT_FOLDER
-            box.configure(values=self._shop_choices)
-            box.set(current if current in self._shop_choices else ROOT_FOLDER)
+            if self._shop_choices:
+                self._show_place_pick(block, "shop")
             self._reflow_actions(block)
+        self._fit_place_rows()
 
     def apply_shop_folder_picks(self, picks: dict[str, str]) -> None:
         from doccon.shop_place import ROOT_FOLDER
 
-        for key, block in self._blocks.items():
-            box = block.shop_folder
-            if box is None or not self._shop_choices:
-                continue
-            label = (picks.get(key) or ROOT_FOLDER).strip() or ROOT_FOLDER
-            box.set(label if label in self._shop_choices else ROOT_FOLDER)
+        self._shop_saved = {
+            str(key): label
+            for key, label in picks.items()
+            if str(label or "").strip() and str(label).strip().casefold() != ROOT_FOLDER.casefold()
+        }
+        for block in self._blocks.values():
+            self._show_place_pick(block, "shop")
 
     def shop_folders_open(self) -> bool:
         return bool(self._shop_choices)
 
-    def shop_folder_picks(self) -> dict[str, str]:
-        from doccon.shop_place import ROOT_FOLDER
+    def shop_folders_ready(self) -> bool:
+        """True once the shop list has been shown, so a later hide still keeps those picks."""
+        return self._shop_ready
 
-        picks: dict[str, str] = {}
-        if not self._shop_choices:
-            return picks
+    def shop_folder_picks(self) -> dict[str, str]:
+        return dict(self._shop_saved)
+
+    def set_field_folders(self, choices: tuple[str, ...]) -> None:
+        """Show 2.0, 3.1–3.6, and 5.0. Empty hides it (not a field pack)."""
+        from doccon.field_place import field_default_label
+
+        self._field_choices = tuple(choices)
+        if self._field_choices:
+            self._field_ready = True
+            self._field_default = field_default_label(self._field_choices)
         for block in self._blocks.values():
-            box = block.shop_folder
-            if box is None:
-                continue
-            label = (box.get() or "").strip()
-            if label and label.casefold() != ROOT_FOLDER.casefold():
-                picks[block.key] = label
-        return picks
+            if self._field_choices:
+                self._show_place_pick(block, "field")
+            self._reflow_actions(block)
+        self._fit_place_rows()
+
+    def apply_field_folder_picks(self, picks: dict[str, str]) -> None:
+        self._field_saved = {
+            str(key): str(label).strip()
+            for key, label in picks.items()
+            if str(label or "").strip() and str(label).strip().casefold() != self._field_default.casefold()
+        }
+        for block in self._blocks.values():
+            self._show_place_pick(block, "field")
+
+    def field_folders_open(self) -> bool:
+        return bool(self._field_choices)
+
+    def field_folders_ready(self) -> bool:
+        """True once the field list has been shown, so a later hide still keeps those picks."""
+        return self._field_ready
+
+    def field_folder_default(self) -> str:
+        return self._field_default
+
+    def field_folder_picks(self) -> dict[str, str]:
+        return dict(self._field_saved)
 
     def extras_painted(self) -> bool:
         return self._extras_painted
@@ -4580,7 +4717,12 @@ class DrawingBoard(ttk.Frame):
         preview_btn = self._pdf_action_button(
             pdf_actions, "preview", lambda extra_key=key: self._preview_pdf(extra_key)
         )
-        shop_folder = self._make_shop_picker(pdf_actions)
+        shop_place, shop_folder = self._make_place_picker(
+            pdf_actions, key, caption="ST", tip="Shop folder", kind="shop"
+        )
+        field_place, field_folder = self._make_place_picker(
+            pdf_actions, key, caption="FT", tip="Field folder", kind="field"
+        )
         pdf_state = "normal" if Path(item.path).is_file() else "disabled"
         open_btn.configure(state=pdf_state)
         preview_btn.configure(
@@ -4662,6 +4804,9 @@ class DrawingBoard(ttk.Frame):
             extra_path=item.path,
             extra_dropped=item.email_dropped,
             shop_folder=shop_folder,
+            shop_place=shop_place,
+            field_folder=field_folder,
+            field_place=field_place,
         )
         pack.trace_add("write", lambda *_args, drawing_key=key: self._on_pack_tick(drawing_key))
         self._bind_row_select(widgets, key)

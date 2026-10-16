@@ -42,6 +42,7 @@ from doccon.register import DrawingRow, FieldOption
 from doccon.field_place import (
     IFC_DIR,
     MISSING_FIELD_FOLDER,
+    field_destination,
     field_ifc_dir,
     place_field_form,
     place_field_pdf,
@@ -362,17 +363,31 @@ def _copy_shop_pack(shop_root: Path, copies: list[tuple[Path, str]], form: Path)
         place_shop_form(shop_root, form)
 
 
-def _preflight_field_copies(field_root: Path, copies: list[Path]) -> None:
+def _field_copy(item: Path | tuple) -> tuple[Path, str]:
+    if isinstance(item, tuple):
+        label = str(item[1]).strip() if len(item) > 1 else ""
+        return Path(item[0]), label
+    return Path(item), ""
+
+
+def _preflight_field_copies(field_root: Path, copies: list[Path] | list[tuple[Path, str]]) -> None:
     if not field_ifc_dir(field_root).is_dir():
         raise LogError(f"{IFC_DIR} is not in {field_root.name}. Confirm aborted; nothing was written.")
-    for source in copies:
-        if not Path(source).is_file():
-            raise LogError(f"Missing {Path(source).name}. Confirm aborted; nothing was written.")
+    for item in copies:
+        source, label = _field_copy(item)
+        if not source.is_file():
+            raise LogError(f"Missing {source.name}. Confirm aborted; nothing was written.")
+        if not label:
+            continue
+        dest = field_destination(field_root, label)
+        if not dest.is_dir():
+            raise LogError(f"{label} is not in {field_root.name}. Confirm aborted; nothing was written.")
 
 
-def _copy_field_pack(field_root: Path, copies: list[Path], form: Path) -> None:
-    for source in copies:
-        place_field_pdf(field_root, Path(source))
+def _copy_field_pack(field_root: Path, copies: list[Path] | list[tuple[Path, str]], form: Path) -> None:
+    for item in copies:
+        source, label = _field_copy(item)
+        place_field_pdf(field_root, source, label)
     if form.is_file():
         place_field_form(field_root, form)
 

@@ -162,6 +162,7 @@ class ClientPack:
     pack_extras: tuple[PackExtra, ...] = ()
     shop_folders: dict[str, str] = field(default_factory=dict)
     shop_folder: str = ""
+    field_places: dict[str, str] = field(default_factory=dict)
     field_folder: str = ""
     job_folder: str = ""
     schema_version: int = PACK_SCHEMA
@@ -377,6 +378,7 @@ def load_client_pack(job_folder: Path | None, job_number: str) -> ClientPack | N
         pack_extras=_pack_extras(raw.get("pack_extras")),
         shop_folders=_shop_folders(raw.get("shop_folders")),
         shop_folder=str(raw.get("shop_folder") or "").strip(),
+        field_places=_shop_folders(raw.get("field_places")),
         field_folder=str(raw.get("field_folder") or "").strip(),
         job_folder=str(raw.get("job_folder") or "").strip(),
         schema_version=schema_version,
@@ -428,6 +430,7 @@ def save_client_pack(job_folder: Path, pack: ClientPack) -> Path:
         "pack_extras": _dump_pack_extras(pack.pack_extras),
         "shop_folders": dict(_shop_folders(pack.shop_folders)),
         "shop_folder": pack.shop_folder,
+        "field_places": dict(_shop_folders(pack.field_places)),
         "field_folder": pack.field_folder,
         "job_folder": pack.job_folder,
     }
