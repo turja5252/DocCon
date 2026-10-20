@@ -138,6 +138,28 @@ def test_long_description_wraps_and_grows_the_row(tmp_path: Path) -> None:
     item = next(row for row in range(1, ws.max_row + 1) if ws.cell(row, 1).value == "2026-Tanzim-1-1")
     assert ws.cell(item, 3).alignment.wrap_text is True
     assert ws.row_dimensions[item].height == 30
+    assert abs(float(ws.column_dimensions["C"].width) - 20) < 0.01
+    wb.close()
+
+
+def test_every_item_column_wraps_and_widths_stay(tmp_path: Path) -> None:
+    path = _project_fixture(tmp_path / "EDDI 3.0 - 2026-Tanzim.xlsx")
+    wb = load_workbook(path)
+    ws = wb["Project"]
+    ws.column_dimensions["B"].width = 13
+    kept = {letter: ws.column_dimensions[letter].width for letter in "ABC"}
+    long_client = "CLIENT-DOCUMENT-NUMBER-THAT-DOES-NOT-FIT"
+    fill_project_sheet(
+        ws,
+        "2026-Tanzim",
+        [_drawing(title="Short", client_document_number=long_client)],
+    )
+    item = next(row for row in range(1, ws.max_row + 1) if ws.cell(row, 1).value == "2026-Tanzim-1-1")
+    for col in range(1, 16):
+        assert ws.cell(item, col).alignment.wrap_text is True
+    assert ws.row_dimensions[item].height == 60
+    for letter, width in kept.items():
+        assert ws.column_dimensions[letter].width == width
     wb.close()
 
 
@@ -345,10 +367,12 @@ def test_snapshot_fills_project_form_not_custom_list(tmp_path: Path) -> None:
     assert ws.cell(item, 10).value == "Purchasing Only"
     assert ws["J3"].font.bold is True
     assert ws.cell(item, 10).alignment.wrap_text is True
-    assert ws.cell(item, 10).border.left.style == "thin"
-    assert ws.cell(item, 10).border.right.style == "thin"
-    assert not (ws.cell(item, 10).border.top and ws.cell(item, 10).border.top.style)
-    assert ws.cell(item, 10).border.bottom and ws.cell(item, 10).border.bottom.style == "thin"
+    for col in range(1, 16):
+        edge = ws.cell(item, col).border
+        assert edge.left.style == "thin"
+        assert edge.right.style == "thin"
+        assert edge.top.style == "thin"
+        assert edge.bottom.style == "thin"
     assert (ws.row_dimensions[item].height or 0) >= 30
     lists = [str(dv.formula1) for dv in ws.data_validations.dataValidation]
     assert '"IFC,IFI,IFU,Purchasing Only"' in lists
@@ -372,6 +396,8 @@ def test_snapshot_fills_project_form_not_custom_list(tmp_path: Path) -> None:
     fab = next(group for group in groups if group.number == 1)
     assert not ws.row_dimensions[fab.first_item].hidden
     assert ws.row_dimensions[fab.first_item + 1].hidden
+    blank = ws.cell(fab.first_item + 1, 1).border
+    assert not (blank.top and blank.top.style)
     pm = next(group for group in groups if group.number == 9)
     assert pm.slot_count == 3
     assert [ws.cell(row, 1).value for row in range(pm.first_item, pm.last_item + 1)] == ["PM-1", "PM-2", "PM-3"]
@@ -529,6 +555,48 @@ def test_eddi_skips_a_group_row_that_only_has_id_and_description() -> None:
     drawings = eddi_print_drawings([empty, kept])
     assert [row.drawing_id for row in drawings] == ["2026-Tanzim-1-8"]
     assert form_group_items([empty.drawing, kept.drawing])[3] == [kept.drawing]
+
+
+def test_full_eddi_keeps_an_id_only_row_and_writes_excel_only(tmp_path: Path) -> None:
+    from doccon.eddi import eddi_full_drawings, export_full_eddi, full_eddi_name
+    from doccon.match import MatchedRow
+
+    job_folder = tmp_path / "2026-Tanzim"
+    live = _project_fixture(job_folder / "3.0 Doc Con" / "EDDI 3.0 - 2026-Tanzim.xlsx")
+    empty = MatchedRow(
+        drawing=_drawing(
+            key="P2024-9",
+            drawing_id="2026-Tanzim-1-9",
+            title="Name only",
+            eddi_status="3 - Supplier Drawings - EDDI",
+            outgoing_rev="",
+            purpose="",
+            submission_date="",
+        ),
+        pdf=None,
+        confidence="Missing",
+    )
+    generic = MatchedRow(
+        drawing=_drawing(key="P2024-0", drawing_id="GEN", eddi_status="0 - Generic Task"),
+        pdf=None,
+        confidence="Missing",
+    )
+    drawings = eddi_full_drawings([empty, generic])
+    assert [row.drawing_id for row in drawings] == ["2026-Tanzim-1-9"]
+    dest = export_full_eddi(job_folder, "2026-Tanzim", drawings, date(2026, 10, 20))
+    assert dest == job_folder / "3.0 Doc Con" / full_eddi_name("2026-Tanzim")
+    assert dest.suffix == ".xlsx"
+    assert not list((job_folder / "3.0 Doc Con").glob("*.pdf"))
+    wb = load_workbook(dest)
+    assert "2026-10-20" not in wb.sheetnames
+    values = [wb["Project"].cell(row, 1).value for row in range(1, wb["Project"].max_row + 1)]
+    assert "2026-Tanzim-1-9" in values
+    assert str(wb["Project"]["A2"].value).startswith("Full EDDI - 2026-Tanzim")
+    wb.close()
+    live_wb = load_workbook(live)
+    assert live_wb.sheetnames == ["Project"]
+    assert live_wb["Project"]["A2"].value == "EDDI-2026-XXXX"
+    live_wb.close()
 
 
 def test_snapshot_excel_uses_local_temp_not_dropbox(tmp_path: Path, monkeypatch) -> None:

@@ -57,7 +57,7 @@ from doccon.drop_pdfs import (
     sources_from_paths,
     sweep_replaced_dropped_copies,
 )
-from doccon.eddi import eddi_print_drawings, snapshot_eddi
+from doccon.eddi import eddi_full_drawings, eddi_print_drawings, export_full_eddi, full_eddi_name, snapshot_eddi
 from doccon.jira_client import (
     JiraError,
     create_subtask,
@@ -224,6 +224,7 @@ CREATE_CREATED_MS = 700
 CREATE_ISSUE_BTN = "Create new Jira Issue"
 CREATE_TRANSMITTAL_BTN = "Create transmittal"
 CREATE_EDDI_BTN = "Create EDDI"
+FULL_EDDI_BTN = "Full EDDI"
 SELECT_ROW_FIRST = (
     "That PDF does not match any drawing on this job by filename.\n\n"
     "It is in New PDFs. Click a drawing, then Assign. "
@@ -1390,6 +1391,7 @@ class DocConApp(tk.Tk):
             side="left", padx=(6, 0)
         )
         ttk.Button(bar, text=CREATE_EDDI_BTN, command=self._print_eddi).pack(side="left", padx=(6, 0))
+        ttk.Button(bar, text=FULL_EDDI_BTN, command=self._export_full_eddi).pack(side="left", padx=(6, 0))
         ttk.Button(bar, text="Settings", style="Brand.TButton", command=self._settings).pack(side="right")
         self.status = ttk.Label(
             bar,
@@ -3948,6 +3950,68 @@ class DocConApp(tk.Tk):
         self._set_status(note)
         record_eddi(job=self._job_number)
         messagebox.showinfo("EDDI", f"{note}\nSaved in 3.0 Doc Con. Not attached to Outlook.")
+
+    def _export_full_eddi(self) -> None:
+        if self._note_if_busy():
+            return
+        job = self._current_job()
+        folder = self._ensure_job_folder(job) if job else None
+        if not job:
+            messagebox.showinfo("Full EDDI", "Enter a Job Number and click Load first.")
+            return
+        if folder is None:
+            messagebox.showerror(
+                "Full EDDI",
+                f"No Dropbox job folder for {job}. Check Current Jobs, then Load again.",
+            )
+            return
+        if not self.board.current_rows():
+            messagebox.showinfo("Full EDDI", "Load a job first.")
+            return
+        drawings = eddi_full_drawings(self._eddi_rows())
+        try:
+            issued = parse_issued_date(self.issued.get())
+        except LogError as exc:
+            messagebox.showerror("Full EDDI", str(exc))
+            return
+        name = full_eddi_name(job)
+        if not messagebox.askyesno(
+            "Full EDDI?",
+            (
+                f"Write {name} for {job} ({len(drawings)} Jira item(s)).\n"
+                "Every group 1–9 item is included, even when only the ID and description are filled.\n"
+                "Generic and Non Jira stay off.\n"
+                "Excel only. No PDF. The live EDDI book is not changed."
+            ),
+        ):
+            return
+        self._busy = True
+        self._work = "eddi"
+        self._set_status(f"Writing Full EDDI for {job}…")
+
+        def work() -> None:
+            error: str | None = None
+            note = ""
+            try:
+                path = export_full_eddi(folder, job, drawings, issued)
+                note = f"Full EDDI: {path.name} ({len(drawings)} item(s))"
+            except (LogError, OSError) as exc:
+                error = str(exc)
+            except Exception as exc:
+                error = str(exc)
+            self.after(0, lambda e=error, n=note: self._full_eddi_written(e, n))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _full_eddi_written(self, error: str | None, note: str) -> None:
+        self._busy = False
+        self._work = ""
+        if error:
+            self._set_status("Full EDDI failed.")
+            messagebox.showerror("Full EDDI", error)
+            return
+        self._set_status(note)
+        messagebox.showinfo("Full EDDI", f"{note}\nSaved in 3.0 Doc Con. Excel only.")
 
     def _jira_change_note(self, rows: list[MatchedRow], *, packed: bool = False) -> str:
         if not rows:

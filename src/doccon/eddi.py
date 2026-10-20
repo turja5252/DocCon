@@ -14,6 +14,8 @@ date is also written on that sheet, so the PDF shows it. Sheet Project stays the
 form. A second run the same day adds ``{date}-2``. Empty 1–9 groups are
 hidden on the new tab. The dated tab has no manual page breaks, so the PDF
 starts a new page only when the page is full. Not attached to Outlook.
+Full EDDI writes ``Full EDDI - {job}.xlsx`` only. It lists every group 1–9 item,
+including a row whose only text is the ID and description. No PDF. The live book stays as it is.
 """
 from __future__ import annotations
 
@@ -183,6 +185,14 @@ def eddi_print_drawings(rows: list[MatchedRow]) -> list[DrawingRow]:
     ]
 
 
+def eddi_full_drawings(rows: list[MatchedRow]) -> list[DrawingRow]:
+    """Every group 1–9 item for Full EDDI. A row with only an ID and description stays.
+
+    Generic stays off. Non Jira is not in this list.
+    """
+    return [row.drawing for row in rows if not is_generic_eddi(row.drawing.eddi_status)]
+
+
 def grouped_eddi_items(drawings: list[DrawingRow]) -> list[tuple[str, list[DrawingRow]]]:
     """EDDI Status groups that have items. Generic is omitted. Empty groups are omitted."""
     visible = [row for row in drawings if not is_generic_eddi(row.eddi_status)]
@@ -202,13 +212,21 @@ def grouped_eddi_items(drawings: list[DrawingRow]) -> list[tuple[str, list[Drawi
     return groups
 
 
-def form_group_items(drawings: list[DrawingRow]) -> dict[int, list[DrawingRow]]:
-    """Items for form groups 1–9. Generic and ungrouped are omitted."""
+def form_group_items(
+    drawings: list[DrawingRow],
+    *,
+    require_detail: bool = True,
+) -> dict[int, list[DrawingRow]]:
+    """Items for form groups 1–9. Generic and ungrouped are omitted.
+
+    Create EDDI leaves off a row whose only text is the ID and description.
+    Full EDDI keeps that row.
+    """
     buckets: dict[int, list[DrawingRow]] = {number: [] for number in range(1, 10)}
     visible = [
         row
         for row in drawings
-        if not is_generic_eddi(row.eddi_status) and eddi_line_has_detail(row)
+        if not is_generic_eddi(row.eddi_status) and (not require_detail or eddi_line_has_detail(row))
     ]
     visible.sort(key=pack_sort_key)
     for drawing in visible:
@@ -283,12 +301,13 @@ def build_fill_plan(
     drawings: list[DrawingRow],
     *,
     stamp: str = "",
+    require_detail: bool = True,
 ) -> FillPlan:
     job = job_number.strip()
     groups = [group for group in parse_form_groups(ws) if 1 <= group.number <= 9]
     if not groups:
         raise LogError("The EDDI form has no Project groups 1–9.")
-    buckets = form_group_items(drawings)
+    buckets = form_group_items(drawings, require_detail=require_detail)
     tables = _table_bounds(ws)
     breaks = _row_break_ids(ws)
     inserts: list[tuple[int, int]] = []
@@ -390,6 +409,49 @@ def build_fill_plan(
     )
 
 
+def full_eddi_name(job: str) -> str:
+    """Excel file for a Full EDDI export. No PDF."""
+    return f"Full EDDI - {job.strip()}.xlsx"
+
+
+def export_full_eddi(
+    job_folder: Path,
+    job_number: str,
+    drawings: list[DrawingRow],
+    issued: date,
+) -> Path:
+    """Write Full EDDI - {job}.xlsx. The live EDDI book and the dated PDF stay untouched."""
+    job = job_number.strip()
+    if not job:
+        raise LogError("Job Number is required for the EDDI snapshot.")
+    live, _book_job = eddi_form_for(job_folder, job)
+    folder = Path(job_folder) / DOC_CON_DIR
+    folder.mkdir(parents=True, exist_ok=True)
+    dest = folder / full_eddi_name(job)
+    try:
+        wb = load_workbook(live, data_only=False, keep_vba=False)
+    except OSError as exc:
+        raise LogError(f"Could not open {live.name}.\n{exc}") from exc
+    try:
+        if PROJECT_SHEET not in wb.sheetnames or not _sheet_has_groups(wb[PROJECT_SHEET]):
+            wb.close()
+            form = eddi_template_path()
+            if not form.is_file():
+                raise LogError(
+                    "DocCon has no EDDI form. Put EDDI-template.xlsm in the templates folder next to Elite DocCon."
+                )
+            wb = load_workbook(form, data_only=False, keep_vba=False)
+        stamp = f"Full EDDI - {job} {issued.isoformat()}"
+        fill_project_sheet(wb[PROJECT_SHEET], job, drawings, stamp=stamp, require_detail=False)
+        try:
+            wb.save(dest)
+        except OSError as exc:
+            raise LogError(f"Could not write {dest.name}. Close it if it is open in Excel.\n{exc}") from exc
+    finally:
+        wb.close()
+    return dest
+
+
 def eddi_stamp(job: str, sheet: str) -> str:
     """Line printed on the snapshot. The date is the tab name."""
     return f"{eddi_book_stem(job)} {sheet}".strip()
@@ -420,10 +482,11 @@ def fill_project_sheet(
     drawings: list[DrawingRow],
     *,
     stamp: str = "",
+    require_detail: bool = True,
 ) -> int:
     """Fill one EDDI sheet in-memory (tests / plain xlsx). Returns item count."""
     expand_purpose_columns(ws)
-    plan = build_fill_plan(ws, job_number, drawings, stamp=stamp)
+    plan = build_fill_plan(ws, job_number, drawings, stamp=stamp, require_detail=require_detail)
     apply_fill_plan(ws, plan)
     return plan.item_count
 
@@ -457,6 +520,7 @@ def apply_fill_plan(ws: Worksheet, plan: FillPlan) -> None:
     _layout_snapshot_sheet(ws, plan)
     _style_purpose_columns(ws, plan)
     _style_description_column(ws, plan)
+    _box_item_rows(ws, plan)
     ws.print_area = f"A1:{get_column_letter(ITEM_COLS)}{plan.print_last_row}"
     ws.page_setup.fitToWidth = 1
     ws.page_setup.fitToHeight = 0
@@ -690,25 +754,69 @@ def description_row_height(text: str, column_width: float | None) -> float:
     return lines * DESC_LINE_PT
 
 
+def _column_char_width(ws: Worksheet, col: int) -> float:
+    """The form's column width. Wrapping uses it and does not change it."""
+    width = ws.column_dimensions[get_column_letter(col)].width
+    if width and float(width) >= 1:
+        return float(width)
+    default = getattr(ws.sheet_format, "defaultColWidth", None)
+    if default and float(default) >= 1:
+        return float(default)
+    return 8.43
+
+
+def _row_wrap_height(values: list[str], widths: list[float]) -> float:
+    """Point height for the tallest wrapped cell. One line in every column stays at 0."""
+    need = 0.0
+    for index, raw in enumerate(values):
+        token = (raw or "").strip()
+        if not token:
+            continue
+        room = widths[index] if index < len(widths) else 8.43
+        lines = _wrapped_line_count(token, max(1, int(room)))
+        if lines <= 1:
+            continue
+        need = max(need, lines * DESC_LINE_PT)
+    return need
+
+
 def _description_wraps(ws: Worksheet, fills: list[tuple[int, list[str]]]) -> list[tuple[int, float]]:
-    width = ws.column_dimensions["C"].width
+    """Row height from every item column. A row that fits on one line is left off the list."""
+    widths = [_column_char_width(ws, col) for col in range(1, ITEM_COLS + 1)]
     wraps: list[tuple[int, float]] = []
     for row, values in fills:
-        text = values[DESC_COL - 1] if len(values) >= DESC_COL else ""
-        if not (text or "").strip():
+        height = _row_wrap_height(values, widths)
+        if height <= 0:
             continue
-        wraps.append((row, description_row_height(text, width)))
+        wraps.append((row, height))
     return wraps
 
 
+def _box_item_rows(ws: Worksheet, plan: FillPlan) -> None:
+    """Draw a full grid on every item that prints. Unused slots stay as the form left them."""
+    thin = Side(style="thin")
+    box = Border(left=thin, right=thin, top=thin, bottom=thin)
+    for row, _values in plan.fills:
+        for col in range(1, ITEM_COLS + 1):
+            cell = ws.cell(row, col)
+            if isinstance(cell, MergedCell):
+                continue
+            cell.border = box
+
+
 def _style_description_column(ws: Worksheet, plan: FillPlan) -> None:
-    """Wrap the description and raise the row when the wording needs more than one line."""
-    wrap = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    """Wrap every item column. The row grows to the tallest cell. Widths stay put."""
+    for row, _values in plan.fills:
+        for col in range(1, ITEM_COLS + 1):
+            cell = ws.cell(row, col)
+            if isinstance(cell, MergedCell):
+                continue
+            cell.alignment = Alignment(
+                horizontal=cell.alignment.horizontal or "center",
+                vertical="center",
+                wrap_text=True,
+            )
     for row, height in plan.description_wrap:
-        cell = ws.cell(row, DESC_COL)
-        if isinstance(cell, MergedCell):
-            continue
-        cell.alignment = wrap
         if height <= 0:
             continue
         current = ws.row_dimensions[row].height or DESC_LINE_PT
@@ -716,25 +824,8 @@ def _style_description_column(ws: Worksheet, plan: FillPlan) -> None:
 
 
 def _style_purpose_columns(ws: Worksheet, plan: FillPlan) -> None:
-    """Wrap a long purpose such as Purchasing Only, and close the last visible row."""
+    """Close the last visible item row, then the item grid replaces that line."""
     thin = Side(style="thin")
-    wrap = Alignment(horizontal="center", vertical="center", wrap_text=True)
-    watched = (
-        (plan.shop_purpose_col, plan.shop_purpose_col),
-        (plan.field_purpose_col, plan.field_purpose_col),
-    )
-    for row, values in plan.fills:
-        for col, _same in watched:
-            raw = values[col - 1] if col and len(values) >= col else ""
-            text = (raw or "").strip()
-            if len(text) <= 12:
-                continue
-            cell = ws.cell(row, col)
-            if isinstance(cell, MergedCell):
-                continue
-            cell.alignment = wrap
-            current = ws.row_dimensions[row].height or 15
-            ws.row_dimensions[row].height = max(float(current), 30)
     for row in plan.group_last_rows:
         for col in range(1, ITEM_COLS + 1):
             cell = ws.cell(row, col)

@@ -2,6 +2,30 @@
 
 Newest first. Append a dated entry when a decision is locked, a test runs, or the next step changes.
 
+## 2026-10-20 — Shipped 2.28
+
+Source and the frozen exe are 2.28. Shop and Field letters use their own revision. The letter description wraps. The dated EDDI sheet has a full grid and wrapping columns. Full EDDI writes an Excel file of every group 1–9 item. Load `2026-Tanzim`. Do not Confirm 075.
+
+## 2026-10-20 — Shop and Field letters use their own revision
+
+The shop letter REV is Shop Rev. The field letter REV is Field Rev. A blank shop or field rev prints blank. The client letter still uses the revision on the paired PDF filename when that file has one, otherwise Outgoing Rev. A Non Jira row follows the same three sources. Shipped in 2.28.
+
+## 2026-10-20 — Full EDDI is an Excel file of every group 1–9 item
+
+**Full EDDI** writes `Full EDDI - {job}.xlsx` in `3.0 Doc Con`. Every group 1–9 item is listed, including a row whose only text is the ID and description. Generic and Non Jira stay off. No PDF. The live EDDI book is not changed. Create EDDI still leaves off a row that has only an ID and a description. Shipped in 2.28.
+
+## 2026-10-20 — EDDI columns wrap inside the current widths
+
+Every item column on the dated EDDI sheet wraps. The row grows to the tallest cell. A value that fits stays on the form row. Column widths stay as they are. Shipped in 2.28.
+
+## 2026-10-20 — EDDI items get a full grid
+
+Every item that prints on the dated EDDI sheet gets a thin border on all four sides, columns A through O. A row added because the group was longer than the form gets the same grid. The orange group title stays one band. Empty unused rows stay hidden and are not boxed. The blank Project sheet is left as it is. Shipped in 2.28.
+
+## 2026-10-20 — The letter description wraps
+
+The description on the client, shop, and field letters wraps inside its cell. The row grows when that wording needs more than the form row. A description that fits stays on the form row. When the Document No. also needs more room, the row takes the taller of the two. The blank working sheet goes back to the form row height. The CT, ST, and FT books are not edited. Shipped in 2.28.
+
 ## 2026-10-16 — Shipped 2.27
 
 Source and the frozen exe are 2.27. Field gets a folder pick on each drawing. Load `2026-Tanzim`. Do not Confirm 075.

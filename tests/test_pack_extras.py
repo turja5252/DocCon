@@ -78,13 +78,42 @@ def test_lines_follow_packed_drawings() -> None:
                 rev="0",
                 description="Tank Calculation Package",
                 status="INFORMATION",
-                fields={"shop_purpose": "IFC", "shop_ifc_date": "2026-10-15"},
+                fields={
+                    "shop_purpose": "IFC",
+                    "shop_ifc_date": "2026-10-15",
+                    "outgoing_rev": "A",
+                    "shop_ifc_rev": "B",
+                },
             )
         ],
         SHOP,
     )
     assert shop[0].status == "IFC"
-    assert shop[0].rev == "0"
+    assert shop[0].rev == "B"
+    field = lines_from_extras(
+        [
+            PackExtra(
+                path="calc.xlsx",
+                document_no="TC-2026-070-1",
+                rev="0",
+                fields={"outgoing_rev": "A", "field_ifc_rev": "C"},
+            )
+        ],
+        FIELD,
+    )
+    assert field[0].rev == "C"
+    client = lines_from_extras(
+        [
+            PackExtra(
+                path="scan REV 2.pdf",
+                document_no="scan",
+                rev="2",
+                fields={"outgoing_rev": "A"},
+            )
+        ],
+        CLIENT,
+    )
+    assert client[0].rev == "2"
 
 
 def test_non_jira_issue_date_is_used_when_the_rows_agree() -> None:

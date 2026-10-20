@@ -17,6 +17,7 @@ from doccon.client_log import (
     cover_issued_default,
     cover_return_request_stamp,
     cover_submission_date_stamp,
+    document_no_heights,
     empty_client_workbook,
     empty_field_workbook,
     empty_shop_workbook,
@@ -36,7 +37,7 @@ from doccon.client_log import (
     read_book_cover,
 )
 from doccon.kinds import CLIENT, FIELD, SHOP
-from doccon.log_layout import FIELD_LAYOUT, SHOP_LAYOUT
+from doccon.log_layout import CLIENT_LAYOUT, FIELD_LAYOUT, SHOP_LAYOUT
 from doccon.match import MatchedRow, PdfHit
 from doccon.pep import DOC_CONTROL_FROM, PepCover
 from doccon.register import DrawingRow
@@ -107,6 +108,24 @@ def test_lines_prefer_pdf_rev() -> None:
         ]
     )
     assert red[0].note_color == "Red"
+
+
+def test_shop_and_field_letters_use_their_own_rev() -> None:
+    drawing = _drawing(
+        outgoing_rev="A",
+        shop_ifc_rev="B",
+        field_ifc_rev="C",
+    )
+    hit = PdfHit(path=Path("2026-Tanzim-1-1 REV 0.pdf"), drawing_id="2026-Tanzim-1-1", rev="0")
+    row = MatchedRow(drawing=drawing, pdf=hit, confidence="High")
+    assert lines_from_rows([row], CLIENT)[0].rev == "0"
+    assert lines_from_rows([row], SHOP)[0].rev == "B"
+    assert lines_from_rows([row], FIELD)[0].rev == "C"
+    blank = MatchedRow(drawing=_drawing(outgoing_rev="A", shop_ifc_rev="", field_ifc_rev=""), pdf=hit, confidence="High")
+    assert lines_from_rows([blank], SHOP)[0].rev == ""
+    assert lines_from_rows([blank], FIELD)[0].rev == ""
+    no_file = MatchedRow(drawing=_drawing(outgoing_rev="A"), pdf=None, confidence="Missing")
+    assert lines_from_rows([no_file], CLIENT)[0].rev == "A"
 
 
 def test_shop_and_field_letters_use_their_own_submitted_to() -> None:
@@ -339,6 +358,82 @@ def test_short_document_number_keeps_the_form_row(tmp_path: Path) -> None:
     assert filed.row_dimensions[15].height == 30
     assert wb["TRANSMITTAL"].row_dimensions[15].height == 30
     wb.close()
+
+
+def test_long_description_wraps_and_the_blank_sheet_returns(tmp_path: Path) -> None:
+    path = tmp_path / "CT-2026-Tanzim.xlsx"
+    book = empty_client_workbook()
+    sheet = book.active
+    sheet.column_dimensions["C"].width = 18.44
+    sheet.row_dimensions[15].height = 30
+    book.save(path)
+    wording = "X" * 40
+    file_client_transmittal(
+        path,
+        "2026-Tanzim",
+        [LogLine("2026-Tanzim-1-1", "A", wording, "APPROVAL")],
+        issued=date(2026, 10, 20),
+    )
+    wb = load_workbook(path)
+    filed = wb["1"]
+    assert filed["C15"].value == wording
+    assert filed["C15"].alignment.wrap_text is True
+    assert filed.row_dimensions[15].height == 45
+    working = wb["TRANSMITTAL"]
+    assert working["C15"].value is None
+    assert working.row_dimensions[15].height == 30
+    assert working["C15"].alignment.wrap_text is not True
+    wb.close()
+
+
+def test_short_description_keeps_the_form_row(tmp_path: Path) -> None:
+    path = tmp_path / "FT-2026-Tanzim.xlsx"
+    book = empty_field_workbook()
+    sheet = book.active
+    sheet.column_dimensions["I"].width = 40
+    sheet.row_dimensions[10].height = 30
+    book.save(path)
+    file_client_transmittal(
+        path,
+        "2026-Tanzim",
+        [LogLine("2026-Tanzim-1-1", "0", "SUMP DETAIL", "IFC")],
+        issued=date(2026, 10, 20),
+        kind=FIELD,
+    )
+    wb = load_workbook(path)
+    filed = wb["1"]
+    assert filed["I10"].alignment.wrap_text is True
+    assert filed.row_dimensions[10].height == 30
+    assert wb["TRANSMITTAL"].row_dimensions[10].height == 30
+    wb.close()
+
+
+def test_row_uses_the_taller_of_the_number_and_the_description() -> None:
+    book = empty_client_workbook()
+    sheet = book.active
+    sheet.column_dimensions["A"].width = 18.44
+    sheet.column_dimensions["C"].width = 18.44
+    sheet.row_dimensions[15].height = 30
+    heights = document_no_heights(
+        sheet,
+        [LogLine("X" * 40, "A", "Y" * 72, "APPROVAL")],
+        CLIENT_LAYOUT,
+    )
+    assert heights == [60.0]
+
+
+def test_field_description_width_uses_the_merged_cell() -> None:
+    from doccon.client_log import _document_column_width, document_no_height
+
+    book = empty_field_workbook()
+    sheet = book.active
+    sheet.merge_cells("H10:I10")
+    sheet.column_dimensions["H"].width = 12
+    sheet.column_dimensions["I"].width = 20
+    width = _document_column_width(sheet, 10, 9)
+    assert abs(width - 32) < 0.01
+    assert document_no_height("SUMP DETAIL", width, 30) is None
+    assert document_no_height("Y" * 72, 18.44, 30) == 60
 
 
 def test_shop_document_width_uses_the_merged_cell() -> None:

@@ -132,15 +132,10 @@ def lines_from_rows(rows: list[MatchedRow], kind: str = CLIENT) -> list[LogLine]
     lines: list[LogLine] = []
     for row in rows:
         drawing = row.drawing
-        rev = ""
-        if row.pdf and row.pdf.rev:
-            rev = str(row.pdf.rev).strip()
-        elif drawing.outgoing_rev:
-            rev = str(drawing.outgoing_rev).strip()
         lines.append(
             LogLine(
                 document_no=drawing.drawing_id or drawing.key,
-                rev=rev,
+                rev=_rev_for_kind(drawing, kind, pdf_rev=row.pdf.rev if row.pdf else ""),
                 description=drawing.title or "",
                 status=line_status(_purpose_for_kind(drawing, kind), kind),
                 notes=(drawing.letter_notes or "").strip(),
@@ -161,7 +156,7 @@ def lines_from_extras(items: list[PackExtra] | tuple[PackExtra, ...], kind: str 
         lines.append(
             LogLine(
                 document_no=document_no,
-                rev=(extra_field(item, "outgoing_rev") or item.rev or "").strip(),
+                rev=_extra_rev(item, kind),
                 description=(item.description or "").strip(),
                 status=status,
                 notes=(extra_field(item, "letter_notes") or item.notes or "").strip(),
@@ -177,6 +172,33 @@ def pages_needed(line_count: int, layout: BookLayout | None = None) -> int:
         return form.pages_needed(line_count)
     except ValueError as exc:
         raise LogError(str(exc)) from exc
+
+
+def _rev_for_kind(drawing: object, kind: str, *, pdf_rev: str = "") -> str:
+    """Client letter reads the PDF revision, then Outgoing Rev.
+
+    Shop reads Shop Rev. Field reads Field Rev. A blank shop or field rev stays blank.
+    """
+    if kind == SHOP:
+        return str(getattr(drawing, "shop_ifc_rev", "") or "").strip()
+    if kind == FIELD:
+        return str(getattr(drawing, "field_ifc_rev", "") or "").strip()
+    token = str(pdf_rev or "").strip()
+    if token:
+        return token
+    return str(getattr(drawing, "outgoing_rev", "") or "").strip()
+
+
+def _extra_rev(item: PackExtra, kind: str) -> str:
+    """Non Jira uses the same three sources. The filename token is the client fallback."""
+    if kind == SHOP:
+        return extra_field(item, "shop_ifc_rev")
+    if kind == FIELD:
+        return extra_field(item, "field_ifc_rev")
+    filename = (item.rev or "").strip()
+    if filename:
+        return filename
+    return extra_field(item, "outgoing_rev")
 
 
 def _purpose_for_kind(drawing: object, kind: str) -> str:
@@ -746,16 +768,22 @@ def _document_column_width(ws: Worksheet, row: int, col: int) -> float:
 
 
 def document_no_heights(ws: Worksheet, lines: list[LogLine], layout: BookLayout) -> list[float]:
-    """0 keeps the form row. A positive value is the taller wrapped height, in points."""
+    """0 keeps the form row. A positive value is the taller of the wrapped number and description."""
     heights: list[float] = []
     for index, line in enumerate(lines):
         row = layout.doc_start_row + index
-        need = document_no_height(
+        base = ws.row_dimensions[row].height
+        number = document_no_height(
             line.document_no,
             _document_column_width(ws, row, layout.doc_no_col),
-            ws.row_dimensions[row].height,
+            base,
         )
-        heights.append(float(need or 0))
+        wording = document_no_height(
+            line.description,
+            _document_column_width(ws, row, layout.desc_col),
+            base,
+        )
+        heights.append(float(max(number or 0, wording or 0)))
     return heights
 
 
@@ -820,9 +848,10 @@ def _write_working_sheet(
         row = layout.doc_start_row + index
         saved_heights[row] = ws.row_dimensions[row].height
         _set_value(ws, ws.cell(row, layout.doc_no_col).coordinate, line.document_no)
-        _wrap_document_no(ws, row, layout.doc_no_col, line.document_no)
+        _wrap_cell(ws, row, layout.doc_no_col, line.document_no)
         _set_value(ws, ws.cell(row, layout.rev_col).coordinate, _rev_value(line.rev))
         _set_value(ws, ws.cell(row, layout.desc_col).coordinate, line.description)
+        _wrap_cell(ws, row, layout.desc_col, line.description)
         _set_value(ws, ws.cell(row, layout.status_col).coordinate, line.status)
         note_coord = ws.cell(row, layout.notes_col).coordinate
         _set_value(ws, note_coord, line.notes or None)
@@ -830,8 +859,8 @@ def _write_working_sheet(
     return saved_heights
 
 
-def _wrap_document_no(ws: Worksheet, row: int, col: int, text: str) -> None:
-    """Wrap Document No. in the existing cell and grow the row when the form height is too short."""
+def _wrap_cell(ws: Worksheet, row: int, col: int, text: str) -> None:
+    """Wrap this cell and grow the row when the form height is too short."""
     cell = ws.cell(row, col)
     if isinstance(cell, MergedCell):
         return
@@ -842,11 +871,11 @@ def _wrap_document_no(ws: Worksheet, row: int, col: int, text: str) -> None:
         wrap_text=True,
     )
     need = document_no_height(text, _document_column_width(ws, row, col), base)
-    if need is not None:
+    if need is not None and (base is None or float(need) > float(base)):
         ws.row_dimensions[row].height = need
 
 
-def _clear_document_wrap(ws: Worksheet, row: int, col: int) -> None:
+def _clear_cell_wrap(ws: Worksheet, row: int, col: int) -> None:
     cell = ws.cell(row, col)
     if isinstance(cell, MergedCell):
         return
@@ -879,7 +908,8 @@ def _reset_working_sheet(
             if col == layout.notes_col:
                 _set_note_color(ws, coord, False)
         if row_heights and row in row_heights:
-            _clear_document_wrap(ws, row, layout.doc_no_col)
+            _clear_cell_wrap(ws, row, layout.doc_no_col)
+            _clear_cell_wrap(ws, row, layout.desc_col)
             ws.row_dimensions[row].height = row_heights[row]
 
 
