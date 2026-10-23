@@ -1499,6 +1499,51 @@ def test_saved_to_survives_close_and_the_next_load(
         again.destroy()
 
 
+def test_field_to_survives_reload_while_st_ft_is_selected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    try:
+        from doccon.gui import DocConApp
+        from doccon.pack_state import ClientPack, load_client_pack, save_client_pack
+    except tk.TclError:
+        pytest.skip("Tk is not available")
+    monkeypatch.setattr("doccon.paths.mail_formats_path", lambda: tmp_path / "mail-formats.json")
+    save_client_pack(
+        tmp_path,
+        ClientPack(
+            job_number="2026-Tanzim",
+            to_line="client@example.com",
+            field_to="foreman@field.com",
+            field_cc="field-cc@field.com",
+            cover_initialized=True,
+        ),
+    )
+    try:
+        app = DocConApp()
+    except tk.TclError:
+        pytest.skip("Tk is not available")
+    app.withdraw()
+    try:
+        app._job_folder = tmp_path
+        app._job_number = "2026-Tanzim"
+        app._cover_kind = "field"
+        app.kind.set("both")
+        app._restore_pack(tmp_path, "2026-Tanzim", None)
+        assert app._email_value(app.to_box) == "foreman@field.com"
+        assert app._save_pack(quiet=True, force=True) is True
+        loaded = load_client_pack(tmp_path, "2026-Tanzim")
+        assert loaded is not None
+        assert loaded.field_to == "foreman@field.com"
+        assert loaded.to_line == "client@example.com"
+        app._fill_cover_if_untouched(app._recipient_kind())
+        assert app._email_value(app.to_box) == "foreman@field.com"
+        assert app._save_pack(quiet=True, force=True) is True
+        again = load_client_pack(tmp_path, "2026-Tanzim")
+        assert again is not None
+        assert again.field_to == "foreman@field.com"
+        assert again.to_line == "client@example.com"
+    finally:
+        app.destroy()
+
+
 def test_cover_to_is_kept_when_the_transmittal_changes(tmp_path: Path) -> None:
     try:
         from doccon.gui import DocConApp

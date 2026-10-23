@@ -9,6 +9,7 @@ or when Confirm succeeds for packed email-dropped rows. Explorer originals stay.
 """
 from __future__ import annotations
 
+import os
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -57,6 +58,46 @@ def sources_from_paths(paths: list[Path | str] | tuple[Path | str, ...]) -> list
 def dropped_dir(job_folder: Path) -> Path:
     """`{job}/3.0 Doc Con/DocCon/dropped` — same DocCon folder as client-pack.json."""
     return Path(job_folder) / PACK_DIR / DROPPED_NAME
+
+
+def dropped_name_listed(path: Path | str) -> bool | None:
+    """Whether this filename is in the dropped folder. None when the folder will not list.
+
+    Names only. A stat on an online-only Dropbox file downloads it.
+    """
+    target = Path(path)
+    if not is_dropped_pdf_path(target) or not target.name:
+        return None
+    try:
+        with os.scandir(target.parent) as entries:
+            wanted = target.name.casefold()
+            for entry in entries:
+                if entry.name.casefold() == wanted:
+                    return True
+    except OSError:
+        return None
+    return False
+
+
+def dropped_open_block(path: Path | str) -> str | None:
+    """None when Open or Preview should open this path.
+
+    An email-dropped file is opened even when Windows has not downloaded it yet.
+    A filename that is not in this job's dropped folder names that folder.
+    """
+    target = Path(path)
+    if is_dropped_pdf_path(target):
+        listed = dropped_name_listed(target)
+        if listed is False:
+            return f"{target.name} is not in {target.parent}"
+        return None
+    try:
+        present = target.is_file()
+    except OSError:
+        present = False
+    if present:
+        return None
+    return f"That PDF is not on disk: {target.name}"
 
 
 def is_msg_filename(name: str) -> bool:
@@ -277,6 +318,8 @@ def sweep_replaced_dropped_copies(
         if row is None:
             continue
         new_path = None if row.pdf is None else row.pdf.path
+        if new_path is None:
+            continue
         delete_replaced_dropped_copy(rec.path, new_path)
 
 

@@ -50,6 +50,7 @@ from doccon.drop_pdfs import (
     apply_row_drop,
     delete_dropped_copy,
     delete_pack_dropped_copies,
+    dropped_open_block,
     ingest_sources,
     rename_email_dropped_pdf,
     replace_paired_pdf,
@@ -257,8 +258,9 @@ def open_row_pdf(path: Path | str | None, *, opener=None) -> str | None:
     if path is None or not str(path).strip():
         return NO_ROW_PDF
     pdf = Path(path)
-    if not pdf.is_file():
-        return f"That PDF is not on disk: {pdf.name}"
+    blocked = dropped_open_block(pdf)
+    if blocked:
+        return blocked
     launch = opener if opener is not None else _os_open_path
     try:
         launch(pdf)
@@ -1817,7 +1819,7 @@ class DocConApp(tk.Tk):
         self._cover_loading = True
         try:
             self._set_from_address(DOC_CONTROL_FROM)
-            kind = self.kind.get()
+            kind = self._recipient_kind()
             to_line, cc_line = cover_recipients(overlay, kind)
             if kind == CLIENT:
                 if not to_line:
@@ -2131,7 +2133,10 @@ class DocConApp(tk.Tk):
 
     def _restore_pack(self, folder: Path | None, job: str, cover: PepCover | None) -> None:
         pack = load_client_pack(folder, job)
-        kind = self.kind.get()
+        radio = self.kind.get()
+        # ST + FT and Incoming keep the letter that already owns the cover box.
+        # The radio is not Client, and Load must not paint the client TO onto Field.
+        kind = self._recipient_kind()
         pack_to, pack_cc = cover_recipients(pack, kind)
         field_to, field_cc = self._field_default_lines()
         shop_to, shop_cc = self._shop_default_lines()
@@ -2172,7 +2177,7 @@ class DocConApp(tk.Tk):
                 self._pack_extras = []
         finally:
             self._cover_loading = False
-        extra_kind = SHOP if kind == BOTH else CLIENT if kind == INCOMING else kind
+        extra_kind = SHOP if radio == BOTH else CLIENT if radio == INCOMING else radio
         self.board.set_pack_extras(self._pack_extras, statuses=layout_for(extra_kind).statuses)
         self._show_pack_extras()
 
@@ -3151,7 +3156,7 @@ class DocConApp(tk.Tk):
         if pep_path is not None:
             self._set_pep(pep_path)
         if self.kind.get() == kind:
-            self._fill_cover_if_untouched(kind)
+            self._fill_cover_if_untouched(self._recipient_kind())
         saved = load_client_pack(self._job_folder, job) if self._job_folder else None
         self._cover_initialized = pack_cover_initialized(saved)
         self._paint_cover_attention()
@@ -5740,8 +5745,9 @@ class DocConApp(tk.Tk):
         extra = self._extra_item(key)
         if extra is not None:
             pdf = Path(extra.path)
-            if not pdf.is_file():
-                messagebox.showerror("Preview PDF", f"That PDF is not on disk: {pdf.name}")
+            blocked = dropped_open_block(pdf)
+            if blocked:
+                messagebox.showerror("Preview PDF", blocked)
                 return
             heading = f"{extra.document_no}  ·  {pdf.name}"
 
@@ -5777,8 +5783,9 @@ class DocConApp(tk.Tk):
             messagebox.showinfo("Preview PDF", NO_ROW_PDF)
             return
         pdf = Path(path)
-        if not pdf.is_file():
-            messagebox.showerror("Preview PDF", f"That PDF is not on disk: {pdf.name}")
+        blocked = dropped_open_block(pdf)
+        if blocked:
+            messagebox.showerror("Preview PDF", blocked)
             return
         drawing = row.drawing
         heading = f"{drawing.drawing_id or drawing.key}  ·  {pdf.name}"

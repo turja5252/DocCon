@@ -477,8 +477,11 @@ def apply_located_pdfs(
         rec = records.get(row.drawing.key)
         if row.pdf is None and rec is not None:
             pdf_path = Path(rec.path)
-            if pdf_path.is_file():
-                row = pair_pdf(row, pdf_path, email_dropped=rec.email_dropped)
+            # An email drop stays on the row when Windows has not downloaded it yet.
+            # A Locate'd job PDF still has to be a file Windows can see.
+            dropped = bool(rec.email_dropped) or is_dropped_pdf_path(pdf_path)
+            if dropped or pdf_path.is_file():
+                row = pair_pdf(row, pdf_path, email_dropped=rec.email_dropped or dropped)
         out.append(row)
     return out
 

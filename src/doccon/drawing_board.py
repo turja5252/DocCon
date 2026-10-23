@@ -4723,10 +4723,14 @@ class DrawingBoard(ttk.Frame):
         field_place, field_folder = self._make_place_picker(
             pdf_actions, key, caption="FT", tip="Field folder", kind="field"
         )
-        pdf_state = "normal" if Path(item.path).is_file() else "disabled"
+        pdf_path = Path(item.path) if (item.path or "").strip() else None
+        pdf_ready = pdf_path is not None and (
+            item.email_dropped or is_dropped_pdf_path(pdf_path) or pdf_path.is_file()
+        )
+        pdf_state = "normal" if pdf_ready else "disabled"
         open_btn.configure(state=pdf_state)
         preview_btn.configure(
-            state="normal" if pdf_state == "normal" and can_preview(Path(item.path)) else "disabled"
+            state="normal" if pdf_ready and pdf_path is not None and can_preview(pdf_path) else "disabled"
         )
         self._place(pdf_actions, next_row, PDF_COL_INDEX)
         originals: dict[str, ttk.Label] = {}

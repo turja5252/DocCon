@@ -2,6 +2,18 @@
 
 Newest first. Append a dated entry when a decision is locked, a test runs, or the next step changes.
 
+## 2026-10-23 — Shipped 2.29
+
+Source and the frozen exe are 2.29. A Field TO stays on Field after Load. An email-dropped PDF stays on the row after Load, and Preview opens it. Load `2026-Tanzim`. Do not Confirm 075.
+
+## 2026-10-23 — A Field TO stays on Field after Load
+
+Load with ST + FT selected was filling the cover from the client TO, then saving that box onto Field. Load now reads and writes the letter that already owns the cover. A saved Field TO stays the Field TO. The client TO stays on the client letter. Shipped in 2.29.
+
+## 2026-10-23 — An email-dropped PDF still previews after Load
+
+Load puts the saved `DocCon/dropped` path back on the row even when Windows has not downloaded that PDF yet. The yellow name stays. Load does not delete that copy unless a different file was paired. Preview and Open open that path, which is what makes Dropbox download it. A filename that is not in this job's `dropped` folder names that folder. A Locate'd PDF in Current PDF is unchanged. Shipped in 2.29.
+
 ## 2026-10-20 — Shipped 2.28
 
 Source and the frozen exe are 2.28. Shop and Field letters use their own revision. The letter description wraps. The dated EDDI sheet has a full grid and wrapping columns. Full EDDI writes an Excel file of every group 1–9 item. Load `2026-Tanzim`. Do not Confirm 075.

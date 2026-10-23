@@ -39,7 +39,9 @@ The summary is an ID, then optional wording. Empty description is allowed.
 
 No extra Jira status or custom trigger field. Engineer emails Sarah the pack list; she runs DocCon.
 
-**Next:** Source and the frozen exe are **2.28**. Load `2026-Tanzim`. Do not Confirm 075.
+**Next:** Source and the frozen exe are **2.29**. Load `2026-Tanzim`. Do not Confirm 075.
+
+**2.29 A Field TO stays on Field, and an email-dropped PDF still previews after Load.** Load with ST + FT selected reads and writes the letter that already owns the cover. A saved Field TO stays the Field TO. Load puts a saved `DocCon/dropped` PDF back on the row even when Windows has not downloaded it. Preview and Open open that path. A filename that is not in that `dropped` folder names the folder. Load does not delete that copy unless a different file was paired. Drag is not back.
 
 **2.28 Shop and Field letters use their own revision, the letter description wraps, and Full EDDI lists every item.** The shop letter prints Shop Rev. The field letter prints Field Rev. A blank shop or field rev stays blank. The client letter still prints the revision on the paired PDF filename when that file has one, otherwise Outgoing Rev. The description on the client, shop, and field letters wraps, and the row grows to the taller of that cell and the Document No. Every dated EDDI item has a thin border on columns A through O, and every column wraps inside the current width. **Full EDDI** writes `Full EDDI - {job}.xlsx` with every group 1–9 item, including a row that has only an ID and description. Excel only. Create EDDI still skips that row. Drag is not back.
 

@@ -417,3 +417,62 @@ def test_rename_collision_uses_a_numbered_name(tmp_path: Path) -> None:
     assert dest.name == "keep-2.pdf"
     assert first.read_bytes() == b"%PDF-keep"
     assert dest.read_bytes() == b"%PDF-scan"
+
+
+def test_reload_keeps_an_email_drop_windows_has_not_fetched(tmp_path: Path, monkeypatch) -> None:
+    from doccon.drop_pdfs import dropped_open_block, sweep_replaced_dropped_copies
+    from doccon.gui import open_row_pdf
+
+    job = tmp_path / "2026-Tanzim"
+    copied = write_pdf_bytes_into_dropped(job, "scan0042.pdf", b"%PDF-drop")
+    row = _row(key="P2024-15578", drawing_id="2026-Tanzim-1-1")
+    located = {row.drawing.key: LocatedPdf(path=str(copied), email_dropped=True)}
+    real_is_file = Path.is_file
+
+    def _hide_drop(self: Path) -> bool:
+        left = str(self).replace("/", "\\").casefold()
+        right = str(copied).replace("/", "\\").casefold()
+        if left == right:
+            return False
+        return real_is_file(self)
+
+    monkeypatch.setattr(Path, "is_file", _hide_drop)
+    restored = apply_located_pdfs([row], located)
+    assert restored[0].pdf is not None
+    assert restored[0].pdf.path == copied
+    assert pdf_is_email_dropped(restored[0])
+    assert pdf_address_text(restored[0]).startswith("scan0042.pdf")
+    sweep_replaced_dropped_copies(restored, located)
+    assert dropped_open_block(copied) is None
+    opened: list[Path] = []
+    error = open_row_pdf(copied, opener=opened.append)
+    monkeypatch.undo()
+    assert error is None
+    assert opened == [copied]
+    assert copied.is_file()
+
+
+def test_missing_email_drop_names_the_dropped_folder(tmp_path: Path) -> None:
+    from doccon.drop_pdfs import dropped_open_block, sweep_replaced_dropped_copies
+
+    job = tmp_path / "2026-Tanzim"
+    folder = dropped_dir(job)
+    folder.mkdir(parents=True)
+    missing = folder / "gone.pdf"
+    row = _row(key="P2024-15578", drawing_id="2026-Tanzim-1-1")
+    located = {row.drawing.key: LocatedPdf(path=str(missing), email_dropped=True)}
+    restored = apply_located_pdfs([row], located)
+    assert restored[0].pdf is not None and restored[0].pdf.path == missing
+    sweep_replaced_dropped_copies(restored, located)
+    assert not missing.exists()
+    message = dropped_open_block(missing)
+    assert message is not None
+    assert "gone.pdf" in message
+    assert str(folder) in message
+
+
+def test_reload_still_skips_a_missing_locate_pdf(tmp_path: Path) -> None:
+    row = _row(key="P2024-9", drawing_id="2026-Tanzim-1-1")
+    skipped = apply_located_pdfs([row], {row.drawing.key: str(tmp_path / "gone.pdf")})
+    assert skipped[0].pdf is None
+
