@@ -5,6 +5,7 @@
 """Open an Outlook draft: transmittal PDF plus a zip of the drawing PDFs."""
 from __future__ import annotations
 
+import html
 import json
 import os
 import re
@@ -103,7 +104,6 @@ def _unique_arcname(name: str, used: set[str]) -> str:
 MAIL_ATTACH_LIMIT_BYTES = 20 * 1024 * 1024
 
 _ATTACHED_SENTENCE = "Please find transmittal and associated documents attached."
-_FORM_ONLY_SENTENCE = "Please find the transmittal attached."
 
 
 def mail_attachments(cover_pdf: Path | None, pack_zip: Path | None) -> list[Path]:
@@ -132,22 +132,68 @@ def mail_pack_for_outlook(
     return [*form, zip_path], None
 
 
-def body_for_held_zip(body: str, held: Path) -> str:
-    """Say the drawings were left off this email and will be a Dropbox link."""
-    text = body.replace(_ATTACHED_SENTENCE, _FORM_ONLY_SENTENCE)
-    note = (
+_HELD_ZIP_REMOVE = "REMOVE THIS MESSAGE BEFORE SENDING"
+_HELD_ZIP_REPLACE_LINE = "Replace this line with link"
+_HELD_ZIP_LINK_SENTENCE = (
+    "Please find transmittal attached and associated documents in the below link "
+    "for your retrieval due to large file size."
+)
+
+
+def _held_zip_warning(held: Path) -> str:
+    return (
         "The drawing files were too large to attach to this email. "
         f"They are saved in Dropbox as {Path(held).name}. "
-        "A Dropbox download link will be added before this message is sent."
+        "A OneDrive access link shall be added before this message is sent. "
+        f"{_HELD_ZIP_REMOVE}."
     )
-    if note in text:
-        return text if text.endswith("\n") else text + "\n"
-    lines = text.splitlines()
-    at = next((i for i, line in enumerate(lines) if line.strip() == "Kind Regards,"), len(lines))
-    while at > 0 and not lines[at - 1].strip():
-        at -= 1
-    lines[at:at] = ["", note, ""]
-    return "\n".join(lines).rstrip() + "\n"
+
+
+def _held_zip_block(held: Path) -> str:
+    """Operator lines, then the sentence the client keeps, then the link placeholder."""
+    return (
+        f"{_held_zip_warning(held)}\n"
+        "\n"
+        f"{_HELD_ZIP_LINK_SENTENCE}\n"
+        "\n"
+        f"{_HELD_ZIP_REPLACE_LINE}"
+    )
+
+
+def body_for_held_zip(body: str, held: Path) -> str:
+    """The over-limit draft. The operator deletes the blue lines before Send."""
+    if _HELD_ZIP_REMOVE in body:
+        return body if body.endswith("\n") else body + "\n"
+    block = _held_zip_block(held)
+    if _ATTACHED_SENTENCE in body:
+        text = body.replace(_ATTACHED_SENTENCE, block, 1)
+        text = text.replace(block + " ", block + "\n\n", 1)
+    else:
+        lines = body.splitlines()
+        at = next((i for i, line in enumerate(lines) if line.strip() == "Kind Regards,"), len(lines))
+        while at > 0 and not lines[at - 1].strip():
+            at -= 1
+        lines[at:at] = ["", block, ""]
+        text = "\n".join(lines)
+    return text.rstrip() + "\n"
+
+
+def outlook_html_for_body(body: str) -> str | None:
+    """Blue on the lines she must delete. None for a normal draft, which stays plain text."""
+    if _HELD_ZIP_REMOVE not in body and _HELD_ZIP_REPLACE_LINE not in body:
+        return None
+    parts = [part.strip() for part in re.split(r"\n\s*\n", body.strip()) if part.strip()]
+    html_parts: list[str] = []
+    for part in parts:
+        escaped = html.escape(part).replace("\n", "<br>")
+        blue = _HELD_ZIP_REMOVE in part or part == _HELD_ZIP_REPLACE_LINE
+        style = ' style="color:#0000FF;"' if blue else ""
+        html_parts.append(f"<p{style}>{escaped}</p>")
+    return (
+        '<html><body style="font-family:Calibri,sans-serif;font-size:11pt;color:#000000;">'
+        + "".join(html_parts)
+        + "</body></html>"
+    )
 
 
 def cover_pdf_for_book(book: Path, job: str, next_number: int, kind: str = CLIENT) -> tuple[str, Path | None]:
@@ -681,6 +727,7 @@ def display_outlook_draft(
         "cc": normalize_recipients(cc_line),
         "subject": subject,
         "body": body,
+        "html": outlook_html_for_body(body) or "",
         "files": [str(Path(path).resolve()) for path in attachments],
         "send_account": (send_account or "").strip(),
     }
@@ -713,7 +760,12 @@ def display_outlook_draft(
                 "$mail.To = [string]$p.to\n"
                 "if ($p.cc) { $mail.CC = [string]$p.cc }\n"
                 "$mail.Subject = [string]$p.subject\n"
-                "$mail.Body = [string]$p.body\n"
+                "if ($p.html) {\n"
+                "  $mail.BodyFormat = 2\n"
+                "  $mail.HTMLBody = [string]$p.html\n"
+                "} else {\n"
+                "  $mail.Body = [string]$p.body\n"
+                "}\n"
                 "foreach ($file in @($p.files)) {\n"
                 "  if (Test-Path -LiteralPath $file) { $mail.Attachments.Add($file) | Out-Null }\n"
                 "}\n"

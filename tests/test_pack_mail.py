@@ -106,12 +106,24 @@ def test_oversized_zip_stays_off_the_draft_and_names_the_dropbox_file(tmp_path: 
         rows=[_row("2026-Tanzim-1-1", drawing)],
         held_zip=held,
     )
-    assert "associated documents attached" not in body
-    assert "Please find the transmittal attached." in body
+    assert "associated documents attached." not in body
+    assert "below link for your retrieval due to large file size." in body
     assert "too large to attach" in body
     assert "CT-2026-Tanzim-1.zip" in body
-    assert "Dropbox download link" in body
+    assert "OneDrive access link" in body
+    assert "REMOVE THIS MESSAGE BEFORE SENDING" in body
+    assert "Replace this line with link" in body
+    assert "Dropbox download link" not in body
     assert body.strip().endswith("Kind Regards,")
+    from doccon.pack_mail import outlook_html_for_body
+
+    html_body = outlook_html_for_body(body)
+    assert html_body is not None
+    assert 'style="color:#0000FF;"' in html_body
+    assert html_body.index("REMOVE THIS MESSAGE BEFORE SENDING") < html_body.index("below link")
+    assert "Please return all" in body
+    plain = outlook_html_for_body("Good Day,\n\nKind Regards,\n")
+    assert plain is None
     assert MAIL_ATTACH_LIMIT_BYTES == 20 * 1024 * 1024
     monkeypatch.undo()
     small, left = mail_pack_for_outlook(cover, dest)
@@ -119,6 +131,7 @@ def test_oversized_zip_stays_off_the_draft_and_names_the_dropbox_file(tmp_path: 
     assert [path.name for path in small] == ["CT-2026-Tanzim-1.pdf", "CT-2026-Tanzim-1.zip"]
     parked = body_for_held_zip("Kind Regards,\n", dest)
     assert "too large to attach" in parked
+    assert "Replace this line with link" in parked
     assert parked.strip().endswith("Kind Regards,")
 
 

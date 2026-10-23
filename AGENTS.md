@@ -39,7 +39,9 @@ The summary is an ID, then optional wording. Empty description is allowed.
 
 No extra Jira status or custom trigger field. Engineer emails Sarah the pack list; she runs DocCon.
 
-**Next:** Source and the frozen exe are **2.29**. Load `2026-Tanzim`. Do not Confirm 075.
+**Next:** Source and the frozen exe are **2.30**. Load `2026-Tanzim`. Do not Confirm 075.
+
+**2.30 The over-limit email names the zip and marks the lines to delete.** When the drawing zip stays off the draft, the draft says the files are in Dropbox under that zip name and asks for a OneDrive link. That note and **Replace this line with link** are blue, so she deletes them before Send. The Email Format Editor wording is unchanged. Drag is not back.
 
 **2.29 A Field TO stays on Field, and an email-dropped PDF still previews after Load.** Load with ST + FT selected reads and writes the letter that already owns the cover. A saved Field TO stays the Field TO. Load puts a saved `DocCon/dropped` PDF back on the row even when Windows has not downloaded it. Preview and Open open that path. A filename that is not in that `dropped` folder names the folder. Load does not delete that copy unless a different file was paired. Drag is not back.
 

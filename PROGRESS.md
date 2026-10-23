@@ -2,6 +2,14 @@
 
 Newest first. Append a dated entry when a decision is locked, a test runs, or the next step changes.
 
+## 2026-10-23 — Shipped 2.30
+
+Source and the frozen exe are 2.30. The over-limit Outlook draft names the zip, asks for a OneDrive link, and shows the lines to delete in blue. Load `2026-Tanzim`. Do not Confirm 075.
+
+## 2026-10-23 — The over-limit email names the zip and marks the lines to delete
+
+When the drawing zip is left off the Outlook draft, the draft says the files are in Dropbox under that zip name, asks for a OneDrive link, and tells her to remove that note before Send. That note and **Replace this line with link** are blue. The sentence the client keeps is unchanged in color. Email Format Editor wording is not changed. Shipped in 2.30.
+
 ## 2026-10-23 — Shipped 2.29
 
 Source and the frozen exe are 2.29. A Field TO stays on Field after Load. An email-dropped PDF stays on the row after Load, and Preview opens it. Load `2026-Tanzim`. Do not Confirm 075.
