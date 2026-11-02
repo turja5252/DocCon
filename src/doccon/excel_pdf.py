@@ -248,6 +248,30 @@ def export_sheet_pdf(
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
+def place_printed_pdf(source: Path, dest_pdf: Path) -> Path:
+    """Put a PDF Excel already printed where export_sheet_pdf would put it.
+
+    Same last hop as export_sheet_pdf: a locked destination is the same message.
+    The source stays where it is.
+    """
+    src = Path(source)
+    dest = Path(dest_pdf)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp_dir = doccon_temp_dir("ct-pdf-")
+    log("INFO", "export_pdf", f"reuse {describe_path(src)} -> {describe_path(dest)}")
+    try:
+        staged = tmp_dir / (dest.stem + ".pdf")
+        shutil.copy2(src, staged)
+        try:
+            return place_file(staged, dest, unique_if_locked=False)
+        except OSError as exc:
+            if _is_sharing_violation(exc):
+                raise LogError(with_log_details(EXCEL_PDF_LOCKED)) from None
+            raise
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 def fill_eddi_form_and_export_pdf(workbook: Path, dest_pdf: Path, payload: dict) -> Path:
     """Fill the EDDI Project sheet through Excel (keeps VBA), save, print PDF.
 

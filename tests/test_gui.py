@@ -1574,3 +1574,37 @@ def test_cover_to_is_kept_when_the_transmittal_changes(tmp_path: Path) -> None:
         assert saved.to_line == "other@client.com"
     finally:
         app.destroy()
+
+
+def test_letter_preview_hands_confirm_the_letters_it_showed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Confirm files the PDF she looked at, matched to its own letter for ST + FT."""
+    from doccon import gui
+    from doccon.client_log import LetterPreview
+    from doccon.kinds import FIELD, SHOP
+
+    def letter(kind: str, name: str) -> LetterPreview:
+        return LetterPreview(
+            pdf=tmp_path / f"{name}.pdf",
+            cover_id=f"{name}-2026-Tanzim-1",
+            kind=kind,
+            book=tmp_path / f"{name}-2026-Tanzim.xlsm",
+            stamp=(1, 1),
+            inputs=(),
+        )
+
+    shop = letter(SHOP, "ST")
+    field = letter(FIELD, "FT")
+    shown: dict = {}
+    monkeypatch.setattr(
+        gui,
+        "open_letter_preview",
+        lambda _master, letters, on_confirm, on_back: shown.update(letters=letters, on_confirm=on_confirm),
+    )
+    stub = SimpleNamespace(_finish_confirm_button=lambda: None, _busy=False, _work="")
+    confirmed: list[dict] = []
+    gui.DocConApp._show_letter_preview(stub, [("Shop", shop), ("Field", field)], "", confirmed.append, lambda: None)
+    assert shown["letters"] == [("Shop", shop.pdf), ("Field", field.pdf)]
+    assert confirmed == []
+    shown["on_confirm"]()
+    assert confirmed == [{SHOP: shop, FIELD: field}]
+    assert stub._work == "preview"

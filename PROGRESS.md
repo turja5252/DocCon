@@ -2,6 +2,23 @@
 
 Newest first. Append a dated entry when a decision is locked, a test runs, or the next step changes.
 
+## 2026-11-02 — Shipped 2.31
+
+Source and the frozen exe are 2.31. The Outlook draft opens before the dated EDDI prints, and Confirm files the letter the preview printed instead of printing it again. The frozen exe started, showed `Elite DocCon  2.31`, and closed cleanly. Load `2026-Tanzim`. Do not Confirm 075. 2.30 is commit `74fe41e` if this needs to go back.
+
+## 2026-11-02 — The draft opens before the EDDI, and Confirm files the preview letter
+
+Sarah said Create transmittal takes too long. A client pack started Excel five times: twice for the preview, then file, print, and EDDI at Confirm. Two changes in 2.31:
+
+- The Outlook draft opens before the dated EDDI prints. The EDDI is not attached, so she can check the email while it prints. A draft that does not open still prints the EDDI. ST + FT opens both drafts, then prints the EDDI once.
+- The preview files the letter on a copy and prints that numbered tab. Confirm files that PDF instead of printing the same tab again. It prints again when the book changed after the preview (size or modified time), when the cover number differs, or when the letter changed.
+
+Test on copies of the sandbox books, real Excel: today's preview of TRANSMITTAL and the printed filed tab are pixel-identical on CT, ST, and FT. With Jira and Outlook stubbed, on the sandbox CT book (3 drawings, 30 EDDI items), Confirm reached the draft in 9.8 s (about 20.7 s before). Total Confirm time went from about 20.7 s to 17.6 s, with the 7.8 s EDDI now after the draft. The filed cover PDF was the preview file, pixel-identical to printing the filed tab again. The sandbox book was not changed.
+
+`doccon.log` now has `confirm step=…` at the start of each Confirm step, `export_pdf reuse …` when the preview letter is filed, and `letter printing again at Confirm: …` with the reason when it is not.
+
+Suite: 534 passed, 12 failed. The same 13 board and GUI tests already failed on untouched 2.30; one of them (`test_frozen_rows_follow_wrapped_description_height`) passed this run. Shipped in 2.31.
+
 ## 2026-10-23 — Shipped 2.30
 
 Source and the frozen exe are 2.30. The over-limit Outlook draft names the zip, asks for a OneDrive link, and shows the lines to delete in blue. Load `2026-Tanzim`. Do not Confirm 075.

@@ -559,18 +559,19 @@ PAINT_LOAD_END = 94
 RENDER_LOAD_START = 94
 RENDER_LOAD_END = 99
 
-# Create transmittal checks, writes, files, then opens Outlook. Same floor/cap
-# shape as Load so a long Jira write still creeps instead of sitting still.
+# Create transmittal checks, writes, files, opens Outlook, then prints the EDDI.
+# Same floor/cap shape as Load so a long Jira write still creeps instead of
+# sitting still. The percent never goes back, so the bands follow that order.
 CONFIRM_STEPS: dict[str, tuple[int, int, str]] = {
     "jira_check": (8, 22, "Checking Jira"),
     "log_check": (24, 34, "Checking the log"),
     "jira_write": (36, 62, "Writing Jira"),
     "file": (64, 74, "Filing the transmittal"),
-    "pdf": (76, 84, "Printing the PDF"),
-    "eddi": (86, 92, "Printing EDDI"),
-    "zip": (93, 96, "Zipping the drawings"),
-    "shop": (93, 96, "Copying shop files"),
-    "outlook": (97, 99, "Opening Outlook"),
+    "pdf": (76, 80, "Printing the PDF"),
+    "zip": (81, 84, "Zipping the drawings"),
+    "shop": (81, 84, "Copying shop files"),
+    "outlook": (85, 88, "Opening Outlook"),
+    "eddi": (89, 99, "Printing EDDI"),
 }
 
 

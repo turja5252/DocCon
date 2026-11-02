@@ -510,6 +510,65 @@ def fill_transmittal_copy(
     return dest
 
 
+def book_stamp(path: Path) -> tuple[int, int]:
+    """Size and modified time. A different stamp means the book changed."""
+    info = Path(path).stat()
+    return (int(info.st_size), int(info.st_mtime_ns))
+
+
+def letter_inputs(
+    job_number: str,
+    lines: list[LogLine],
+    *,
+    issued: date | None,
+    expected_return: date | str | None,
+    cover: PepCover | None,
+    kind: str,
+    urgent: bool,
+) -> tuple:
+    """Everything the printed letter is built from, besides the book itself."""
+    return (
+        (job_number or "").strip(),
+        tuple(lines),
+        issued or date.today(),
+        expected_return,
+        cover,
+        kind,
+        bool(urgent),
+    )
+
+
+def _same_file(left: Path, right: Path) -> bool:
+    return os.path.normcase(os.path.abspath(left)) == os.path.normcase(os.path.abspath(right))
+
+
+@dataclass(frozen=True)
+class LetterPreview:
+    """The letter Create transmittal printed from a filed copy of the book."""
+
+    pdf: Path
+    cover_id: str
+    kind: str
+    book: Path
+    stamp: tuple[int, int]
+    inputs: tuple
+
+    def stale_reason(self, book: Path, inputs: tuple) -> str:
+        """Why Confirm has to print the letter again. Empty when this PDF is that letter."""
+        if not _same_file(book, self.book):
+            return "a different book"
+        if inputs != self.inputs:
+            return "the letter changed"
+        try:
+            if book_stamp(book) != self.stamp:
+                return "the book changed after the preview"
+        except OSError:
+            return "the book could not be read"
+        if not Path(self.pdf).is_file():
+            return "the preview PDF is gone"
+        return ""
+
+
 def preview_transmittal_pdf(
     book: Path,
     job_number: str,
@@ -520,14 +579,21 @@ def preview_transmittal_pdf(
     cover: PepCover | None = None,
     kind: str = CLIENT,
     urgent: bool = False,
-) -> Path:
-    """Print the letter to a temporary PDF. The live book is not opened for saving."""
+) -> LetterPreview:
+    """Print the letter Confirm will file, from a copy. The live book is not saved.
+
+    The copy is filed the way Confirm files the live book, and that numbered tab is
+    printed. When the book has not changed by Confirm, Confirm files this PDF
+    instead of starting Excel to print the same letter again.
+    """
     from doccon.excel_pdf import doccon_temp_dir, export_sheet_pdf
 
+    source = Path(book)
+    stamp = book_stamp(source)
     hold = doccon_temp_dir("ct-preview-")
-    copy_path = hold / Path(book).name
-    fill_transmittal_copy(
-        book,
+    copy_path = hold / source.name
+    shutil.copy2(source, copy_path)
+    result = file_client_transmittal(
         copy_path,
         job_number,
         lines,
@@ -538,7 +604,23 @@ def preview_transmittal_pdf(
         urgent=urgent,
     )
     pdf = hold / f"{PREFIX.get(kind, 'letter')}-preview.pdf"
-    return export_sheet_pdf(copy_path, WORKING_SHEET, pdf)
+    printed = export_sheet_pdf(copy_path, result.sheet_name, pdf)
+    return LetterPreview(
+        pdf=Path(printed),
+        cover_id=result.cover_id,
+        kind=kind,
+        book=source,
+        stamp=stamp,
+        inputs=letter_inputs(
+            job_number,
+            lines,
+            issued=issued,
+            expected_return=expected_return,
+            cover=cover,
+            kind=kind,
+            urgent=urgent,
+        ),
+    )
 
 
 def fill_client_transmittal(

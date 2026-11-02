@@ -476,6 +476,62 @@ def test_preview_copy_fills_the_letter_and_leaves_the_book(tmp_path: Path) -> No
     wb.close()
 
 
+def test_preview_prints_the_tab_confirm_files_and_leaves_the_book(monkeypatch, tmp_path: Path) -> None:
+    from doccon.client_log import book_stamp, letter_inputs, preview_transmittal_pdf
+
+    source = tmp_path / "CT-2026-Tanzim.xlsx"
+    empty_client_workbook().save(source)
+    before = source.read_bytes()
+    printed: list[tuple[Path, str]] = []
+
+    def fake_export(book, sheet, dest):
+        printed.append((Path(book), sheet))
+        Path(dest).write_bytes(b"%PDF-letter")
+        return Path(dest)
+
+    monkeypatch.setattr("doccon.excel_pdf.export_sheet_pdf", fake_export)
+    lines = [LogLine("2026-Tanzim-1-1", "A", "Drawing-1", "APPROVAL")]
+    letter = preview_transmittal_pdf(
+        source,
+        "2026-Tanzim",
+        lines,
+        issued=date(2026, 10, 16),
+        expected_return=date(2026, 10, 23),
+    )
+    assert source.read_bytes() == before
+    assert letter.cover_id == "CT-2026-Tanzim-1"
+    assert letter.pdf.read_bytes() == b"%PDF-letter"
+    assert letter.stamp == book_stamp(source)
+    [(copy, sheet)] = printed
+    assert sheet == "1"
+    assert copy != source
+    wb = load_workbook(copy)
+    assert wb["1"]["A15"].value == "2026-Tanzim-1-1"
+    wb.close()
+    same = letter_inputs(
+        "2026-Tanzim",
+        lines,
+        issued=date(2026, 10, 16),
+        expected_return=date(2026, 10, 23),
+        cover=None,
+        kind=CLIENT,
+        urgent=False,
+    )
+    assert letter.stale_reason(source, same) == ""
+    later = letter_inputs(
+        "2026-Tanzim",
+        lines,
+        issued=date(2026, 10, 17),
+        expected_return=date(2026, 10, 23),
+        cover=None,
+        kind=CLIENT,
+        urgent=False,
+    )
+    assert letter.stale_reason(source, later) == "the letter changed"
+    empty_client_workbook().save(source)
+    assert letter.stale_reason(source, same) != ""
+
+
 def test_file_writes_pep_cover_and_return_date(tmp_path: Path) -> None:
     path = tmp_path / "CT-2026-Tanzim.xlsx"
     empty_client_workbook().save(path)

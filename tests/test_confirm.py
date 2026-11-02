@@ -223,9 +223,9 @@ def test_confirm_eddi_note_is_not_attached(monkeypatch, tmp_path: Path) -> None:
         "jira_write",
         "file",
         "pdf",
-        "eddi",
         "zip",
         "outlook",
+        "eddi",
     ]
     assert seen["count"] == 2
     assert "EDDI-2026-Tanzim-2026-09-09.pdf" in result.pdf_note
@@ -261,7 +261,7 @@ def test_confirm_leaves_an_oversized_zip_off_the_draft(monkeypatch, tmp_path: Pa
 
     rows = _client_pack(monkeypatch, tmp_path, tmp_path / "2026-Tanzim-1-1 REV A.pdf")
     monkeypatch.setattr(confirm, "snapshot_eddi", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(confirm, "_eddi_snapshot_note", lambda *_args, **_kwargs: "")
+    monkeypatch.setattr(confirm, "eddi_snapshot_note", lambda *_args, **_kwargs: "")
     monkeypatch.setattr("doccon.pack_mail.MAIL_ATTACH_LIMIT_BYTES", 8)
     mailed: dict = {}
     monkeypatch.setattr(confirm, "display_outlook_draft", lambda **kwargs: mailed.update(kwargs))
@@ -292,7 +292,7 @@ def test_confirm_retries_with_the_form_when_outlook_refuses_the_zip(monkeypatch,
 
     rows = _client_pack(monkeypatch, tmp_path, tmp_path / "2026-Tanzim-1-1 REV A.pdf")
     monkeypatch.setattr(confirm, "snapshot_eddi", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(confirm, "_eddi_snapshot_note", lambda *_args, **_kwargs: "")
+    monkeypatch.setattr(confirm, "eddi_snapshot_note", lambda *_args, **_kwargs: "")
     calls: list[dict] = []
 
     def fake_draft(**kwargs):
@@ -373,7 +373,7 @@ def test_confirm_success_deletes_packed_dropped_copies(monkeypatch, tmp_path: Pa
     real.write_bytes(b"%PDF-current")
     monkeypatch.setattr(confirm, "snapshot_eddi", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(confirm, "display_outlook_draft", lambda **_kwargs: None)
-    monkeypatch.setattr(confirm, "_eddi_snapshot_note", lambda *_args, **_kwargs: "")
+    monkeypatch.setattr(confirm, "eddi_snapshot_note", lambda *_args, **_kwargs: "")
     result = run_confirm_client_pack(
         site="https://example.atlassian.net",
         email="a@b.c",
@@ -488,7 +488,7 @@ def test_field_confirm_copies_drawings_and_attaches_only_the_form(monkeypatch, t
     )
     monkeypatch.setattr(confirm, "export_sheet_pdf", lambda _book, _sheet, dest: Path(dest).write_bytes(b"%PDF"))
     monkeypatch.setattr(confirm, "snapshot_eddi", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(confirm, "_eddi_snapshot_note", lambda *_args, **_kwargs: "")
+    monkeypatch.setattr(confirm, "eddi_snapshot_note", lambda *_args, **_kwargs: "")
     mailed: dict = {}
     monkeypatch.setattr(confirm, "display_outlook_draft", lambda **kwargs: mailed.update(kwargs))
     result = run_confirm_client_pack(
@@ -544,4 +544,203 @@ def test_field_confirm_aborts_when_the_folder_is_missing(monkeypatch, tmp_path: 
             kind=FIELD,
         )
     assert wrote == []
+
+
+def _packed_row(tmp_path: Path) -> list[MatchedRow]:
+    from doccon.match import PdfHit
+
+    drawing_pdf = tmp_path / "2026-Tanzim-1-1 REV A.pdf"
+    drawing_pdf.write_bytes(b"%PDF-drawing")
+    return [
+        MatchedRow(
+            drawing=_drawing(),
+            pdf=PdfHit(path=drawing_pdf, drawing_id="2026-Tanzim-1-1", rev="A"),
+            confidence="High",
+        )
+    ]
+
+
+def _confirm_client(tmp_path: Path, rows: list[MatchedRow], **kwargs):
+    values = {
+        "site": "https://example.atlassian.net",
+        "email": "a@b.c",
+        "token": "token",
+        "pairs": [],
+        "book": tmp_path / "CT-2026-Tanzim.xlsm",
+        "job": "2026-Tanzim",
+        "lines": [],
+        "issued": date(2026, 9, 9),
+        "expected_return": "N/A",
+        "cover": _cover(tmp_path / "pep.xlsx"),
+        "rows": rows,
+        "job_folder": tmp_path,
+    }
+    values.update(kwargs)
+    return run_confirm_client_pack(**values)
+
+
+def test_confirm_opens_outlook_before_the_eddi(monkeypatch, tmp_path: Path) -> None:
+    """The EDDI is not attached, so the draft does not wait for it."""
+    from doccon import confirm
+
+    _succeeding_file(monkeypatch, tmp_path)
+    events: list[str] = []
+
+    def fake_note(_folder, _job, _drawings, _issued):
+        events.append("eddi")
+        return "EDDI: EDDI 3.0 - 2026-Tanzim-2026-09-09.pdf"
+
+    monkeypatch.setattr(confirm, "display_outlook_draft", lambda **_kwargs: events.append("outlook"))
+    monkeypatch.setattr(confirm, "eddi_snapshot_note", fake_note)
+    monkeypatch.setattr(confirm, "delete_pack_dropped_copies", lambda _rows: events.append("delete dropped"))
+    result = _confirm_client(tmp_path, _packed_row(tmp_path))
+    assert events == ["outlook", "eddi", "delete dropped"]
+    assert result.pdf_note.splitlines() == [
+        "PDF: CT-2026-Tanzim-1.pdf",
+        "EDDI: EDDI 3.0 - 2026-Tanzim-2026-09-09.pdf",
+    ]
+
+
+def test_confirm_prints_the_eddi_when_the_draft_does_not_open(monkeypatch, tmp_path: Path) -> None:
+    from doccon import confirm
+    from doccon.confirm import ConfirmDeliveryError
+
+    _succeeding_file(monkeypatch, tmp_path)
+    printed: list[str] = []
+
+    def no_outlook(**_kwargs):
+        raise LogError("Outlook is not running")
+
+    def fake_note(_folder, _job, _drawings, _issued):
+        printed.append("eddi")
+        return "EDDI: printed"
+
+    monkeypatch.setattr(confirm, "display_outlook_draft", no_outlook)
+    monkeypatch.setattr(confirm, "eddi_snapshot_note", fake_note)
+    with pytest.raises(ConfirmDeliveryError) as caught:
+        _confirm_client(tmp_path, _packed_row(tmp_path))
+    assert printed == ["eddi"]
+    assert "EDDI: printed" in caught.value.pdf_note
+    assert caught.value.cover_id == "CT-2026-Tanzim-1"
+
+
+def test_confirm_prints_no_eddi_when_skipped(monkeypatch, tmp_path: Path) -> None:
+    from doccon import confirm
+
+    _succeeding_file(monkeypatch, tmp_path)
+    monkeypatch.setattr(confirm, "display_outlook_draft", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        confirm, "eddi_snapshot_note", lambda *_args: (_ for _ in ()).throw(AssertionError("eddi"))
+    )
+    steps: list[str] = []
+    result = _confirm_client(tmp_path, _packed_row(tmp_path), skip_eddi=True, on_step=steps.append)
+    assert "eddi" not in steps
+    assert result.pdf_note == "PDF: CT-2026-Tanzim-1.pdf"
+
+
+def _letter(tmp_path: Path, book: Path, **changes):
+    from doccon.client_log import LetterPreview, book_stamp, letter_inputs
+    from doccon.kinds import CLIENT
+
+    pdf = tmp_path / "preview" / "CT-preview.pdf"
+    pdf.parent.mkdir(exist_ok=True)
+    pdf.write_bytes(b"%PDF-preview")
+    return LetterPreview(
+        pdf=pdf,
+        cover_id=changes.get("cover_id", "CT-2026-Tanzim-1"),
+        kind=CLIENT,
+        book=book,
+        stamp=book_stamp(book),
+        inputs=letter_inputs(
+            "2026-Tanzim",
+            changes.get("lines", []),
+            issued=date(2026, 9, 9),
+            expected_return="N/A",
+            cover=_cover(tmp_path / "pep.xlsx"),
+            kind=CLIENT,
+            urgent=False,
+        ),
+    )
+
+
+def _count_exports(monkeypatch) -> list[str]:
+    from doccon import confirm
+
+    printed: list[str] = []
+
+    def fake_export(_book, sheet, dest):
+        printed.append(sheet)
+        Path(dest).write_bytes(b"%PDF-printed")
+        return Path(dest)
+
+    monkeypatch.setattr(confirm, "export_sheet_pdf", fake_export)
+    return printed
+
+
+def test_confirm_files_the_letter_the_preview_printed(monkeypatch, tmp_path: Path) -> None:
+    from doccon import confirm
+
+    book = _succeeding_file(monkeypatch, tmp_path)
+    printed = _count_exports(monkeypatch)
+    mailed: dict = {}
+    monkeypatch.setattr(confirm, "display_outlook_draft", lambda **kwargs: mailed.update(kwargs))
+    monkeypatch.setattr(confirm, "eddi_snapshot_note", lambda *_args: "")
+    letter = _letter(tmp_path, book)
+    result = _confirm_client(tmp_path, _packed_row(tmp_path), letter=letter)
+    assert printed == []
+    assert (tmp_path / "CT-2026-Tanzim-1.pdf").read_bytes() == b"%PDF-preview"
+    assert letter.pdf.is_file()
+    assert result.pdf_note == "PDF: CT-2026-Tanzim-1.pdf"
+    names = [Path(str(item)).name for item in mailed["attachments"]]
+    assert names == ["CT-2026-Tanzim-1.pdf", "CT-2026-Tanzim-1.zip"]
+
+
+@pytest.mark.parametrize(
+    "stale",
+    ["book changed", "letter changed", "other cover number", "preview gone", "other book"],
+)
+def test_confirm_prints_again_when_the_preview_is_not_that_letter(monkeypatch, tmp_path: Path, stale: str) -> None:
+    from doccon import confirm
+    from doccon.client_log import LogLine
+
+    book = _succeeding_file(monkeypatch, tmp_path)
+    printed = _count_exports(monkeypatch)
+    monkeypatch.setattr(confirm, "display_outlook_draft", lambda **_kwargs: None)
+    monkeypatch.setattr(confirm, "eddi_snapshot_note", lambda *_args: "")
+    if stale == "letter changed":
+        letter = _letter(tmp_path, book, lines=[LogLine("2026-Tanzim-1-1", "A", "Drawing-1", "APPROVAL")])
+    elif stale == "other cover number":
+        letter = _letter(tmp_path, book, cover_id="CT-2026-Tanzim-2")
+    elif stale == "other book":
+        other = tmp_path / "other" / book.name
+        other.parent.mkdir()
+        other.write_bytes(b"book")
+        letter = _letter(tmp_path, other)
+    else:
+        letter = _letter(tmp_path, book)
+    if stale == "book changed":
+        book.write_bytes(b"book saved by someone else after the preview")
+    if stale == "preview gone":
+        letter.pdf.unlink()
+    _confirm_client(tmp_path, _packed_row(tmp_path), letter=letter)
+    assert printed == ["TRANSMITTAL"]
+    assert (tmp_path / "CT-2026-Tanzim-1.pdf").read_bytes() == b"%PDF-printed"
+
+
+def test_confirm_reports_a_locked_cover_pdf_when_reusing_the_preview(monkeypatch, tmp_path: Path) -> None:
+    from doccon import confirm
+    from doccon.excel_pdf import EXCEL_PDF_LOCKED
+
+    book = _succeeding_file(monkeypatch, tmp_path)
+    printed = _count_exports(monkeypatch)
+    monkeypatch.setattr(confirm, "display_outlook_draft", lambda **_kwargs: None)
+    monkeypatch.setattr(confirm, "eddi_snapshot_note", lambda *_args: "")
+
+    def locked(_source, _dest, **_kwargs):
+        raise PermissionError(13, "The process cannot access the file", None, 32)
+
+    monkeypatch.setattr("doccon.excel_pdf.place_file", locked)
+    result = _confirm_client(tmp_path, _packed_row(tmp_path), letter=_letter(tmp_path, book))
+    assert printed == []
+    assert EXCEL_PDF_LOCKED in result.pdf_note
 

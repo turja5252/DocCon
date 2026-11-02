@@ -2,7 +2,11 @@
 # Copyright (c) 2026 Tanzim Nasir.
 # Built for Elite Integrity Services.
 # Unauthorized use by other companies is prohibited.
-"""Confirm: preflight everything, then Jira, then the transmittal file."""
+"""Confirm: preflight everything, then Jira, then the transmittal file.
+
+The Outlook draft opens before the dated EDDI prints. The EDDI is not attached,
+so the operator can check the email while that last Excel step runs.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -11,13 +15,17 @@ from pathlib import Path
 
 from doccon.client_log import (
     ClientBook,
+    FileClientResult,
+    LetterPreview,
     LogError,
     file_client_transmittal,
     inspect_book,
+    letter_inputs,
 )
+from doccon.diag import log
 from doccon.drop_pdfs import delete_pack_dropped_copies
 from doccon.eddi import eddi_print_drawings, snapshot_eddi
-from doccon.excel_pdf import export_sheet_pdf
+from doccon.excel_pdf import export_sheet_pdf, place_printed_pdf
 from doccon.jira_client import (
     JiraError,
     apply_jira_updates,
@@ -115,14 +123,20 @@ def run_confirm_client_pack(
     urgent: bool = False,
     skip_eddi: bool = False,
     keep_dropped: bool = False,
+    letter: LetterPreview | None = None,
     on_step=None,
     mail=None,
     mail_subject: str = "",
     mail_body: str = "",
 ) -> ConfirmResult:
-    """Check that every write can succeed, then Jira, then file. Abort leaves no tab."""
+    """Check that every write can succeed, then Jira, then file. Abort leaves no tab.
+
+    ``letter`` is the PDF Create transmittal showed. It is filed as the cover PDF
+    when the book and the letter are unchanged; otherwise the filed tab prints again.
+    """
 
     def step(name: str) -> None:
+        log("INFO", "confirm", f"step={name}")
         if on_step is not None:
             on_step(name)
 
@@ -144,11 +158,43 @@ def run_confirm_client_pack(
     cover_id = ""
     note = ""
     pdf_note = ""
+    eddi_pending = not skip_eddi
+
+    def record_eddi() -> str:
+        """Print the dated EDDI once the transmittal is filed. Never raises."""
+        nonlocal eddi_pending
+        if not eddi_pending:
+            return ""
+        eddi_pending = False
+        try:
+            step("eddi")
+            return eddi_snapshot_note(
+                job_folder,
+                job,
+                eddi_drawings if eddi_drawings is not None else eddi_print_drawings(rows),
+                issued,
+            )
+        except Exception as exc:
+            return f"EDDI: {exc}"
+
     try:
         if pairs:
             step("jira_write")
             apply_jira_updates(site, email, token, pairs, eddi_contexts)
             jira_written = True
+        reuse = _reusable_letter(
+            letter,
+            book,
+            letter_inputs(
+                job,
+                lines,
+                issued=issued,
+                expected_return=expected_return,
+                cover=cover,
+                kind=kind,
+                urgent=urgent,
+            ),
+        )
         step("file")
         result = file_client_transmittal(
             book,
@@ -165,19 +211,10 @@ def run_confirm_client_pack(
         pdf_path = book.parent / f"{cover_id}.pdf"
         try:
             step("pdf")
-            export_sheet_pdf(result.book, result.sheet_name, pdf_path)
+            _print_letter(result, pdf_path, reuse)
             pdf_note = f"PDF: {pdf_path.name}"
         except LogError as exc:
             pdf_note = str(exc)
-        step("eddi")
-        eddi_note = "" if skip_eddi else _eddi_snapshot_note(
-            job_folder,
-            job,
-            eddi_drawings if eddi_drawings is not None else eddi_print_drawings(rows),
-            issued,
-        )
-        if eddi_note:
-            pdf_note = f"{pdf_note}\n{eddi_note}".strip() if pdf_note else eddi_note
         zip_path: Path | None = None
         if kind == SHOP:
             try:
@@ -283,6 +320,7 @@ def run_confirm_client_pack(
                     attach_note=note,
                     pdf_note=pdf_note,
                 ) from retry_exc
+        pdf_note = _joined(pdf_note, record_eddi())
         if not keep_dropped:
             delete_pack_dropped_copies(rows)
         return ConfirmResult(
@@ -291,10 +329,13 @@ def run_confirm_client_pack(
             pdf_note=pdf_note,
             jira_written=jira_written,
         )
-    except ConfirmDeliveryError:
+    except ConfirmDeliveryError as exc:
+        if filed:
+            exc.pdf_note = _joined(exc.pdf_note, record_eddi())
         raise
     except Exception as exc:
         if filed:
+            pdf_note = _joined(pdf_note, record_eddi())
             raise ConfirmDeliveryError(
                 f"Filed {cover_id} and wrote Jira, but the pack did not finish. "
                 f"Do not Confirm again.\n{exc}",
@@ -392,12 +433,56 @@ def _copy_field_pack(field_root: Path, copies: list[Path] | list[tuple[Path, str
         place_field_form(field_root, form)
 
 
-def _eddi_snapshot_note(
+def _joined(*parts: str) -> str:
+    return "\n".join(part.strip() for part in parts if part and part.strip())
+
+
+def _reusable_letter(
+    letter: LetterPreview | None,
+    book: Path,
+    inputs: tuple,
+) -> LetterPreview | None:
+    """The preview PDF, when it is the letter Confirm is about to file. Checked before filing."""
+    if letter is None:
+        return None
+    try:
+        reason = letter.stale_reason(book, inputs)
+    except Exception as exc:
+        reason = f"could not compare ({exc})"
+    if reason:
+        log("INFO", "letter", f"printing again at Confirm: {reason}")
+        return None
+    return letter
+
+
+def _print_letter(result: FileClientResult, pdf_path: Path, letter: LetterPreview | None) -> None:
+    """File the preview PDF when it matches the filed tab; otherwise print the tab."""
+    if letter is not None and letter.cover_id != result.cover_id:
+        log(
+            "INFO",
+            "letter",
+            f"printing again at Confirm: filed {result.cover_id}, preview was {letter.cover_id}",
+        )
+        letter = None
+    if letter is not None:
+        try:
+            place_printed_pdf(letter.pdf, pdf_path)
+            return
+        except LogError:
+            # The cover PDF in the folder is locked. Printing again would hit the same lock.
+            raise
+        except Exception as exc:
+            log("WARN", "letter", f"could not reuse the preview, printing again: {exc}")
+    export_sheet_pdf(result.book, result.sheet_name, pdf_path)
+
+
+def eddi_snapshot_note(
     job_folder: Path | None,
     job: str,
     drawings: list[DrawingRow],
     issued: date,
 ) -> str:
+    """Print the dated EDDI snapshot. Never raises; the note says what happened."""
     if job_folder is None:
         return "EDDI: skipped (job folder not found)."
     try:

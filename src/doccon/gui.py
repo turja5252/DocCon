@@ -27,6 +27,7 @@ from doccon.client_log import (
     find_book,
     highest_filed_tab,
     inspect_book,
+    LetterPreview,
     next_number_after_removing_tab,
     lines_from_extras,
     lines_from_rows,
@@ -37,7 +38,7 @@ from doccon.client_log import (
     preview_transmittal_pdf,
 )
 from doccon.clip_paste import NO_PDF_ON_CLIPBOARD, clipboard_pdfs
-from doccon.confirm import ConfirmDeliveryError, run_confirm_client_pack
+from doccon.confirm import ConfirmDeliveryError, eddi_snapshot_note, run_confirm_client_pack
 from doccon.date_picker import attach_calendar, set_entry_date, set_na_text
 from doccon.diag import log, log_session_start, open_log_folder
 from doccon.drawing_board import DrawingBoard
@@ -4244,7 +4245,10 @@ class DocConApp(tk.Tk):
         on_confirm,
         on_back,
     ) -> None:
-        """Print each letter from a copy, then let her confirm or go back."""
+        """Print each letter from a filed copy, then let her confirm or go back.
+
+        ``on_confirm`` gets those letters by kind, so Confirm can file the PDF she saw.
+        """
         self._busy = True
         self._work = "preview"
         self._set_status("Preparing the letter…")
@@ -4252,11 +4256,11 @@ class DocConApp(tk.Tk):
         self.update_idletasks()
 
         def prepare() -> None:
-            made: list[tuple[str, Path]] = []
+            made: list[tuple[str, LetterPreview]] = []
             error = ""
             try:
                 for label, book, job, lines, issued, expected, cover, kind, urgent in jobs:
-                    pdf = preview_transmittal_pdf(
+                    letter = preview_transmittal_pdf(
                         book,
                         job,
                         lines,
@@ -4266,7 +4270,7 @@ class DocConApp(tk.Tk):
                         kind=kind,
                         urgent=urgent,
                     )
-                    made.append((label, pdf))
+                    made.append((label, letter))
             except (LogError, OSError) as exc:
                 error = str(exc)
             self.after(0, lambda: self._show_letter_preview(made, error, on_confirm, on_back))
@@ -4281,7 +4285,13 @@ class DocConApp(tk.Tk):
             return
         self._busy = True
         self._work = "preview"
-        open_letter_preview(self, letters, on_confirm=on_confirm, on_back=on_back)
+        by_kind = {letter.kind: letter for _label, letter in letters}
+        open_letter_preview(
+            self,
+            [(label, letter.pdf) for label, letter in letters],
+            on_confirm=lambda: on_confirm(by_kind),
+            on_back=on_back,
+        )
 
     def _issue_both(self) -> None:
         """File the shop letter and the field letter. Jira is written once."""
@@ -4359,7 +4369,7 @@ class DocConApp(tk.Tk):
             self._clear_preview_wait()
             self._set_status("Back to the list. Nothing was filed.")
 
-        def file_now() -> None:
+        def file_now(letters: dict[str, LetterPreview]) -> None:
             if not self._save_pack(quiet=True, force=True):
                 self._clear_preview_wait()
                 return
@@ -4367,6 +4377,8 @@ class DocConApp(tk.Tk):
             self._work = "confirm"
             self.send_btn.start("Checking the pack")
             self._file_both_now(
+                shop_letter=letters.get(SHOP),
+                field_letter=letters.get(FIELD),
                 job=job,
                 folder=folder,
                 rows=rows,
@@ -4423,6 +4435,8 @@ class DocConApp(tk.Tk):
         shop_copies = kw["shop_copies"]
         field_copies = kw["field_copies"]
         urgent = kw["urgent"]
+        shop_letter = kw.get("shop_letter")
+        field_letter = kw.get("field_letter")
         pairs = [(originals.get(row.drawing.key, row.drawing), row.drawing) for row in jira_rows]
         eddi_contexts = dict(self._eddi_contexts)
         shop_wording = self._effective_wording(SHOP)
@@ -4463,7 +4477,9 @@ class DocConApp(tk.Tk):
                     shop_root=self._shop_root,
                     shop_copies=shop_copies,
                     urgent=urgent,
+                    skip_eddi=True,
                     keep_dropped=True,
+                    letter=shop_letter,
                     mail=shop_facts,
                     mail_subject=shop_wording[0],
                     mail_body=shop_wording[1],
@@ -4504,6 +4520,7 @@ class DocConApp(tk.Tk):
                         urgent=urgent,
                         skip_eddi=True,
                         keep_dropped=True,
+                        letter=field_letter,
                         mail=field_facts,
                         mail_subject=field_wording[0],
                         mail_body=field_wording[1],
@@ -4520,6 +4537,10 @@ class DocConApp(tk.Tk):
                     field_attach = exc.attach_note
                 except (JiraError, LogError, OSError) as exc:
                     field_error = str(exc)
+            if shop_filed:
+                # Both drafts are open. The dated EDDI is not attached, so it prints last.
+                eddi_note = eddi_snapshot_note(folder, job, eddi_drawings, shop_issued)
+                shop_note = "\n".join(part for part in (shop_note, eddi_note) if part)
             self.after(
                 0,
                 lambda: self._both_issued(
@@ -4750,11 +4771,12 @@ class DocConApp(tk.Tk):
             self._clear_preview_wait()
             self._set_status("Back to the list. Nothing was filed.")
 
-        def file_now() -> None:
+        def file_now(letters: dict[str, LetterPreview]) -> None:
             if not self._save_pack(quiet=True, force=True):
                 self._clear_preview_wait()
                 return
             self._file_pack_now(
+                letter=letters.get(kind),
                 job=job,
                 folder=folder,
                 rows=rows,
@@ -4812,6 +4834,7 @@ class DocConApp(tk.Tk):
         wording = kw["wording"]
         facts = kw["facts"]
         urgent = kw["urgent"]
+        letter = kw.get("letter")
         self._busy = True
         self._work = "confirm"
         self._job_number = job
@@ -4865,6 +4888,7 @@ class DocConApp(tk.Tk):
                     shop_copies=shop_copies,
                     field_root=field_root,
                     field_copies=field_copies,
+                    letter=letter,
                     on_step=on_confirm_step,
                     mail=facts,
                     mail_subject=wording[0],
