@@ -2,6 +2,10 @@
 
 Newest first. Append a dated entry when a decision is locked, a test runs, or the next step changes.
 
+## 2026-11-03 — Sarah's first day on 2.31, from file times
+
+Sarah's `doccon.log` is still on her laptop. This is from her usage file and the file times in each job folder (read only). CT-2025-082-6 at 11:57 on Nov 2 still ran the 2.30 order. Every transmittal from FT-2026-076-2 at 20:19 on (10 runs, all finished) ran the 2.31 order: zip, then the draft, then the EDDI. A filed letter older than the book save is the preview PDF, because the reuse keeps the preview's file time. That was true on CT-2026-079-26, CT-2026-082-4, CT-2025-106-89, CT-2026-076-7, and FT-2026-076-2. From book save to the zip (the draft opens right after it): 2.30 took 31, 15, and 20 s; 2.31 took 2, 18, 3, and 11 s. The 18 s was a 65 MB zip on 082-4. Book save to finished is not shorter (2.30: 17–32 s; 2.31: 25–48 s), but most of it now runs after the draft is open. 2025-106 was the slowest: 44 s from the zip to the EDDI PDF. The click, Jira write, and Excel filing before the book save need her log.
+
 ## 2026-11-02 — Shipped 2.31
 
 Source and the frozen exe are 2.31. The Outlook draft opens before the dated EDDI prints, and Confirm files the letter the preview printed instead of printing it again. The frozen exe started, showed `Elite DocCon  2.31`, and closed cleanly. Load `2026-Tanzim`. Do not Confirm 075. 2.30 is commit `74fe41e` if this needs to go back.
