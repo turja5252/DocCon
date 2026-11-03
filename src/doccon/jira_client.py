@@ -10,9 +10,11 @@ import re
 import threading
 import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from doccon.diag import log
 from doccon.register import (
     APPROVAL_FIELD,
     CLIENT_DOC_FIELD,
@@ -68,6 +70,8 @@ JOB_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 # After POST /issue the key exists, but JQL search can lag. GET-by-key is the wait.
 CREATE_READ_ATTEMPTS = 8
 CREATE_READ_DELAY_S = 0.4
+# Drawings checked or written at once. Each drawing's own calls stay in order.
+JIRA_WORKERS = 4
 
 DRAWING_FIELDS = [
     "summary",
@@ -799,7 +803,22 @@ def list_transitions(site: str, email: str, token: str, issue_key: str) -> list[
     return parse_transitions(payload)
 
 
-def transition_drawing(site: str, email: str, token: str, issue_key: str, current_status: str, next_status: str) -> None:
+def transition_drawing(
+    site: str,
+    email: str,
+    token: str,
+    issue_key: str,
+    current_status: str,
+    next_status: str,
+    transitions: list[dict[str, str]] | None = None,
+) -> None:
+    """Move the issue to ``next_status``.
+
+    ``transitions`` is the list the preflight already fetched for this issue. If the
+    move it names is refused (a Jira rule moved the issue in between), the list is
+    fetched again and the move is tried once more, which is what happened before
+    the list was kept.
+    """
     key = (issue_key or "").strip()
     current = (current_status or "").strip()
     target = (next_status or "").strip()
@@ -807,6 +826,14 @@ def transition_drawing(site: str, email: str, token: str, issue_key: str, curren
         raise JiraError("Issue key is required.")
     if not target or target.casefold() == current.casefold():
         return
+    if transitions is not None:
+        kept_id = transition_id_for_status(transitions, target)
+        if kept_id:
+            try:
+                _post_transition(site, email, token, key, kept_id)
+                return
+            except JiraError as exc:
+                log("INFO", "jira", f"{key}: kept transition refused, asking Jira again: {exc}")
     transitions = list_transitions(site, email, token, key)
     transition_id = transition_id_for_status(transitions, target)
     if not transition_id:
@@ -814,6 +841,10 @@ def transition_drawing(site: str, email: str, token: str, issue_key: str, curren
         raise JiraError(
             f"Cannot move {key} from {current or '(none)'} to {target}. From here Jira allows: {allowed}."
         )
+    _post_transition(site, email, token, key, transition_id)
+
+
+def _post_transition(site: str, email: str, token: str, key: str, transition_id: str) -> None:
     _request(
         site,
         email,
@@ -858,9 +889,15 @@ def update_drawing_fields(
     token: str,
     drawing: DrawingRow,
     eddi_options: tuple[FieldOption, ...] = (),
+    *,
+    summary: str = "",
 ) -> None:
+    """One PUT. ``summary`` rides in the same write as the other fields."""
     key = (drawing.key or "").strip()
     fields = drawing_fields_payload(drawing, eddi_options)
+    text = (summary or "").strip()
+    if text:
+        fields = {"summary": text, **fields}
     if not key:
         raise JiraError("Issue key is required.")
     if not fields:
@@ -892,8 +929,12 @@ def preflight_drawing_update(
     current: DrawingRow,
     nxt: DrawingRow,
     eddi_options: tuple[FieldOption, ...] = (),
-) -> None:
-    """Raise if this update cannot be applied. Does not write Jira."""
+) -> list[dict[str, str]] | None:
+    """Raise if this update cannot be applied. Does not write Jira.
+
+    Returns the transitions Jira offered when the Status changes, so the write can
+    use them instead of asking again. None when the Status does not change.
+    """
     key = (nxt.key or current.key or "").strip()
     if not key:
         raise JiraError("Issue key is required.")
@@ -924,20 +965,98 @@ def preflight_drawing_update(
                 f"Cannot move {key} from {current_status or '(none)'} to {next_status}. "
                 f"From here Jira allows: {allowed}."
             )
+        return transitions
+    return None
+
+
+Pair = tuple[DrawingRow, DrawingRow]
+Transitions = dict[str, list[dict[str, str]]]
+# A drawing that had not started when another drawing's write failed.
+_SKIPPED = object()
+
+
+def _pair_key(pair: Pair) -> str:
+    current, nxt = pair
+    return (nxt.key or current.key or "").strip()
+
+
+def _each_pair(pairs: list[Pair], work: Callable[[Pair], None], *, stop_on_error: bool = False) -> list[object]:
+    """Run ``work`` on every pair, JIRA_WORKERS at a time. Outcomes come back in pack order.
+
+    Each outcome is None (done), the exception that pair raised, or _SKIPPED. With
+    ``stop_on_error`` a pair that has not started when one fails is skipped, so a
+    failed write does not go on to write the rest of the pack.
+    """
+    failed = threading.Event()
+
+    def run(pair: Pair) -> object:
+        if stop_on_error and failed.is_set():
+            return _SKIPPED
+        try:
+            work(pair)
+        except Exception as exc:
+            failed.set()
+            return exc
+        return None
+
+    if len(pairs) <= 1:
+        return [run(pair) for pair in pairs]
+    with ThreadPoolExecutor(
+        max_workers=min(JIRA_WORKERS, len(pairs)), thread_name_prefix="doccon-jira"
+    ) as pool:
+        return list(pool.map(run, pairs))
 
 
 def preflight_jira_updates(
     site: str,
     email: str,
     token: str,
-    pairs: list[tuple[DrawingRow, DrawingRow]],
+    pairs: list[Pair],
     eddi_contexts: dict[str, tuple[FieldOption, ...]] | None = None,
-) -> None:
-    for current, nxt in pairs:
-        key = (nxt.key or current.key or "").strip()
-        preflight_drawing_update(
+) -> Transitions:
+    """Check every drawing, a few at a time. Raise the first problem in pack order.
+
+    Returns the transitions fetched for each issue whose Status changes. Pass them
+    to apply_jira_updates so the write does not ask Jira for the same list again.
+    """
+    kept: Transitions = {}
+    lock = threading.Lock()
+
+    def check(pair: Pair) -> None:
+        current, nxt = pair
+        key = _pair_key(pair)
+        transitions = preflight_drawing_update(
             site, email, token, current, nxt, _eddi_options_for(key, eddi_contexts)
         )
+        if transitions is not None:
+            with lock:
+                kept[key] = transitions
+
+    for outcome in _each_pair(list(pairs), check):
+        if isinstance(outcome, Exception):
+            raise outcome
+    return kept
+
+
+def _put_back_fields(
+    site: str,
+    email: str,
+    token: str,
+    current: DrawingRow,
+    nxt: DrawingRow,
+    eddi_options: tuple[FieldOption, ...] = (),
+) -> None:
+    """Write the original summary and fields back in one PUT."""
+    was_summary = (current.summary or "").strip()
+    wrote_summary = summary_from_parts(nxt.drawing_id or current.drawing_id, nxt.title)
+    summary = ""
+    if was_summary and (
+        was_summary != (nxt.summary or "").strip() or was_summary != (wrote_summary or "").strip()
+    ):
+        summary = was_summary
+    fields = drawing_fields_payload(current, eddi_options)
+    if summary or fields:
+        update_drawing_fields(site, email, token, current, eddi_options, summary=summary)
 
 
 def revert_drawing_update(
@@ -952,12 +1071,7 @@ def revert_drawing_update(
     key = (nxt.key or current.key or "").strip()
     if not key:
         return
-    was_summary = (current.summary or "").strip()
-    if was_summary and was_summary != (nxt.summary or "").strip():
-        update_summary(site, email, token, key, was_summary)
-    fields = drawing_fields_payload(current, eddi_options)
-    if fields:
-        update_drawing_fields(site, email, token, current, eddi_options)
+    _put_back_fields(site, email, token, current, nxt, eddi_options)
     was_status = (current.status or "").strip()
     now_status = (nxt.status or "").strip()
     if was_status and now_status and was_status.casefold() != now_status.casefold():
@@ -968,34 +1082,51 @@ def apply_jira_updates(
     site: str,
     email: str,
     token: str,
-    pairs: list[tuple[DrawingRow, DrawingRow]],
+    pairs: list[Pair],
     eddi_contexts: dict[str, tuple[FieldOption, ...]] | None = None,
+    transitions: Transitions | None = None,
 ) -> None:
-    """Write every drawing. If one fails, roll back those already written."""
-    done: list[tuple[DrawingRow, DrawingRow]] = []
-    try:
-        for current, nxt in pairs:
-            key = (nxt.key or current.key or "").strip()
-            apply_drawing_update(
+    """Write every drawing, a few at a time. If one fails, roll back those written.
+
+    A drawing that has not started when one fails is not written. ``transitions``
+    is what preflight_jira_updates returned.
+    """
+    pairs = list(pairs)
+    kept = transitions or {}
+
+    def write(pair: Pair) -> None:
+        current, nxt = pair
+        key = _pair_key(pair)
+        apply_drawing_update(
+            site,
+            email,
+            token,
+            current,
+            nxt,
+            _eddi_options_for(key, eddi_contexts),
+            transitions=kept.get(key),
+        )
+
+    outcomes = _each_pair(pairs, write, stop_on_error=True)
+    errors = [outcome for outcome in outcomes if isinstance(outcome, Exception)]
+    if not errors:
+        return
+    done = [pair for pair, outcome in zip(pairs, outcomes, strict=True) if outcome is None]
+    revert_errors: list[str] = []
+    for current, nxt in reversed(done):
+        key = (nxt.key or current.key or "").strip()
+        try:
+            revert_drawing_update(
                 site, email, token, current, nxt, _eddi_options_for(key, eddi_contexts)
             )
-            done.append((current, nxt))
-    except Exception:
-        revert_errors: list[str] = []
-        for current, nxt in reversed(done):
-            key = (nxt.key or current.key or "").strip()
-            try:
-                revert_drawing_update(
-                    site, email, token, current, nxt, _eddi_options_for(key, eddi_contexts)
-                )
-            except JiraError as exc:
-                revert_errors.append(f"{nxt.key or current.key}: {exc}")
-        if revert_errors:
-            raise JiraError(
-                "Jira write aborted. Rollback failed, so some issues may still be changed: "
-                + "; ".join(revert_errors)
-            ) from None
-        raise
+        except JiraError as exc:
+            revert_errors.append(f"{nxt.key or current.key}: {exc}")
+    if revert_errors:
+        raise JiraError(
+            "Jira write aborted. Rollback failed, so some issues may still be changed: "
+            + "; ".join(revert_errors)
+        ) from None
+    raise errors[0]
 
 
 def run_jira_register_update(
@@ -1008,8 +1139,8 @@ def run_jira_register_update(
     """Preflight, then write Next values. No Excel, no Outlook. Abort writes nothing."""
     if not pairs:
         raise JiraError("No Next changes to write.")
-    preflight_jira_updates(site, email, token, pairs, eddi_contexts)
-    apply_jira_updates(site, email, token, pairs, eddi_contexts)
+    kept = preflight_jira_updates(site, email, token, pairs, eddi_contexts)
+    apply_jira_updates(site, email, token, pairs, eddi_contexts, transitions=kept)
     return len(pairs)
 
 
@@ -1020,24 +1151,35 @@ def apply_drawing_update(
     current: DrawingRow,
     nxt: DrawingRow,
     eddi_options: tuple[FieldOption, ...] = (),
+    transitions: list[dict[str, str]] | None = None,
 ) -> None:
+    """One PUT for the summary and fields, then the Status move.
+
+    If the move fails, this drawing's fields are put back before the error is raised,
+    so a failed drawing is not left half written.
+    """
     key = (nxt.key or current.key or "").strip()
     if not key:
         raise JiraError("Issue key is required.")
-    wrote = False
     # JIRA ID and Description are both halves of `summary`: one composed write, never two.
     next_summary = summary_from_parts(nxt.drawing_id or current.drawing_id, nxt.title)
-    if next_summary and next_summary != (current.summary or "").strip():
-        update_summary(site, email, token, key, next_summary)
-        wrote = True
+    summary = next_summary if next_summary and next_summary != (current.summary or "").strip() else ""
     fields = drawing_fields_payload(nxt, eddi_options)
-    if fields:
-        update_drawing_fields(site, email, token, nxt, eddi_options)
-        wrote = True
     current_status = (current.status or "").strip()
     next_status = (nxt.status or "").strip()
-    if next_status and next_status.casefold() != current_status.casefold():
-        transition_drawing(site, email, token, key, current_status, next_status)
-        wrote = True
-    if not wrote:
+    moves = bool(next_status and next_status.casefold() != current_status.casefold())
+    if not (summary or fields or moves):
         raise JiraError("No Jira fields to write.")
+    if summary or fields:
+        update_drawing_fields(site, email, token, nxt, eddi_options, summary=summary)
+    if not moves:
+        return
+    try:
+        transition_drawing(site, email, token, key, current_status, next_status, transitions)
+    except Exception as exc:
+        if summary or fields:
+            try:
+                _put_back_fields(site, email, token, current, nxt, eddi_options)
+            except JiraError as undo:
+                raise JiraError(f"{exc}\nRollback failed, so {key} may still be changed: {undo}") from exc
+        raise

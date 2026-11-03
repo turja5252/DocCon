@@ -291,3 +291,35 @@ def test_pick_list_includes_the_saved_address_book(tmp_path, monkeypatch) -> Non
     standing, saved = pick_address_lists("shop", "to")
     assert standing == ("shop-to@eliteintegrityservices.com",)
     assert saved == ("book@eliteintegrityservices.com",)
+
+
+def test_zip_cannot_attach_only_when_half_the_drawings_is_still_over(monkeypatch, tmp_path: Path) -> None:
+    from doccon.pack_mail import zip_cannot_attach
+
+    monkeypatch.setattr("doccon.pack_mail.MAIL_ATTACH_LIMIT_BYTES", 100)
+    form = tmp_path / "CT-2026-Tanzim-1.pdf"
+    form.write_bytes(b"x" * 20)
+    big = tmp_path / "big.pdf"
+    big.write_bytes(b"x" * 200)
+    fits = tmp_path / "fits.pdf"
+    fits.write_bytes(b"x" * 150)
+    assert zip_cannot_attach(form, [big]) is True
+    assert zip_cannot_attach(form, [fits]) is False
+    assert zip_cannot_attach(form, [form, fits]) is False
+    assert zip_cannot_attach(None, [tmp_path / "missing.pdf"]) is False
+
+
+def test_write_drawings_zip_stores_when_asked(tmp_path: Path) -> None:
+    from zipfile import ZIP_DEFLATED, ZIP_STORED
+
+    from doccon.pack_mail import write_drawings_zip
+
+    pdf = tmp_path / "2026-Tanzim-1-1 REV A.pdf"
+    pdf.write_bytes(b"%PDF-" + b"0" * 4000)
+    stored = write_drawings_zip(tmp_path / "stored.zip", [pdf], store=True)
+    packed = write_drawings_zip(tmp_path / "packed.zip", [pdf])
+    with ZipFile(stored) as archive:
+        assert archive.infolist()[0].compress_type == ZIP_STORED
+        assert archive.read(pdf.name) == pdf.read_bytes()
+    with ZipFile(packed) as archive:
+        assert archive.infolist()[0].compress_type == ZIP_DEFLATED

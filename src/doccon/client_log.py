@@ -544,7 +544,12 @@ def _same_file(left: Path, right: Path) -> bool:
 
 @dataclass(frozen=True)
 class LetterPreview:
-    """The letter Create transmittal printed from a filed copy of the book."""
+    """The letter Create transmittal printed from a filed copy of the book.
+
+    ``filed_book`` is that copy after filing, and ``sheet_name`` the numbered tab it
+    filed. While the preview is still that letter, Confirm saves this copy as the
+    book instead of filing the same tab again in Excel.
+    """
 
     pdf: Path
     cover_id: str
@@ -552,6 +557,8 @@ class LetterPreview:
     book: Path
     stamp: tuple[int, int]
     inputs: tuple
+    filed_book: Path | None = None
+    sheet_name: str = ""
 
     def stale_reason(self, book: Path, inputs: tuple) -> str:
         """Why Confirm has to print the letter again. Empty when this PDF is that letter."""
@@ -583,8 +590,9 @@ def preview_transmittal_pdf(
     """Print the letter Confirm will file, from a copy. The live book is not saved.
 
     The copy is filed the way Confirm files the live book, and that numbered tab is
-    printed. When the book has not changed by Confirm, Confirm files this PDF
-    instead of starting Excel to print the same letter again.
+    printed. When the book has not changed by Confirm, Confirm saves this filed
+    copy as the book and files this PDF, so Excel does not start at Confirm to
+    file or print the same letter again.
     """
     from doccon.excel_pdf import doccon_temp_dir, export_sheet_pdf
 
@@ -620,6 +628,8 @@ def preview_transmittal_pdf(
             kind=kind,
             urgent=urgent,
         ),
+        filed_book=copy_path,
+        sheet_name=result.sheet_name,
     )
 
 

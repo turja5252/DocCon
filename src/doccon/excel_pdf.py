@@ -272,6 +272,35 @@ def place_printed_pdf(source: Path, dest_pdf: Path) -> Path:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
+BOOK_LOCKED = (
+    "Could not write the transmittal in Excel.\n"
+    "Close that workbook in Excel if it is open, then try again."
+)
+
+
+def place_filed_book(source: Path, dest_book: Path) -> Path:
+    """Save a book Excel already filed over the live book.
+
+    Same last hop as file_client_with_excel: a locked book is the same message.
+    The source stays where it is.
+    """
+    src = Path(source)
+    dest = Path(dest_book)
+    tmp_dir = doccon_temp_dir("ct-book-")
+    log("INFO", "file", f"reuse {describe_path(src)} -> {describe_path(dest)}")
+    try:
+        staged = tmp_dir / dest.name
+        shutil.copy2(src, staged)
+        try:
+            return place_file(staged, dest, unique_if_locked=False)
+        except OSError as exc:
+            if _is_sharing_violation(exc):
+                raise LogError(with_log_details(BOOK_LOCKED)) from None
+            raise
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 def fill_eddi_form_and_export_pdf(workbook: Path, dest_pdf: Path, payload: dict) -> Path:
     """Fill the EDDI Project sheet through Excel (keeps VBA), save, print PDF.
 
@@ -1189,12 +1218,7 @@ def file_client_with_excel(
             place_file(local_book, source, unique_if_locked=False)
         except OSError as exc:
             if _is_sharing_violation(exc):
-                raise LogError(
-                    with_log_details(
-                        "Could not write the transmittal in Excel.\n"
-                        "Close that workbook in Excel if it is open, then try again."
-                    )
-                ) from None
+                raise LogError(with_log_details(BOOK_LOCKED)) from None
             raise
     except LogError:
         raise

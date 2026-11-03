@@ -518,6 +518,9 @@ def test_preview_prints_the_tab_confirm_files_and_leaves_the_book(monkeypatch, t
         urgent=False,
     )
     assert letter.stale_reason(source, same) == ""
+    # Confirm saves this filed copy as the book instead of filing the tab again.
+    assert letter.filed_book == copy
+    assert letter.sheet_name == "1"
     later = letter_inputs(
         "2026-Tanzim",
         lines,

@@ -2,6 +2,26 @@
 
 Newest first. Append a dated entry when a decision is locked, a test runs, or the next step changes.
 
+## 2026-11-03 — Shipped 2.32
+
+Source and the frozen exe are 2.32. Confirm saves the book the preview filed, Jira is written four drawings at a time, and a zip too large for the draft is written after the draft opens. The frozen exe started, showed `Elite DocCon  2.32`, and closed cleanly. Load `2026-Tanzim`. Do not Confirm 075. 2.31 is commit `e68ecc0` if this needs to go back.
+
+## 2026-11-03 — Confirm saves the preview's book, Jira runs four at a time, and a large zip waits for the draft
+
+From Sarah's 2.31 file times. Three changes in 2.32:
+
+- **Confirm does not file the book in Excel again.** Create transmittal already files the letter on a copy of the book. When the book and the letter have not changed (the same check that reuses the letter PDF), Confirm saves that copy as the book. It still checks that the copy filed the tab and cover number this book files next. A changed book, a different cover number, a changed letter, or a missing copy files in Excel as before. A locked book gives the same message as an Excel filing, and Jira rolls back.
+- **Jira is checked and written four drawings at a time.** Each drawing's own calls stay in order. The summary goes in the same PUT as the other fields. The Status move uses the transitions the preflight fetched, and asks Jira again once if that move is refused. A drawing whose Status move fails has its fields put back. After a failure, drawings that have not started are not written, and the ones written roll back. Update Jira uses the same path.
+- **A zip too large for the draft is written after the draft opens.** When the form plus half the drawings' size is still over 20 MB, the zip cannot be on the draft. The draft opens with the form and the Share note, and then the zip is written without compression. A pack that might fit is zipped first and measured, as before. A draft that does not open still writes the zip.
+
+Test on copies of the sandbox CT book, real Excel, Jira and Outlook stubbed, EDDI off: Confirm reached the draft in 0.5 s when it saved the preview's book, and in 16.8 s when it filed in Excel. The two books have the same sheets, cell values, row heights, and merges, and the filed tab prints pixel-identical. The macro block differs by about 470 bytes, and two ordinary Excel filings of the same copy differ by 460, so that is Excel's per-save difference. The filed cover PDF is the preview print. The sandbox book was not changed.
+
+Jira, read only, 12 sandbox issues: 6.4 s one at a time, 1.6 s four at a time (about 0.53 s per call). A 10-drawing pack with a Status change went from about 40 calls in a row to about 30 calls run four at a time. Writes were not timed.
+
+Zip: deflate on the 70 MB PDF from CT-2026-082-4 took 2.1 s here and saved 7%. Most of her 18 s there was probably reading the file from Dropbox.
+
+Suite: 552 passed, 12 failed. The same 12 board, GUI, and field-letter tests fail on untouched 2.31. Shipped in 2.32.
+
 ## 2026-11-03 — Sarah's first day on 2.31, from file times
 
 Sarah's `doccon.log` is still on her laptop. This is from her usage file and the file times in each job folder (read only). CT-2025-082-6 at 11:57 on Nov 2 still ran the 2.30 order. Every transmittal from FT-2026-076-2 at 20:19 on (10 runs, all finished) ran the 2.31 order: zip, then the draft, then the EDDI. A filed letter older than the book save is the preview PDF, because the reuse keeps the preview's file time. That was true on CT-2026-079-26, CT-2026-082-4, CT-2025-106-89, CT-2026-076-7, and FT-2026-076-2. From book save to the zip (the draft opens right after it): 2.30 took 31, 15, and 20 s; 2.31 took 2, 18, 3, and 11 s. The 18 s was a 65 MB zip on 082-4. Book save to finished is not shorter (2.30: 17–32 s; 2.31: 25–48 s), but most of it now runs after the draft is open. 2025-106 was the slowest: 44 s from the zip to the EDDI PDF. The click, Jira write, and Excel filing before the book save need her log.

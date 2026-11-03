@@ -13,7 +13,7 @@ import subprocess
 import tempfile
 from dataclasses import dataclass, replace
 from pathlib import Path
-from zipfile import ZIP_DEFLATED, ZipFile
+from zipfile import ZIP_DEFLATED, ZIP_STORED, ZipFile
 
 from doccon.client_log import LogError
 from doccon.excel_pdf import _ps_lit
@@ -54,8 +54,14 @@ def attach_pdfs(rows: list[MatchedRow], extra_paths: list[Path] | tuple[Path, ..
     return files
 
 
-def write_drawings_zip(dest: Path, pdfs: list[Path], *, exclude: Path | None = None) -> Path:
-    """Zip drawing PDFs. Never include the transmittal form PDF."""
+def write_drawings_zip(
+    dest: Path, pdfs: list[Path], *, exclude: Path | None = None, store: bool = False
+) -> Path:
+    """Zip drawing PDFs. Never include the transmittal form PDF.
+
+    ``store`` skips compression. That is for a zip too large for the draft: PDFs are
+    already compressed inside, so deflate costs seconds and saves little.
+    """
     dest = Path(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
     skip: set[str] = set()
@@ -66,7 +72,7 @@ def write_drawings_zip(dest: Path, pdfs: list[Path], *, exclude: Path | None = N
         skip.add(str(cover_beside.resolve()).casefold())
     written = 0
     used_names: set[str] = set()
-    with ZipFile(dest, "w", compression=ZIP_DEFLATED) as zipped:
+    with ZipFile(dest, "w", compression=ZIP_STORED if store else ZIP_DEFLATED) as zipped:
         for pdf in pdfs:
             resolved = Path(pdf).resolve()
             if not resolved.is_file():
@@ -113,6 +119,33 @@ def mail_attachments(cover_pdf: Path | None, pack_zip: Path | None) -> list[Path
     if pack_zip is not None and Path(pack_zip).is_file():
         files.append(Path(pack_zip).resolve())
     return files
+
+
+# PDFs are compressed inside. The most a zip saved on Sarah's packs was 34%, so a
+# pack still over the limit at half its size cannot go on the draft.
+ZIP_BEST_SAVING = 0.5
+
+
+def zip_cannot_attach(cover_pdf: Path | None, pdfs: list[Path]) -> bool:
+    """True when the form plus the drawings would be over the mail limit even zipped.
+
+    Then the zip will not be on the draft, so the draft can open before it is written.
+    A pack that might fit is zipped first, as before, and measured.
+    """
+    form = mail_attachments(cover_pdf, None)
+    skip = {str(path).casefold() for path in form}
+    drawings = 0
+    for pdf in pdfs:
+        path = Path(pdf)
+        try:
+            resolved = path.resolve()
+            if str(resolved).casefold() in skip or not resolved.is_file():
+                continue
+            drawings += resolved.stat().st_size
+        except OSError:
+            continue
+    form_bytes = sum(path.stat().st_size for path in form)
+    return form_bytes + drawings * (1 - ZIP_BEST_SAVING) > MAIL_ATTACH_LIMIT_BYTES
 
 
 def mail_pack_for_outlook(

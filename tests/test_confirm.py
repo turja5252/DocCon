@@ -660,6 +660,8 @@ def _letter(tmp_path: Path, book: Path, **changes):
             kind=CLIENT,
             urgent=False,
         ),
+        filed_book=changes.get("filed_book"),
+        sheet_name=changes.get("sheet_name", ""),
     )
 
 
@@ -743,4 +745,230 @@ def test_confirm_reports_a_locked_cover_pdf_when_reusing_the_preview(monkeypatch
     result = _confirm_client(tmp_path, _packed_row(tmp_path), letter=_letter(tmp_path, book))
     assert printed == []
     assert EXCEL_PDF_LOCKED in result.pdf_note
+
+
+def _filed_copy(tmp_path: Path) -> Path:
+    """The book the preview filed, in its own folder."""
+    filed = tmp_path / "preview" / "CT-2026-Tanzim.xlsm"
+    filed.parent.mkdir(exist_ok=True)
+    filed.write_bytes(b"book with tab 1 filed by the preview")
+    return filed
+
+
+def _no_excel_filing(monkeypatch) -> None:
+    from doccon import confirm
+
+    def file_in_excel(*_args, **_kwargs):
+        raise AssertionError("Confirm filed the book in Excel again")
+
+    monkeypatch.setattr(confirm, "file_client_transmittal", file_in_excel)
+
+
+def test_confirm_saves_the_book_the_preview_filed(monkeypatch, tmp_path: Path) -> None:
+    """No Excel at Confirm: the preview's filed copy becomes the book."""
+    from doccon import confirm
+
+    book = _succeeding_file(monkeypatch, tmp_path)
+    _no_excel_filing(monkeypatch)
+    printed = _count_exports(monkeypatch)
+    mailed: dict = {}
+    monkeypatch.setattr(confirm, "display_outlook_draft", lambda **kwargs: mailed.update(kwargs))
+    monkeypatch.setattr(confirm, "eddi_snapshot_note", lambda *_args: "")
+    filed = _filed_copy(tmp_path)
+    letter = _letter(tmp_path, book, filed_book=filed, sheet_name="1")
+    steps: list[str] = []
+    result = _confirm_client(tmp_path, _packed_row(tmp_path), letter=letter, on_step=steps.append)
+    assert book.read_bytes() == b"book with tab 1 filed by the preview"
+    assert filed.is_file()
+    assert printed == []
+    assert (tmp_path / "CT-2026-Tanzim-1.pdf").read_bytes() == b"%PDF-preview"
+    assert result.cover_id == "CT-2026-Tanzim-1"
+    assert steps[:3] == ["log_check", "file", "pdf"]
+    names = [Path(str(item)).name for item in mailed["attachments"]]
+    assert names == ["CT-2026-Tanzim-1.pdf", "CT-2026-Tanzim-1.zip"]
+
+
+def test_confirm_files_in_excel_when_the_book_changed_after_the_preview(monkeypatch, tmp_path: Path) -> None:
+    from doccon import confirm
+
+    book = _succeeding_file(monkeypatch, tmp_path)
+    printed = _count_exports(monkeypatch)
+    monkeypatch.setattr(confirm, "display_outlook_draft", lambda **_kwargs: None)
+    monkeypatch.setattr(confirm, "eddi_snapshot_note", lambda *_args: "")
+    letter = _letter(tmp_path, book, filed_book=_filed_copy(tmp_path), sheet_name="1")
+    book.write_bytes(b"book saved by someone else after the preview")
+    _confirm_client(tmp_path, _packed_row(tmp_path), letter=letter)
+    assert book.read_bytes() == b"book saved by someone else after the preview"
+    assert printed == ["TRANSMITTAL"]
+
+
+@pytest.mark.parametrize("why", ["copy gone", "other tab"])
+def test_confirm_files_in_excel_when_the_preview_book_cannot_be_used(monkeypatch, tmp_path: Path, why: str) -> None:
+    from doccon import confirm
+
+    book = _succeeding_file(monkeypatch, tmp_path)
+    _count_exports(monkeypatch)
+    monkeypatch.setattr(confirm, "display_outlook_draft", lambda **_kwargs: None)
+    monkeypatch.setattr(confirm, "eddi_snapshot_note", lambda *_args: "")
+    filed = _filed_copy(tmp_path)
+    letter = _letter(tmp_path, book, filed_book=filed, sheet_name="2" if why == "other tab" else "1")
+    if why == "copy gone":
+        filed.unlink()
+    excel: list[str] = []
+    real = confirm.file_client_transmittal
+
+    def file_in_excel(*args, **kwargs):
+        excel.append("excel")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(confirm, "file_client_transmittal", file_in_excel)
+    _confirm_client(tmp_path, _packed_row(tmp_path), letter=letter)
+    assert excel == ["excel"]
+    assert book.read_bytes() == b"book"
+
+
+def test_confirm_rolls_back_jira_when_the_book_is_locked(monkeypatch, tmp_path: Path) -> None:
+    """Saving the preview's book onto an open book aborts like an Excel filing would."""
+    from doccon import confirm
+    from doccon.excel_pdf import BOOK_LOCKED
+
+    book = _succeeding_file(monkeypatch, tmp_path)
+    _no_excel_filing(monkeypatch)
+    reverted: list[str] = []
+    monkeypatch.setattr(
+        confirm,
+        "revert_drawing_update",
+        lambda _site, _email, _token, _current, nxt, _options=(): reverted.append(nxt.key),
+    )
+
+    def locked(_source, _dest, **_kwargs):
+        raise PermissionError(13, "The process cannot access the file", None, 32)
+
+    monkeypatch.setattr("doccon.excel_pdf.place_file", locked)
+    letter = _letter(tmp_path, book, filed_book=_filed_copy(tmp_path), sheet_name="1")
+    with pytest.raises(LogError) as caught:
+        _confirm_client(
+            tmp_path,
+            _packed_row(tmp_path),
+            letter=letter,
+            pairs=[(_drawing(), _drawing(outgoing_rev="B"))],
+        )
+    assert BOOK_LOCKED.splitlines()[1] in str(caught.value)
+    assert reverted == ["P2024-1"]
+    assert book.read_bytes() == b"book"
+
+
+def test_confirm_hands_the_preflight_transitions_to_the_write(monkeypatch, tmp_path: Path) -> None:
+    from doccon import confirm
+
+    _succeeding_file(monkeypatch, tmp_path)
+    kept = {"P2024-1": [{"id": "31", "name": "Send", "to": "OFA"}]}
+    seen: dict = {}
+    monkeypatch.setattr(confirm, "preflight_jira_updates", lambda *_args, **_kwargs: kept)
+    monkeypatch.setattr(confirm, "apply_jira_updates", lambda *_args, **kwargs: seen.update(kwargs))
+    monkeypatch.setattr(confirm, "display_outlook_draft", lambda **_kwargs: None)
+    monkeypatch.setattr(confirm, "eddi_snapshot_note", lambda *_args: "")
+    _confirm_client(tmp_path, _packed_row(tmp_path), pairs=[(_drawing(), _drawing(status="OFA"))])
+    assert seen["transitions"] == kept
+
+
+def _big_pack(monkeypatch, tmp_path: Path, limit: int) -> list[MatchedRow]:
+    """A 12-byte drawing and a 4-byte form against a tiny mail limit."""
+    from doccon import confirm
+
+    rows = _client_pack(monkeypatch, tmp_path, tmp_path / "2026-Tanzim-1-1 REV A.pdf")
+    monkeypatch.setattr(confirm, "eddi_snapshot_note", lambda *_args, **_kwargs: "")
+    monkeypatch.setattr("doccon.pack_mail.MAIL_ATTACH_LIMIT_BYTES", limit)
+    return rows
+
+
+def test_confirm_opens_the_draft_before_a_zip_too_large_to_attach(monkeypatch, tmp_path: Path) -> None:
+    from zipfile import ZIP_STORED, ZipFile
+
+    from doccon import confirm
+
+    rows = _big_pack(monkeypatch, tmp_path, limit=8)
+    zip_path = tmp_path / "CT-2026-Tanzim-1.zip"
+    at_draft: dict = {}
+
+    def draft(**kwargs):
+        at_draft.update(kwargs)
+        at_draft["zip existed"] = zip_path.exists()
+
+    monkeypatch.setattr(confirm, "display_outlook_draft", draft)
+    steps: list[str] = []
+    result = _confirm_client(tmp_path, rows, on_step=steps.append)
+    assert at_draft["zip existed"] is False
+    assert [Path(str(item)).name for item in at_draft["attachments"]] == ["CT-2026-Tanzim-1.pdf"]
+    assert "CT-2026-Tanzim-1.zip" in at_draft["body"]
+    assert steps[-3:] == ["outlook", "zip_after_draft", "eddi"]
+    assert "zip" not in steps
+    with ZipFile(zip_path) as archive:
+        [member] = archive.infolist()
+        assert member.filename == "2026-Tanzim-1-1 REV A.pdf"
+        assert member.compress_type == ZIP_STORED
+    assert "Share" in result.attach_note
+    assert f"({zip_path.stat().st_size / (1024 * 1024):.1f} MB)" in result.attach_note
+
+
+def test_confirm_zips_first_when_the_pack_might_fit(monkeypatch, tmp_path: Path) -> None:
+    """Half the drawings plus the form is under the limit, so the zip is measured first."""
+    from zipfile import ZIP_DEFLATED, ZipFile
+
+    from doccon import confirm
+
+    rows = _big_pack(monkeypatch, tmp_path, limit=12)
+    mailed: dict = {}
+    monkeypatch.setattr(confirm, "display_outlook_draft", lambda **kwargs: mailed.update(kwargs))
+    steps: list[str] = []
+    result = _confirm_client(tmp_path, rows, on_step=steps.append)
+    assert steps.index("zip") < steps.index("outlook")
+    assert "zip_after_draft" not in steps
+    with ZipFile(tmp_path / "CT-2026-Tanzim-1.zip") as archive:
+        assert archive.infolist()[0].compress_type == ZIP_DEFLATED
+    assert [Path(str(item)).name for item in mailed["attachments"]] == ["CT-2026-Tanzim-1.pdf"]
+    assert "Share" in result.attach_note
+
+
+def test_confirm_still_writes_the_large_zip_when_the_draft_does_not_open(monkeypatch, tmp_path: Path) -> None:
+    from doccon import confirm
+    from doccon.confirm import ConfirmDeliveryError
+
+    rows = _big_pack(monkeypatch, tmp_path, limit=8)
+    printed: list[str] = []
+
+    def no_outlook(**_kwargs):
+        raise LogError("Outlook is not running")
+
+    def fake_note(*_args):
+        printed.append("eddi")
+        return "EDDI: printed"
+
+    monkeypatch.setattr(confirm, "display_outlook_draft", no_outlook)
+    monkeypatch.setattr(confirm, "eddi_snapshot_note", fake_note)
+    with pytest.raises(ConfirmDeliveryError) as caught:
+        _confirm_client(tmp_path, rows)
+    assert (tmp_path / "CT-2026-Tanzim-1.zip").is_file()
+    assert "Outlook draft did not open" in str(caught.value)
+    assert "Share" in caught.value.attach_note
+    assert printed == ["eddi"]
+
+
+def test_confirm_reports_a_large_zip_that_fails_after_the_draft(monkeypatch, tmp_path: Path) -> None:
+    from doccon import confirm
+    from doccon.confirm import ConfirmDeliveryError
+
+    rows = _big_pack(monkeypatch, tmp_path, limit=8)
+    opened: list[str] = []
+    monkeypatch.setattr(confirm, "display_outlook_draft", lambda **_kwargs: opened.append("draft"))
+
+    def no_zip(*_args, **_kwargs):
+        raise LogError("disk full")
+
+    monkeypatch.setattr(confirm, "write_drawings_zip", no_zip)
+    with pytest.raises(ConfirmDeliveryError) as caught:
+        _confirm_client(tmp_path, rows)
+    assert opened == ["draft"]
+    assert "the draft is open" in str(caught.value)
+    assert "disk full" in str(caught.value)
 

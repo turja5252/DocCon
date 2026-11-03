@@ -6,6 +6,10 @@
 
 The Outlook draft opens before the dated EDDI prints. The EDDI is not attached,
 so the operator can check the email while that last Excel step runs.
+
+When the preview is still the letter being filed, Confirm saves the book the
+preview filed and files the PDF it printed, so Excel does not start until the
+EDDI. A drawing zip too large for the draft is written after the draft opens.
 """
 from __future__ import annotations
 
@@ -25,14 +29,14 @@ from doccon.client_log import (
 from doccon.diag import log
 from doccon.drop_pdfs import delete_pack_dropped_copies
 from doccon.eddi import eddi_print_drawings, snapshot_eddi
-from doccon.excel_pdf import export_sheet_pdf, place_printed_pdf
+from doccon.excel_pdf import export_sheet_pdf, place_filed_book, place_printed_pdf
 from doccon.jira_client import (
     JiraError,
     apply_jira_updates,
     preflight_jira_updates,
     revert_drawing_update,
 )
-from doccon.kinds import CLIENT, FIELD, SHOP
+from doccon.kinds import CLIENT, FIELD, PREFIX, SHOP
 from doccon.match import MatchedRow
 from doccon.pack_mail import (
     attach_pdfs,
@@ -41,9 +45,11 @@ from doccon.pack_mail import (
     draft_body,
     draft_subject,
     load_mail_formats,
+    mail_attachments,
     mail_kind_key,
     mail_pack_for_outlook,
     write_drawings_zip,
+    zip_cannot_attach,
 )
 from doccon.pep import PepCover
 from doccon.register import DrawingRow, FieldOption
@@ -148,11 +154,13 @@ def run_confirm_client_pack(
         raise LogError(MISSING_FIELD_FOLDER)
     if kind == FIELD:
         _preflight_field_copies(Path(field_root), field_copies or [])
+    transitions: dict = {}
     if pairs:
         step("jira_check")
-        preflight_jira_updates(site, email, token, pairs, eddi_contexts)
+        transitions = preflight_jira_updates(site, email, token, pairs, eddi_contexts) or {}
     step("log_check")
-    log_job = preflight_client_file(book, job, rows, kind, extra_pdfs).job_number
+    book_info = preflight_client_file(book, job, rows, kind, extra_pdfs)
+    log_job = book_info.job_number
     jira_written = False
     filed = False
     cover_id = ""
@@ -180,7 +188,7 @@ def run_confirm_client_pack(
     try:
         if pairs:
             step("jira_write")
-            apply_jira_updates(site, email, token, pairs, eddi_contexts)
+            apply_jira_updates(site, email, token, pairs, eddi_contexts, transitions=transitions)
             jira_written = True
         reuse = _reusable_letter(
             letter,
@@ -196,16 +204,24 @@ def run_confirm_client_pack(
             ),
         )
         step("file")
-        result = file_client_transmittal(
+        result = _file_from_preview(
+            reuse,
             book,
-            log_job,
             lines,
-            issued=issued,
-            expected_return=expected_return,
-            cover=cover,
-            kind=kind,
-            urgent=urgent,
+            cover_id=f"{PREFIX.get(kind, 'CT')}-{log_job}-{book_info.next_number}",
+            tab=str(book_info.next_number),
         )
+        if result is None:
+            result = file_client_transmittal(
+                book,
+                log_job,
+                lines,
+                issued=issued,
+                expected_return=expected_return,
+                cover=cover,
+                kind=kind,
+                urgent=urgent,
+            )
         filed = True
         cover_id = result.cover_id
         pdf_path = book.parent / f"{cover_id}.pdf"
@@ -216,6 +232,9 @@ def run_confirm_client_pack(
         except LogError as exc:
             pdf_note = str(exc)
         zip_path: Path | None = None
+        zip_exclude: Path | None = None
+        zip_after_draft = False
+        pdfs: list[Path] = []
         if kind == SHOP:
             try:
                 step("shop")
@@ -245,25 +264,38 @@ def run_confirm_client_pack(
         else:
             pdfs = attach_pdfs(rows, extra_pdfs or [])
             zip_path = book.parent / f"{cover_id}.zip"
-            try:
-                step("zip")
-                write_drawings_zip(
-                    zip_path,
-                    pdfs,
-                    exclude=pdf_path if pdf_path.is_file() else None,
-                )
-            except LogError as exc:
-                raise ConfirmDeliveryError(
-                    f"Filed {cover_id} and wrote Jira, but could not zip the drawing PDFs. "
-                    "Do not Confirm again. Attach the files in Outlook by hand.\n"
-                    f"{exc}",
-                    cover_id=cover_id,
-                    attach_note=attachment_note([]),
-                    pdf_note=pdf_note,
-                ) from exc
+            zip_exclude = pdf_path if pdf_path.is_file() else None
+            # Too large for the draft even zipped: the draft opens first, then the zip.
+            zip_after_draft = zip_cannot_attach(zip_exclude, pdfs)
+            if zip_after_draft:
+                log("INFO", "zip", f"{zip_path.name} cannot go on the draft; it is written after the draft opens")
+            else:
+                try:
+                    step("zip")
+                    write_drawings_zip(zip_path, pdfs, exclude=zip_exclude)
+                except LogError as exc:
+                    raise ConfirmDeliveryError(
+                        f"Filed {cover_id} and wrote Jira, but could not zip the drawing PDFs. "
+                        "Do not Confirm again. Attach the files in Outlook by hand.\n"
+                        f"{exc}",
+                        cover_id=cover_id,
+                        attach_note=attachment_note([]),
+                        pdf_note=pdf_note,
+                    ) from exc
         cover_file = pdf_path if pdf_path.is_file() else None
-        files, held_zip = mail_pack_for_outlook(cover_file, zip_path)
+        if zip_after_draft and zip_path is not None:
+            files, held_zip = mail_attachments(cover_file, None), Path(zip_path).resolve()
+        else:
+            files, held_zip = mail_pack_for_outlook(cover_file, zip_path)
         note = attachment_note(files, held_zip=held_zip)
+
+        def zip_late() -> None:
+            """Write the zip the draft left off. Stored, not compressed: it is not mailed."""
+            nonlocal note
+            step("zip_after_draft")
+            write_drawings_zip(Path(zip_path), pdfs, exclude=zip_exclude, store=True)
+            note = attachment_note(files, held_zip=held_zip)
+
         if not files:
             raise ConfirmDeliveryError(
                 f"Filed {cover_id} and wrote Jira, but there were no files to attach. "
@@ -300,9 +332,16 @@ def run_confirm_client_pack(
         except LogError as exc:
             form_only = _form_without_zip(files, zip_path)
             if held_zip is not None or not form_only:
+                detail = str(exc)
+                if zip_after_draft:
+                    # She mails it by hand, so the zip to share still has to exist.
+                    try:
+                        zip_late()
+                    except LogError as zip_exc:
+                        detail = f"{detail}\nCould not zip the drawing PDFs either: {zip_exc}"
                 raise ConfirmDeliveryError(
                     f"Filed {cover_id} and wrote Jira, but the Outlook draft did not open. "
-                    f"Do not Confirm again.\n{exc}",
+                    f"Do not Confirm again.\n{detail}",
                     cover_id=cover_id,
                     attach_note=note,
                     pdf_note=pdf_note,
@@ -320,6 +359,18 @@ def run_confirm_client_pack(
                     attach_note=note,
                     pdf_note=pdf_note,
                 ) from retry_exc
+        if zip_after_draft:
+            try:
+                zip_late()
+            except LogError as exc:
+                raise ConfirmDeliveryError(
+                    f"Filed {cover_id} and wrote Jira, and the draft is open, but could not zip the "
+                    "drawing PDFs. Do not Confirm again. Zip them by hand, share that zip, and paste "
+                    f"the link into the draft before Send.\n{exc}",
+                    cover_id=cover_id,
+                    attach_note=note,
+                    pdf_note=pdf_note,
+                ) from exc
         pdf_note = _joined(pdf_note, record_eddi())
         if not keep_dropped:
             delete_pack_dropped_copies(rows)
@@ -453,6 +504,52 @@ def _reusable_letter(
         log("INFO", "letter", f"printing again at Confirm: {reason}")
         return None
     return letter
+
+
+def _file_from_preview(
+    letter: LetterPreview | None,
+    book: Path,
+    lines,
+    *,
+    cover_id: str,
+    tab: str,
+) -> FileClientResult | None:
+    """Save the book the preview filed, so Excel does not file the same tab again.
+
+    ``letter`` has already passed _reusable_letter: same book, unchanged since the
+    preview, same letter. It must also have filed the tab this book files next.
+    None means file in Excel.
+    """
+    if letter is None or letter.filed_book is None or not letter.sheet_name:
+        return None
+    if letter.cover_id != cover_id or letter.sheet_name != tab:
+        log(
+            "INFO",
+            "file",
+            f"filing in Excel: book files {cover_id} tab {tab}, "
+            f"preview filed {letter.cover_id} tab {letter.sheet_name}",
+        )
+        return None
+    filed = Path(letter.filed_book)
+    if not filed.is_file():
+        log("INFO", "file", "filing in Excel: the preview's filed book is gone")
+        return None
+    try:
+        place_filed_book(filed, Path(book))
+    except LogError:
+        raise
+    except OSError as exc:
+        if not Path(book).is_file():
+            raise LogError(f"Could not save {Path(book).name}.\n{exc}") from exc
+        log("WARN", "file", f"could not reuse the preview's filed book, filing in Excel: {exc}")
+        return None
+    return FileClientResult(
+        book=Path(book),
+        cover_id=letter.cover_id,
+        sheet_name=letter.sheet_name,
+        line_count=len(lines),
+        pdf_path=None,
+    )
 
 
 def _print_letter(result: FileClientResult, pdf_path: Path, letter: LetterPreview | None) -> None:

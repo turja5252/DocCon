@@ -111,7 +111,7 @@ def test_apply_jira_updates_rolls_back_on_later_failure(monkeypatch) -> None:
     applied: list[str] = []
     reverted: list[str] = []
 
-    def fake_apply(_site, _email, _token, _current, nxt, _options=()) -> None:
+    def fake_apply(_site, _email, _token, _current, nxt, _options=(), **_kwargs) -> None:
         if nxt.key == "P2024-2":
             raise JiraError("second failed")
         applied.append(nxt.key)
@@ -861,4 +861,143 @@ def test_fetch_job_pack_including_merges_when_search_lags(monkeypatch) -> None:
     )
     assert project is None
     assert {row.key for row in rows} == {"P2024-1", "P2024-NEW"}
+
+
+SITE = "https://example.atlassian.net"
+
+
+def _fake_jira(monkeypatch, *, refuse: set[str] = frozenset()) -> list[tuple[str, str, dict | None]]:
+    """Answer like Jira and record every call. ``refuse`` holds transition ids Jira rejects."""
+    import threading
+
+    from doccon import jira_client
+
+    calls: list[tuple[str, str, dict | None]] = []
+    lock = threading.Lock()
+
+    def fake_request(_site, _email, _token, method, path, body=None):
+        with lock:
+            calls.append((method, path, body))
+        if method == "GET" and path.endswith("/transitions"):
+            return {"transitions": [{"id": "31", "name": "Send", "to": {"name": "OFA"}}]}
+        if method == "POST" and path.endswith("/transitions"):
+            if (body or {}).get("transition", {}).get("id") in refuse:
+                raise JiraError("Jira HTTP 400: transition is not valid")
+        return {}
+
+    monkeypatch.setattr(jira_client, "_request", fake_request)
+    return calls
+
+
+def test_write_uses_the_transitions_the_preflight_fetched(monkeypatch) -> None:
+    """Three calls per drawing: the preflight list, one PUT with the summary, the move."""
+    from dataclasses import replace
+
+    from doccon import jira_client
+
+    calls = _fake_jira(monkeypatch)
+    current = _drawing()
+    nxt = replace(current, status="OFA", drawing_id="2026-Tanzim-1-2", outgoing_rev="B")
+    pairs = [(current, nxt)]
+    kept = jira_client.preflight_jira_updates(SITE, "a@b.c", "token", pairs)
+    assert set(kept) == {"P2024-1"}
+    jira_client.apply_jira_updates(SITE, "a@b.c", "token", pairs, transitions=kept)
+    assert [(method, path.rsplit("/", 1)[-1]) for method, path, _body in calls] == [
+        ("GET", "transitions"),
+        ("PUT", "P2024-1"),
+        ("POST", "transitions"),
+    ]
+    fields = calls[1][2]["fields"]
+    assert fields["summary"] == "2026-Tanzim-1-2 Drawing-1"
+    assert len(fields) > 1
+
+
+def test_a_refused_kept_transition_asks_jira_again(monkeypatch) -> None:
+    """A Jira rule may move the issue after the preflight. Then the list is fetched again."""
+    from dataclasses import replace
+
+    from doccon import jira_client
+
+    calls = _fake_jira(monkeypatch, refuse={"99"})
+    current = _drawing()
+    nxt = replace(current, status="OFA")
+    jira_client.apply_drawing_update(
+        SITE, "a@b.c", "token", current, nxt, transitions=[{"id": "99", "name": "Old", "to": "OFA"}]
+    )
+    posts = [body["transition"]["id"] for method, _path, body in calls if method == "POST"]
+    assert posts == ["99", "31"]
+
+
+def test_a_failed_status_move_puts_that_drawings_fields_back(monkeypatch) -> None:
+    from dataclasses import replace
+
+    from doccon import jira_client
+    from doccon.register import drawing_fields_payload
+
+    calls = _fake_jira(monkeypatch, refuse={"31"})
+    current = _drawing()
+    nxt = replace(current, status="OFA", outgoing_rev="B")
+    with pytest.raises(JiraError, match="not valid"):
+        jira_client.apply_drawing_update(SITE, "a@b.c", "token", current, nxt)
+    puts = [body["fields"] for method, _path, body in calls if method == "PUT"]
+    assert len(puts) == 2
+    assert puts[1] == drawing_fields_payload(current)
+
+
+def test_drawings_are_written_at_the_same_time(monkeypatch) -> None:
+    """Sequential writes would never meet at the barrier, and it would time out."""
+    import threading
+    from dataclasses import replace
+
+    from doccon import jira_client
+
+    barrier = threading.Barrier(jira_client.JIRA_WORKERS, timeout=5)
+    monkeypatch.setattr(jira_client, "apply_drawing_update", lambda *_args, **_kwargs: barrier.wait())
+    drawings = [_drawing(key=f"P2024-{n}") for n in range(1, 2 * jira_client.JIRA_WORKERS + 1)]
+    pairs = [(drawing, replace(drawing, outgoing_rev="B")) for drawing in drawings]
+    jira_client.apply_jira_updates(SITE, "a@b.c", "token", pairs)
+
+
+def test_a_failed_write_does_not_start_the_rest(monkeypatch) -> None:
+    from dataclasses import replace
+
+    from doccon import jira_client
+
+    monkeypatch.setattr(jira_client, "JIRA_WORKERS", 1)
+    started: list[str] = []
+    reverted: list[str] = []
+
+    def fake_apply(_site, _email, _token, _current, nxt, _options=(), **_kwargs) -> None:
+        started.append(nxt.key)
+        if nxt.key == "P2024-2":
+            raise JiraError("second failed")
+
+    def fake_revert(_site, _email, _token, _current, nxt, _options=()) -> None:
+        reverted.append(nxt.key)
+
+    monkeypatch.setattr(jira_client, "apply_drawing_update", fake_apply)
+    monkeypatch.setattr(jira_client, "revert_drawing_update", fake_revert)
+    drawings = [_drawing(key=f"P2024-{n}") for n in range(1, 5)]
+    pairs = [(drawing, replace(drawing, outgoing_rev="B")) for drawing in drawings]
+    with pytest.raises(JiraError, match="second failed"):
+        jira_client.apply_jira_updates(SITE, "a@b.c", "token", pairs)
+    assert started == ["P2024-1", "P2024-2"]
+    assert reverted == ["P2024-1"]
+
+
+def test_preflight_names_the_first_bad_drawing_in_pack_order(monkeypatch) -> None:
+    from dataclasses import replace
+
+    from doccon import jira_client
+
+    def fake_preflight(_site, _email, _token, _current, nxt, _options=()):
+        if nxt.key in {"P2024-2", "P2024-3"}:
+            raise JiraError(f"{nxt.key} is bad")
+        return None
+
+    monkeypatch.setattr(jira_client, "preflight_drawing_update", fake_preflight)
+    drawings = [_drawing(key=f"P2024-{n}") for n in range(1, 5)]
+    pairs = [(drawing, replace(drawing, outgoing_rev="B")) for drawing in drawings]
+    with pytest.raises(JiraError, match="P2024-2 is bad"):
+        jira_client.preflight_jira_updates(SITE, "a@b.c", "token", pairs)
 
