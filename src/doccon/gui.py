@@ -3906,7 +3906,9 @@ class DocConApp(tk.Tk):
                 f"No Dropbox job folder for {job}. Check Current Jobs, then Load again.",
             )
             return
-        drawings = eddi_print_drawings(self._eddi_rows())
+        rows = self._eddi_rows()
+        drawings = eddi_print_drawings(rows)
+        full_drawings = eddi_full_drawings(rows)
         if not self.board.current_rows():
             messagebox.showinfo("EDDI", "Load a job first.")
             return
@@ -3922,6 +3924,8 @@ class DocConApp(tk.Tk):
                 "Every listed item in groups 1–9 is included. "
                 "A missing PDF or an unticked Pack does not leave a row off. "
                 "Generic and Non Jira are omitted.\n"
+                f"The Full EDDI PDF prints after it ({len(full_drawings)} item(s)), "
+                "with the rows that have only an ID and description.\n"
                 "Fills a snapshot in 3.0 Doc Con from the latest Next values. "
                 "Does not change the live EDDI book.\n"
                 "Does not file a transmittal, write Jira, or open Outlook."
@@ -3936,7 +3940,16 @@ class DocConApp(tk.Tk):
             error: str | None = None
             note = ""
             try:
-                snap = snapshot_eddi(folder, job, drawings, issued)
+                snap = snapshot_eddi(
+                    folder,
+                    job,
+                    drawings,
+                    issued,
+                    full_drawings=full_drawings,
+                    on_full=lambda: self.after(
+                        0, lambda: self._set_status(f"Printing Full EDDI for {job}…")
+                    ),
+                )
                 note = snap.note
             except (LogError, OSError) as exc:
                 error = str(exc)
@@ -3987,7 +4000,7 @@ class DocConApp(tk.Tk):
                 f"Write {name} for {job} ({len(drawings)} Jira item(s)).\n"
                 "Every group 1–9 item is included, even when only the ID and description are filled.\n"
                 "Generic and Non Jira stay off.\n"
-                "Excel only. No PDF. The live EDDI book is not changed."
+                "Excel only. The Full EDDI PDF prints with Create EDDI. The live EDDI book is not changed."
             ),
         ):
             return
@@ -4350,6 +4363,7 @@ class DocConApp(tk.Tk):
         packed_keys = {row.drawing.key for row in rows}
         jira_rows = [row for row in self.board.pending_rows() if row.drawing.key in packed_keys]
         eddi_drawings = eddi_print_drawings(self._eddi_rows())
+        full_drawings = eddi_full_drawings(self._eddi_rows())
         originals = {
             row.drawing.key: self._matches[row.drawing.key].drawing
             for row in jira_rows
@@ -4398,6 +4412,7 @@ class DocConApp(tk.Tk):
                 field_lines=field_lines,
                 extra_pdfs=extra_pdfs,
                 eddi_drawings=eddi_drawings,
+                full_drawings=full_drawings,
                 shop_copies=shop_copies,
                 field_copies=field_copies,
                 urgent=urgent,
@@ -4432,6 +4447,7 @@ class DocConApp(tk.Tk):
         field_lines = kw["field_lines"]
         extra_pdfs = kw["extra_pdfs"]
         eddi_drawings = kw["eddi_drawings"]
+        full_drawings = kw["full_drawings"]
         shop_copies = kw["shop_copies"]
         field_copies = kw["field_copies"]
         urgent = kw["urgent"]
@@ -4539,7 +4555,9 @@ class DocConApp(tk.Tk):
                     field_error = str(exc)
             if shop_filed:
                 # Both drafts are open. The dated EDDI is not attached, so it prints last.
-                eddi_note = eddi_snapshot_note(folder, job, eddi_drawings, shop_issued)
+                eddi_note = eddi_snapshot_note(
+                    folder, job, eddi_drawings, shop_issued, full_drawings
+                )
                 shop_note = "\n".join(part for part in (shop_note, eddi_note) if part)
             self.after(
                 0,
@@ -4726,6 +4744,7 @@ class DocConApp(tk.Tk):
         packed_keys = {row.drawing.key for row in rows}
         jira_rows = [row for row in self.board.pending_rows() if row.drawing.key in packed_keys]
         eddi_drawings = eddi_print_drawings(self._eddi_rows())
+        full_drawings = eddi_full_drawings(self._eddi_rows())
         originals = {
             row.drawing.key: self._matches[row.drawing.key].drawing
             for row in jira_rows
@@ -4789,6 +4808,7 @@ class DocConApp(tk.Tk):
                 jira_rows=jira_rows,
                 originals=originals,
                 eddi_drawings=eddi_drawings,
+                full_drawings=full_drawings,
                 eddi_contexts=eddi_contexts,
                 settings=settings,
                 token=token,
@@ -4822,6 +4842,7 @@ class DocConApp(tk.Tk):
         jira_rows = kw["jira_rows"]
         originals = kw["originals"]
         eddi_drawings = kw["eddi_drawings"]
+        full_drawings = kw["full_drawings"]
         eddi_contexts = kw["eddi_contexts"]
         settings = kw["settings"]
         token = kw["token"]
@@ -4882,6 +4903,7 @@ class DocConApp(tk.Tk):
                     kind=kind,
                     job_folder=folder,
                     eddi_drawings=eddi_drawings,
+                    full_drawings=full_drawings,
                     eddi_contexts=eddi_contexts,
                     extra_pdfs=extra_pdfs,
                     shop_root=shop_root,

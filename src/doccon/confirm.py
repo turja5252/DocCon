@@ -28,7 +28,7 @@ from doccon.client_log import (
 )
 from doccon.diag import log
 from doccon.drop_pdfs import delete_pack_dropped_copies
-from doccon.eddi import eddi_print_drawings, snapshot_eddi
+from doccon.eddi import eddi_full_drawings, eddi_print_drawings, snapshot_eddi
 from doccon.excel_pdf import export_sheet_pdf, place_filed_book, place_printed_pdf
 from doccon.jira_client import (
     JiraError,
@@ -120,6 +120,7 @@ def run_confirm_client_pack(
     kind: str = CLIENT,
     job_folder: Path | None = None,
     eddi_drawings: list[DrawingRow] | None = None,
+    full_drawings: list[DrawingRow] | None = None,
     eddi_contexts: dict[str, tuple[FieldOption, ...]] | None = None,
     extra_pdfs: list[Path] | None = None,
     shop_root: Path | None = None,
@@ -169,7 +170,7 @@ def run_confirm_client_pack(
     eddi_pending = not skip_eddi
 
     def record_eddi() -> str:
-        """Print the dated EDDI once the transmittal is filed. Never raises."""
+        """Print the dated EDDI and the Full EDDI once the transmittal is filed. Never raises."""
         nonlocal eddi_pending
         if not eddi_pending:
             return ""
@@ -181,6 +182,8 @@ def run_confirm_client_pack(
                 job,
                 eddi_drawings if eddi_drawings is not None else eddi_print_drawings(rows),
                 issued,
+                full_drawings if full_drawings is not None else eddi_full_drawings(rows),
+                lambda: step("eddi_full"),
             )
         except Exception as exc:
             return f"EDDI: {exc}"
@@ -578,8 +581,10 @@ def eddi_snapshot_note(
     job: str,
     drawings: list[DrawingRow],
     issued: date,
+    full_drawings: list[DrawingRow] | None = None,
+    on_full=None,
 ) -> str:
-    """Print the dated EDDI snapshot. Never raises; the note says what happened."""
+    """Print the dated EDDI and the Full EDDI. Never raises; the note says what happened."""
     if job_folder is None:
         return "EDDI: skipped (job folder not found)."
     try:
@@ -588,6 +593,8 @@ def eddi_snapshot_note(
             job,
             drawings,
             issued,
+            full_drawings=full_drawings,
+            on_full=on_full,
         )
         return snap.note
     except LogError as exc:

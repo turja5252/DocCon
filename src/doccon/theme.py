@@ -573,7 +573,8 @@ CONFIRM_STEPS: dict[str, tuple[int, int, str]] = {
     "outlook": (85, 88, "Opening Outlook"),
     # A zip too large for the draft is written after the draft opens.
     "zip_after_draft": (86, 88, "Zipping the drawings"),
-    "eddi": (89, 99, "Printing EDDI"),
+    "eddi": (89, 94, "Printing EDDI"),
+    "eddi_full": (94, 99, "Printing Full EDDI"),
 }
 
 

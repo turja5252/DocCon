@@ -644,6 +644,142 @@ def test_snapshot_keeps_book_when_pdf_print_fails(tmp_path: Path, monkeypatch) -
     assert "Traceback" not in snap.warning
 
 
+def _id_only_row() -> DrawingRow:
+    return _drawing(
+        key="P2024-9",
+        drawing_id="2026-Tanzim-1-9",
+        title="Name only",
+        outgoing_rev="",
+        purpose="",
+        submission_date="",
+    )
+
+
+def _fake_excel(calls: list[dict], *, fail_on: int = 0):
+    """Stands in for Excel: records each print, then writes its PDF."""
+
+    def fake_fill(workbook, dest_pdf, payload):
+        book = load_workbook(workbook)
+        calls.append(
+            {
+                "book": Path(workbook),
+                "sheets": book.sheetnames,
+                "selected": [ws.title for ws in book.worksheets if ws.sheet_view.tabSelected],
+                "payload": payload,
+            }
+        )
+        book.close()
+        if len(calls) == fail_on:
+            raise LogError("Excel stopped")
+        Path(dest_pdf).write_bytes(b"%PDF-1.4")
+        return Path(dest_pdf)
+
+    return fake_fill
+
+
+def _excel_job(tmp_path: Path, monkeypatch, calls: list[dict], *, fail_on: int = 0, book: str = "2026-Tanzim") -> Path:
+    monkeypatch.setenv("TEMP", str(tmp_path / "Temp"))
+    monkeypatch.setattr("doccon.eddi.os.name", "nt")
+    job_folder = tmp_path / "Dropbox" / "job"
+    _project_fixture(job_folder / "3.0 Doc Con" / f"EDDI 3.0 - {book}.xlsx")
+    monkeypatch.setattr("doccon.excel_pdf.fill_eddi_form_and_export_pdf", _fake_excel(calls, fail_on=fail_on))
+    return job_folder
+
+
+def test_full_pdf_prints_after_the_eddi_from_a_throwaway_copy(tmp_path: Path, monkeypatch) -> None:
+    calls: list[dict] = []
+    job_folder = _excel_job(tmp_path, monkeypatch, calls)
+    book = job_folder / "3.0 Doc Con" / "EDDI 3.0 - 2026-Tanzim.xlsx"
+    wb = load_workbook(book)
+    wb.create_sheet("Sheet1")
+    wb.save(book)
+    marks: list[int] = []
+    kept = _drawing()
+    snap = snapshot_eddi(
+        job_folder,
+        "2026-Tanzim",
+        [kept],
+        date(2026, 9, 15),
+        full_drawings=[kept, _id_only_row()],
+        on_full=lambda: marks.append(len(calls)),
+    )
+    eddi, full = calls
+    assert marks == [1]
+    assert "2026-Tanzim-1-9" not in str(eddi["payload"]["fills"])
+    assert "2026-Tanzim-1-9" in str(full["payload"]["fills"])
+    assert full["payload"]["stamp"] == "Full EDDI 3.0 - 2026-Tanzim 2026-09-15"
+    assert "Dropbox" not in full["book"].parts
+    assert full["book"].suffix == ".xlsx"
+    assert "Sheet1" in full["sheets"]
+    assert full["selected"] == [full["payload"]["sheet"]]
+    pdf = snap.book.parent / "Full EDDI 3.0 - 2026-Tanzim-2026-09-15.pdf"
+    assert pdf.is_file()
+    assert snap.pdf.is_file()
+    assert snap.note.splitlines()[-1] == f"Full EDDI: {pdf.name} (2 item(s))"
+    assert load_workbook(snap.book).sheetnames == ["Project", "Sheet1", "2026-09-15"]
+
+
+def test_full_pdf_follows_the_eddi_tab_and_replaces_the_last_one(tmp_path: Path, monkeypatch) -> None:
+    calls: list[dict] = []
+    job_folder = _excel_job(tmp_path, monkeypatch, calls)
+    folder = job_folder / "3.0 Doc Con"
+    (folder / "Full EDDI 3.0 - 2026-Tanzim-1-2026-09-15.pdf").write_bytes(b"%PDF-other-job")
+    rows = [_drawing(), _id_only_row()]
+    snapshot_eddi(job_folder, "2026-Tanzim", rows, date(2026, 9, 15), full_drawings=rows)
+    snapshot_eddi(job_folder, "2026-Tanzim", rows, date(2026, 9, 15), full_drawings=rows)
+    assert calls[3]["payload"]["stamp"] == "Full EDDI 3.0 - 2026-Tanzim 2026-09-15-2"
+    assert calls[3]["sheets"] == ["Project", "2026-09-15"]
+    assert sorted(path.name for path in folder.glob("*.pdf")) == [
+        "EDDI 3.0 - 2026-Tanzim-2026-09-15-2.pdf",
+        "Full EDDI 3.0 - 2026-Tanzim-1-2026-09-15.pdf",
+        "Full EDDI 3.0 - 2026-Tanzim-2026-09-15-2.pdf",
+    ]
+
+
+def test_full_pdf_uses_the_book_job_on_a_child_job(tmp_path: Path, monkeypatch) -> None:
+    calls: list[dict] = []
+    job_folder = _excel_job(tmp_path, monkeypatch, calls, book="2026-077")
+    rows = [_drawing(job_number="2026-077-1")]
+    snap = snapshot_eddi(job_folder, "2026-077-1", rows, date(2026, 9, 15), full_drawings=rows)
+    assert (snap.book.parent / "Full EDDI 3.0 - 2026-077-2026-09-15.pdf").is_file()
+
+
+def test_a_failed_full_pdf_leaves_the_eddi_published(tmp_path: Path, monkeypatch) -> None:
+    calls: list[dict] = []
+    job_folder = _excel_job(tmp_path, monkeypatch, calls, fail_on=2)
+    rows = [_drawing()]
+    snap = snapshot_eddi(job_folder, "2026-Tanzim", rows, date(2026, 9, 15), full_drawings=rows)
+    assert snap.pdf.is_file()
+    assert snap.book.is_file()
+    assert snap.note.splitlines()[-1] == "Full EDDI: Excel stopped"
+    assert not list(snap.book.parent.glob("Full*.pdf"))
+
+
+def test_a_failed_eddi_prints_no_full_pdf(tmp_path: Path, monkeypatch) -> None:
+    calls: list[dict] = []
+    job_folder = _excel_job(tmp_path, monkeypatch, calls, fail_on=1)
+    rows = [_drawing()]
+    with pytest.raises(LogError):
+        snapshot_eddi(job_folder, "2026-Tanzim", rows, date(2026, 9, 15), full_drawings=rows)
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("full_drawings", [None, []])
+def test_no_full_pdf_without_rows_to_print(tmp_path: Path, monkeypatch, full_drawings) -> None:
+    calls: list[dict] = []
+    job_folder = _excel_job(tmp_path, monkeypatch, calls)
+    snap = snapshot_eddi(
+        job_folder,
+        "2026-Tanzim",
+        [_drawing()],
+        date(2026, 9, 15),
+        full_drawings=full_drawings,
+        on_full=lambda: pytest.fail("no Full EDDI was asked for"),
+    )
+    assert len(calls) == 1
+    assert "Full EDDI" not in snap.note
+
+
 def test_new_template_keeps_rev_then_submitted_to(tmp_path: Path) -> None:
     """Tanzim's EDDI form is Rev, Submitted to Shop/Field For, Date. Do not insert again."""
     from doccon.eddi import fill_project_sheet

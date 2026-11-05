@@ -2,6 +2,38 @@
 
 Newest first. Append a dated entry when a decision is locked, a test runs, or the next step changes.
 
+## 2026-11-05 — Shipped 2.33
+
+Source and the frozen exe are 2.33. Every EDDI also prints the Full EDDI PDF. Load `2026-Tanzim`. Do not Confirm 075. 2.32 is commit `60ba3a3` if this needs to go back. A flow chart of every process in 2.33, including the Preview, is at https://claude.ai/artifact/BQxG2tjx6itcXpPxrYPLWn (private to Tanzim until shared).
+
+## 2026-11-05 — Every EDDI also prints the Full EDDI PDF
+
+Project management likes the EDDI PDF and asked for the full list too. After the EDDI, Create transmittal, ST + FT, and Create EDDI print `Full EDDI 3.0 - {job}-{date}.pdf` in `3.0 Doc Con`, with the same date tab as the EDDI. It prints from a throwaway copy of the book with the dated tabs dropped, so the EDDI book gets no second tab and Excel opens a small file. One per job. Not attached to Outlook. It runs after the draft opens, like the EDDI. A Full EDDI that fails is a line in the note, and an EDDI that fails prints no Full EDDI. The Full EDDI button still writes the Excel file.
+
+The stubbed tests all passed while real Excel failed. Setting `wb.active` in openpyxl leaves the old tab selected, so Excel opened the copy with `Project` and the new tab grouped, and it refuses to fill grouped sheets (`0x800A03EC`). Putting the old line back reproduced it on the real book. `_select_only` leaves one tab selected, and the test now checks that. A change to an Excel step needs a run on real book copies, not only the stubs.
+
+Test on scratch copies of every job Sarah has used since Oct 20, real Excel, Jira read only. 32 jobs ran and every row printed on the Full PDF (1,002 rows, 49 pages on the 31 counted). Each EDDI book gained one tab. 2026-081 and 2026-086 have no folder in Current Jobs. Median EDDI 8.3 s and Full 8.3 s on this PC. The Full follows the row count, not the EDDI: 2025-106 39.1 s and 33.8 s (147 and 157 rows), 2025-124 15.9 s and 29.1 s, 2025-108 25.4 s and 27.1 s. `#N/A` on 2026-050 is typed into the summary of P2024-16589 and prints on the EDDI too.
+
+One whole Create transmittal on sandbox copies, real Excel, Jira and Outlook stubbed: Preview 15.6 s. Confirm saved the preview's book, and the book gained one tab. The draft opened first, then the EDDI (5.7 s), then the Full (6.5 s). Neither EDDI went on the draft.
+
+Suite: 563 passed, 11 failed, 2 skipped. The 11 are the same board, Load, and field-letter tests that fail on 2.32. `test_create_eddi_uses_today_when_date_issued_is_blank` was the twelfth and passes now, because it covers this path. The 2 skips are the date picker tests when Tk is not available, and they pass on their own. Shipped in 2.33.
+
+## 2026-11-05 — Project management asked for a Full EDDI PDF, measured on copies
+
+Measured before the build. They want the Full EDDI published the way EDDI 3.0 is. A prototype in a scratch folder printed `Full EDDI 3.0 - {job}-{date}.pdf` from a throwaway one-tab copy of the EDDI form, keeping rows that have only an ID and description. Real Excel, on copies, Jira read only. No live book and no app code changed. Every row printed (30 of 30 on 2026-123, 157 of 157 on 2025-106), and it looks the same as the EDDI PDF.
+
+This PC, EDDI then Full: 2026-Tanzim 8.7 s and 8.2 s (5 and 27 rows), 2026-123 7.8 s and 8.8 s (14 and 30 rows), 2025-106 38.7 s and 35.6 s (147 and 157 rows, 6 pages each). So the EDDI step about doubles, and it runs after the draft opens. Her EDDI step today is about 19 s, and 56 to 106 s on 2025-106.
+
+The extra rows have not been tidied, because they never printed. 12 of the 16 extra rows on 2026-123 are an ID with no description. `2026-123 -DB Databook` in Jira prints as ID `2026-123`, description `DB Databook`. 6 of the 10 extra rows on 2025-106 show only a job number as the ID.
+
+## 2026-11-05 — Sarah has not run 2.32 yet
+
+Her `doccon.log` is still on her laptop. This is from her usage file, file times in each job folder, and Jira change history, all read only. All 18 transmittals after the 2.32 build (Nov 3 11:22) through the last Jira write on Nov 4 at 18:33 ran 2.31 code. Jira shows one drawing at a time with summary, fields, and Status as three separate changes. CT-2026-113-1 at 18:22 wrote 10 drawings that way. 2.32 sends summary and fields in one write and runs four drawings at once. The books also carry a Confirm-time save, newer than the cover PDF, and a 2.32 book would keep the preview's older time. So 2.32 has no numbers yet. Next: Sarah closes DocCon fully, reopens it, and checks the title says 2.32. If it still says 2.31, Dropbox has not replaced the exe on her laptop.
+
+Baseline on her laptop, client packs. Last Jira write to the zip (the draft opens right after it): 2.30 median 43 s (18 runs), 2.31 median 22 s (12 runs). Zip to finished: 2.30 2 s, 2.31 19 s, because the EDDI now runs after the draft. A full Jira write takes about 2.45 s per drawing, so 10 to 13 drawings take 19 to 30 s. First Jira write to the zip on 10- to 13-drawing packs: 38 to 44 s. 2025-106 is the slowest: 47 s and 70 s from Jira to the zip, and 56 s and 106 s from the zip to finished, on CT-2025-106-88 and -90. The time before the first Jira write is not visible here.
+
+7 of 28 cover PDFs since Nov 2 evening were replaced by hand 1.6 to 7.9 minutes after DocCon finished (median 3.2). Their PDF producer is `Microsoft: Print To PDF`, not Excel, and they are about twice the size. Two of those packs also have a zip rewritten after DocCon finished (CT-2026-079-27 and CT-2026-059-27). What she changed is not known, because the DocCon PDF was overwritten. Ask Sarah.
+
 ## 2026-11-03 — Shipped 2.32
 
 Source and the frozen exe are 2.32. Confirm saves the book the preview filed, Jira is written four drawings at a time, and a zip too large for the draft is written after the draft opens. The frozen exe started, showed `Elite DocCon  2.32`, and closed cleanly. Load `2026-Tanzim`. Do not Confirm 075. 2.31 is commit `e68ecc0` if this needs to go back.

@@ -1304,9 +1304,13 @@ def test_create_eddi_uses_today_when_date_issued_is_blank(
     monkeypatch.setattr(gui_mod.messagebox, "showerror", lambda _t, message, **_k: infos.append(message))
     monkeypatch.setattr(gui_mod.messagebox, "askyesno", lambda *_a, **_k: True)
     monkeypatch.setattr(gui_mod, "eddi_print_drawings", lambda rows: list(rows))
+    monkeypatch.setattr(gui_mod, "eddi_full_drawings", lambda rows: ["id only", *rows])
+    monkeypatch.setattr(gui_mod, "record_eddi", lambda **_k: None)
 
-    def _snap(_folder, _job, _drawings, issued):
+    def _snap(_folder, _job, _drawings, issued, *, full_drawings, on_full):
         seen["issued"] = issued
+        seen["full"] = len(full_drawings)
+        on_full()
         return SimpleNamespace(note="EDDI printed")
 
     monkeypatch.setattr(gui_mod, "snapshot_eddi", _snap)
@@ -1323,10 +1327,77 @@ def test_create_eddi_uses_today_when_date_issued_is_blank(
         app.job.insert(0, "2026-Tanzim")
         app.issued.delete(0, "end")
         app.board.current_rows = lambda: [SimpleNamespace()]
+        app._eddi_rows = lambda: [SimpleNamespace()]
         app._print_eddi()
         app.update()
         assert "Pick a Submission Date." not in infos
         assert seen["issued"] == date.today()
+        assert seen["full"] == 2
+    finally:
+        app.destroy()
+
+
+def test_st_ft_prints_the_full_eddi_after_both_letters(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    try:
+        import doccon.gui as gui_mod
+        from doccon.gui import DocConApp
+    except tk.TclError:
+        pytest.skip("Tk is not available")
+    events: list[str] = []
+    seen: dict[str, object] = {}
+
+    def _file(**kwargs):
+        events.append(kwargs["kind"])
+        assert kwargs["skip_eddi"] is True
+        return SimpleNamespace(cover_id="1", pdf_note="", attach_note="", jira_written=False)
+
+    def _note(_folder, _job, drawings, _issued, full_drawings):
+        events.append("eddi")
+        seen["eddi"] = drawings
+        seen["full"] = full_drawings
+        return "EDDI printed"
+
+    monkeypatch.setattr(gui_mod, "run_confirm_client_pack", _file)
+    monkeypatch.setattr(gui_mod, "eddi_snapshot_note", _note)
+    try:
+        app = DocConApp()
+    except tk.TclError:
+        pytest.skip("Tk is not available")
+    app.withdraw()
+    _run_threads_now(monkeypatch)
+    try:
+        # _both_issued records usage. A test must not add to the real count.
+        app._both_issued = lambda *_args: events.append("done")
+        app._file_both_now(
+            job="2026-Tanzim",
+            folder=tmp_path,
+            rows=[],
+            jira_rows=[],
+            originals={},
+            settings=SimpleNamespace(site="https://example.atlassian.net", email="a@b.c"),
+            token="token",
+            shop_book=tmp_path / "ST-2026-Tanzim.xlsm",
+            field_book=tmp_path / "FT-2026-Tanzim.xlsm",
+            shop_info=SimpleNamespace(cover_id="ST-2026-Tanzim-1"),
+            shop_issued=date(2026, 11, 5),
+            field_issued=date(2026, 11, 5),
+            expected="N/A",
+            shop_cover=None,
+            field_cover=None,
+            shop_lines=[],
+            field_lines=[],
+            extra_pdfs=[],
+            eddi_drawings=["with detail"],
+            full_drawings=["with detail", "id only"],
+            shop_copies=[],
+            field_copies=[],
+            urgent=False,
+        )
+        app.update()
+        assert events == [gui_mod.SHOP, gui_mod.FIELD, "eddi", "done"]
+        assert seen == {"eddi": ["with detail"], "full": ["with detail", "id only"]}
     finally:
         app.destroy()
 

@@ -586,7 +586,7 @@ def test_confirm_opens_outlook_before_the_eddi(monkeypatch, tmp_path: Path) -> N
     _succeeding_file(monkeypatch, tmp_path)
     events: list[str] = []
 
-    def fake_note(_folder, _job, _drawings, _issued):
+    def fake_note(*_args):
         events.append("eddi")
         return "EDDI: EDDI 3.0 - 2026-Tanzim-2026-09-09.pdf"
 
@@ -601,6 +601,57 @@ def test_confirm_opens_outlook_before_the_eddi(monkeypatch, tmp_path: Path) -> N
     ]
 
 
+def test_confirm_prints_the_full_eddi_after_the_eddi(monkeypatch, tmp_path: Path) -> None:
+    from doccon import confirm
+    from doccon.eddi import EddiSnapshot
+
+    _succeeding_file(monkeypatch, tmp_path)
+    seen: dict[str, list] = {}
+    steps: list[str] = []
+
+    def fake_snapshot(_folder, _job, drawings, _issued, *, full_drawings, on_full):
+        seen["eddi"] = drawings
+        seen["full"] = full_drawings
+        on_full()
+        pdf = tmp_path / "EDDI 3.0 - 2026-Tanzim-2026-09-09.pdf"
+        return EddiSnapshot(
+            book=pdf.with_suffix(".xlsm"), pdf=pdf, updated_rows=1, full_note="Full EDDI: printed"
+        )
+
+    monkeypatch.setattr(confirm, "snapshot_eddi", fake_snapshot)
+    monkeypatch.setattr(confirm, "display_outlook_draft", lambda **_kwargs: None)
+    result = _confirm_client(
+        tmp_path,
+        _packed_row(tmp_path),
+        eddi_drawings=["with detail"],
+        full_drawings=["with detail", "id only"],
+        on_step=steps.append,
+    )
+    assert steps[-3:] == ["outlook", "eddi", "eddi_full"]
+    assert seen == {"eddi": ["with detail"], "full": ["with detail", "id only"]}
+    assert "Full EDDI: printed" in result.pdf_note.splitlines()
+
+
+def test_confirm_keeps_an_id_only_row_on_the_full_eddi(monkeypatch, tmp_path: Path) -> None:
+    from dataclasses import replace
+
+    from doccon import confirm
+
+    _succeeding_file(monkeypatch, tmp_path)
+    seen: dict[str, list] = {}
+
+    def fake_note(_folder, _job, drawings, _issued, full_drawings, _on_full):
+        seen["eddi"] = drawings
+        seen["full"] = full_drawings
+        return ""
+
+    monkeypatch.setattr(confirm, "eddi_snapshot_note", fake_note)
+    monkeypatch.setattr(confirm, "display_outlook_draft", lambda **_kwargs: None)
+    id_only = _drawing(outgoing_rev="", purpose="")
+    _confirm_client(tmp_path, [replace(_packed_row(tmp_path)[0], drawing=id_only)])
+    assert seen == {"eddi": [], "full": [id_only]}
+
+
 def test_confirm_prints_the_eddi_when_the_draft_does_not_open(monkeypatch, tmp_path: Path) -> None:
     from doccon import confirm
     from doccon.confirm import ConfirmDeliveryError
@@ -611,7 +662,7 @@ def test_confirm_prints_the_eddi_when_the_draft_does_not_open(monkeypatch, tmp_p
     def no_outlook(**_kwargs):
         raise LogError("Outlook is not running")
 
-    def fake_note(_folder, _job, _drawings, _issued):
+    def fake_note(*_args):
         printed.append("eddi")
         return "EDDI: printed"
 

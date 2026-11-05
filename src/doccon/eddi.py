@@ -14,8 +14,10 @@ date is also written on that sheet, so the PDF shows it. Sheet Project stays the
 form. A second run the same day adds ``{date}-2``. Empty 1–9 groups are
 hidden on the new tab. The dated tab has no manual page breaks, so the PDF
 starts a new page only when the page is full. Not attached to Outlook.
-Full EDDI writes ``Full EDDI - {job}.xlsx`` only. It lists every group 1–9 item,
-including a row whose only text is the ID and description. No PDF. The live book stays as it is.
+Each EDDI also prints ``Full EDDI 3.0 - {job}-{date}.pdf`` beside it, from a throwaway
+copy of the form. It lists every group 1–9 item, including a row whose only text is the
+ID and description. The book gets no second tab. One per job, and not attached to Outlook.
+The Full EDDI button writes the same list to ``Full EDDI - {job}.xlsx``. The live book stays as it is.
 """
 from __future__ import annotations
 
@@ -23,8 +25,9 @@ import contextlib
 import os
 import re
 import shutil
+from collections.abc import Callable
 from copy import copy
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date
 from pathlib import Path
 
@@ -75,6 +78,8 @@ PURPOSE_COL_WIDTH = 14
 _HEADER_RE = re.compile(r"^\s*(\d+)\.\s+")
 _ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 EDDI_CONSOLE_PREFIX = "EDDI 3.0 - "
+FULL_PREFIX = "Full "
+_DATED_TAB = re.compile(r"^\d{4}-\d{2}-\d{2}(?:-\d+)?$")
 _DATED_LIVE = re.compile(
     r"^EDDI 3\.0 - (.+)-(\d{4}-\d{2}-\d{2})\.(xlsx|xlsm)$",
     re.IGNORECASE,
@@ -88,14 +93,13 @@ class EddiSnapshot:
     updated_rows: int
     sheet: str = ""
     warning: str = ""
+    full_note: str = ""
 
     @property
     def note(self) -> str:
         tab = f" tab {self.sheet}" if self.sheet else ""
         base = f"EDDI: {self.pdf.name}{tab} ({self.updated_rows} item(s))"
-        if self.warning:
-            return f"{base}\n{self.warning}"
-        return base
+        return "\n".join(part for part in (base, self.warning, self.full_note) if part)
 
 
 @dataclass
@@ -410,7 +414,7 @@ def build_fill_plan(
 
 
 def full_eddi_name(job: str) -> str:
-    """Excel file for a Full EDDI export. No PDF."""
+    """Excel file the Full EDDI button writes."""
     return f"Full EDDI - {job.strip()}.xlsx"
 
 
@@ -461,12 +465,18 @@ def eddi_pdf_name(job: str, sheet: str) -> str:
     return f"{eddi_book_stem(job)}-{sheet}.pdf"
 
 
-def _keep_one_pdf(folder: Path, job: str, keep: Path) -> None:
+def full_eddi_pdf_name(job: str, sheet: str) -> str:
+    """Printed beside the EDDI PDF, with the same job code and date tab."""
+    return f"{FULL_PREFIX}{eddi_pdf_name(job, sheet)}"
+
+
+def _keep_one_pdf(folder: Path, job: str, keep: Path, *, prefix: str = "") -> None:
     """Leave only this snapshot PDF. Older dated PDFs for the same job go away."""
     if not keep.is_file():
         return
     pattern = re.compile(
-        rf"^EDDI 3\.0 - {re.escape(job.strip())}(?:-\d{{4}}-\d{{2}}-\d{{2}}(?:-\d+)?)?\.pdf$",
+        rf"^{re.escape(prefix)}EDDI 3\.0 - {re.escape(job.strip())}"
+        rf"(?:-\d{{4}}-\d{{2}}-\d{{2}}(?:-\d+)?)?\.pdf$",
         re.IGNORECASE,
     )
     for path in folder.glob("*.pdf"):
@@ -968,8 +978,14 @@ def snapshot_eddi(
     issued: date,
     *,
     print_pdf: bool = True,
+    full_drawings: list[DrawingRow] | None = None,
+    on_full: Callable[[], None] | None = None,
 ) -> EddiSnapshot:
-    """Copy the EDDI form, fill Project groups 1–9, print a dated PDF."""
+    """Copy the EDDI form, fill Project groups 1–9, print a dated PDF.
+
+    ``full_drawings`` also prints the Full EDDI PDF, after the EDDI. ``on_full`` runs
+    just before that print. A Full EDDI that fails is a line in the note.
+    """
     job = job_number.strip()
     if not job:
         raise LogError("Job Number is required for the EDDI snapshot.")
@@ -980,7 +996,14 @@ def snapshot_eddi(
     if not dest_book.is_file():
         shutil.copy2(live, dest_book)
     if print_pdf:
-        return _snapshot_with_excel(dest_book, book_job, drawings, issued)
+        snap = _snapshot_with_excel(dest_book, book_job, drawings, issued)
+        if not full_drawings:
+            return snap
+        if on_full is not None:
+            on_full()
+        return replace(
+            snap, full_note=_full_pdf_note(dest_book, book_job, full_drawings, issued, snap.sheet)
+        )
     wb = _open_book(dest_book)
     try:
         sheet = _prepare_dated_sheet(wb, issued)
@@ -1074,6 +1097,83 @@ def _snapshot_with_excel(
         raise LogError("Could not write the EDDI snapshot.") from exc
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def _select_only(wb: Workbook, name: str) -> None:
+    """Leave one tab selected. Excel refuses to fill grouped sheets (0x800A03EC)."""
+    for ws in wb.worksheets:
+        ws.sheet_view.tabSelected = ws.title == name
+    wb.active = wb.sheetnames.index(name)
+
+
+def _print_full_pdf(
+    book: Path,
+    job: str,
+    drawings: list[DrawingRow],
+    issued: date,
+    sheet: str,
+) -> str:
+    """Print the Full EDDI PDF beside the EDDI PDF, from a throwaway copy of the form.
+
+    ``sheet`` is the EDDI tab, so both PDFs carry the same date. The copy drops the
+    dated tabs, so Excel opens a small file. Nothing from the copy reaches the book.
+    """
+    from doccon.excel_pdf import doccon_temp_dir, fill_eddi_form_and_export_pdf
+
+    tmp_dir = doccon_temp_dir("eddi-full-")
+    try:
+        source = tmp_dir / book.name
+        shutil.copy2(book, source)
+        _unblock(source)
+        wb = load_workbook(source, data_only=False, keep_vba=False)
+        try:
+            for name in wb.sheetnames:
+                if _DATED_TAB.match(name):
+                    del wb[name]
+            tab = _prepare_dated_sheet(wb, issued)
+            _select_only(wb, tab)
+            expand_purpose_columns(wb[tab])
+            local_book = source.with_suffix(".xlsx")
+            wb.save(local_book)
+        finally:
+            wb.close()
+        filled = load_workbook(local_book, data_only=False)
+        try:
+            plan = build_fill_plan(
+                filled[tab],
+                job,
+                drawings,
+                stamp=f"{FULL_PREFIX}{eddi_stamp(job, sheet)}",
+                require_detail=False,
+            )
+        finally:
+            filled.close()
+        printed = fill_eddi_form_and_export_pdf(
+            local_book, tmp_dir / "full-eddi.pdf", plan_payload(plan, sheet=tab)
+        )
+        pdf, warning = _copy_pdf_out(printed, book.parent / full_eddi_pdf_name(job, sheet))
+        _keep_one_pdf(book.parent, job, pdf, prefix=FULL_PREFIX)
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+    note = f"Full EDDI: {pdf.name} ({plan.item_count} item(s))"
+    return f"{note}\n{warning}" if warning else note
+
+
+def _full_pdf_note(
+    book: Path,
+    job: str,
+    drawings: list[DrawingRow],
+    issued: date,
+    sheet: str,
+) -> str:
+    """Print the Full EDDI PDF. Never raises: the EDDI is out, and the note says what happened."""
+    from doccon.diag import log, redact
+
+    try:
+        return _print_full_pdf(book, job, drawings, issued, sheet)
+    except Exception as exc:
+        log("WARN", "eddi", f"Full EDDI PDF failed: {redact(str(exc))}")
+        return f"Full EDDI: {exc}"
 
 
 def _open_book(path: Path) -> Workbook:
