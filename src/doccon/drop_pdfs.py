@@ -323,23 +323,6 @@ def sweep_replaced_dropped_copies(
         delete_replaced_dropped_copy(rec.path, new_path)
 
 
-def delete_pack_dropped_copies(rows: list[MatchedRow]) -> list[Path]:
-    """Confirm success: delete email-dropped staging copies used by these packed rows."""
-    deleted: list[Path] = []
-    seen: set[str] = set()
-    for row in rows:
-        if row.pdf is None or not row.pdf.email_dropped:
-            continue
-        path = row.pdf.path
-        token = _norm_path(path)
-        if token in seen:
-            continue
-        seen.add(token)
-        if delete_dropped_copy(path):
-            deleted.append(path)
-    return deleted
-
-
 def resolve_drop_row_key(*keys: str | None) -> str | None:
     """First non-empty Jira issue key: drop hit, last cursor, then selected row."""
     for key in keys:

@@ -49,8 +49,6 @@ from doccon.drop_pdfs import (
     NOT_PDF,
     apply_board_drop,
     apply_row_drop,
-    delete_dropped_copy,
-    delete_pack_dropped_copies,
     dropped_open_block,
     ingest_sources,
     rename_email_dropped_pdf,
@@ -84,6 +82,8 @@ from doccon.match import (
     is_dropped_pdf_path,
     keep_located_pdfs,
     match_pdf_hits,
+    missing_paired_pdf,
+    missing_pdf_message,
     outgoing_rev_from_filename,
     pair_pdf,
     pair_unmatched,
@@ -4327,6 +4327,10 @@ class DocConApp(tk.Tk):
             who = (missing_extra.document_no or "").strip() or "A Non Jira row"
             messagebox.showerror(label, f"{who} has no PDF. Locate one, or Assign it from New PDFs.")
             return
+        gone = missing_paired_pdf(rows)
+        if gone is not None:
+            messagebox.showerror(label, missing_pdf_message(gone))
+            return
         try:
             shop_book = prepare_book(folder, job, SHOP)
             shop_info = inspect_book(shop_book, job, SHOP)
@@ -4494,7 +4498,6 @@ class DocConApp(tk.Tk):
                     shop_copies=shop_copies,
                     urgent=urgent,
                     skip_eddi=True,
-                    keep_dropped=True,
                     letter=shop_letter,
                     mail=shop_facts,
                     mail_subject=shop_wording[0],
@@ -4535,7 +4538,6 @@ class DocConApp(tk.Tk):
                         field_copies=field_copies,
                         urgent=urgent,
                         skip_eddi=True,
-                        keep_dropped=True,
                         letter=field_letter,
                         mail=field_facts,
                         mail_subject=field_wording[0],
@@ -4576,7 +4578,6 @@ class DocConApp(tk.Tk):
                     folder,
                     job,
                     list(jira_rows),
-                    list(rows),
                 ),
             )
 
@@ -4598,7 +4599,6 @@ class DocConApp(tk.Tk):
         folder: Path | None,
         job: str,
         jira_rows: list[MatchedRow],
-        rows: list[MatchedRow],
     ) -> None:
         self._busy = False
         self._work = ""
@@ -4612,9 +4612,6 @@ class DocConApp(tk.Tk):
             record_transmittal(cover=shop_id, job=job, kind=SHOP)
         if field_filed:
             record_transmittal(cover=field_id, job=job, kind=FIELD)
-        if shop_filed and field_filed:
-            delete_pack_dropped_copies(rows)
-            self._consume_pack_extras()
         self._save_pack(quiet=True, force=True)
         self._refresh_cover_hint()
         notes = "\n".join(part for part in (shop_note, shop_attach, field_note, field_attach) if part)
@@ -4721,6 +4718,10 @@ class DocConApp(tk.Tk):
                 label,
                 f"{who} has no PDF. Locate one, or Assign it from New PDFs.",
             )
+            return
+        gone = missing_paired_pdf(rows)
+        if gone is not None:
+            messagebox.showerror(label, missing_pdf_message(gone))
             return
         try:
             book = prepare_book(folder, job, kind)
@@ -4961,8 +4962,6 @@ class DocConApp(tk.Tk):
         if jira_ok and jira_rows:
             for row in jira_rows:
                 self._apply_row(row)
-        if not error:
-            self._consume_pack_extras()
         self._save_pack(quiet=True, force=True)
         self._refresh_cover_hint()
         if filed:
@@ -5320,16 +5319,6 @@ class DocConApp(tk.Tk):
         self._paint_extras([item for item in items if item.id != key])
         self._save_pack(quiet=True)
         self._set_status(f"Removed {match.document_no} from this pack.")
-
-    def _consume_pack_extras(self) -> None:
-        """Create transmittal succeeded. Drop packed Non Jira rows and delete staged copies."""
-        keep: list[PackExtra] = []
-        for item in self._current_extras():
-            if item.packed and item.email_dropped:
-                delete_dropped_copy(item.path)
-            if not item.packed:
-                keep.append(item)
-        self._paint_extras(keep)
 
     def _apply_drop(self, sources, root_x: int, root_y: int, *, strip_leftovers: bool = False) -> None:
         try:
@@ -5764,8 +5753,15 @@ class DocConApp(tk.Tk):
         self._set_status(f"Located {path.name} for {updated.document_no}.")
 
     def _replace_extra_file(self, current: PackExtra, path: Path) -> PackExtra:
-        """Put a PDF on an existing Non Jira row. Locate and Assign both use this."""
-        rev = outgoing_rev_from_filename(path.name) or current.rev
+        """Put a PDF on an existing Non Jira row. Locate and Assign both use this.
+
+        Next values typed on the row stay. A REV in the filename sets Outgoing Rev.
+        """
+        file_rev = outgoing_rev_from_filename(path.name)
+        rev = file_rev or current.rev
+        fields = dict(current.fields or {})
+        if file_rev:
+            fields["outgoing_rev"] = file_rev
         updated = PackExtra(
             path=str(path),
             document_no=document_no_for_file(current.document_no, path),
@@ -5777,6 +5773,7 @@ class DocConApp(tk.Tk):
             email_dropped=is_dropped_pdf_path(path),
             id=current.id,
             packed=current.packed,
+            fields=fields,
         )
         self._paint_extras(
             [updated if item.id == current.id else item for item in self._current_extras()]

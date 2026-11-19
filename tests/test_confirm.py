@@ -359,7 +359,8 @@ def test_confirm_eddi_failure_still_mails(monkeypatch, tmp_path: Path) -> None:
     assert result.jira_written
 
 
-def test_confirm_success_deletes_packed_dropped_copies(monkeypatch, tmp_path: Path) -> None:
+def test_confirm_success_keeps_pasted_copies_for_the_next_send(monkeypatch, tmp_path: Path) -> None:
+    """ST, FT, and CT often go out minutes apart with the same drawings. The pasted copy stays."""
     from doccon import confirm
     from doccon.drop_pdfs import write_pdf_bytes_into_dropped
     from doccon.match import PdfHit
@@ -405,8 +406,44 @@ def test_confirm_success_deletes_packed_dropped_copies(monkeypatch, tmp_path: Pa
         job_folder=job,
     )
     assert result.cover_id == "CT-2026-Tanzim-1"
-    assert not dropped.exists()
+    assert dropped.is_file()
     assert real.is_file()
+
+
+def test_confirm_stops_when_a_packed_pdf_is_gone(monkeypatch, tmp_path: Path) -> None:
+    """A drawing listed on the letter must not go out without its file."""
+    from doccon import confirm
+    from doccon.match import PdfHit
+
+    job = tmp_path / "2026-Tanzim"
+    gone = job / "3.0 Doc Con" / "DocCon" / "dropped" / "2026-Tanzim-1-1 REV 0.pdf"
+    monkeypatch.setattr(
+        confirm, "preflight_jira_updates", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("jira"))
+    )
+    monkeypatch.setattr(
+        confirm, "apply_jira_updates", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("jira"))
+    )
+    with pytest.raises(LogError, match=r"2026-Tanzim-1-1: 2026-Tanzim-1-1 REV 0\.pdf is missing\. Paste it again"):
+        run_confirm_client_pack(
+            site="https://example.atlassian.net",
+            email="a@b.c",
+            token="token",
+            pairs=[(_drawing(), _drawing(outgoing_rev="B"))],
+            book=tmp_path / "CT-2026-Tanzim.xlsm",
+            job="2026-Tanzim",
+            lines=[],
+            issued=date(2026, 9, 9),
+            expected_return="N/A",
+            cover=_cover(tmp_path / "pep.xlsx"),
+            rows=[
+                MatchedRow(
+                    drawing=_drawing(),
+                    pdf=PdfHit(path=gone, drawing_id="2026-Tanzim-1-1", rev="0", email_dropped=True),
+                    confidence="High",
+                )
+            ],
+            job_folder=job,
+        )
 
 
 def test_confirm_abort_does_not_delete_dropped_copies(monkeypatch, tmp_path: Path) -> None:
@@ -592,9 +629,8 @@ def test_confirm_opens_outlook_before_the_eddi(monkeypatch, tmp_path: Path) -> N
 
     monkeypatch.setattr(confirm, "display_outlook_draft", lambda **_kwargs: events.append("outlook"))
     monkeypatch.setattr(confirm, "eddi_snapshot_note", fake_note)
-    monkeypatch.setattr(confirm, "delete_pack_dropped_copies", lambda _rows: events.append("delete dropped"))
     result = _confirm_client(tmp_path, _packed_row(tmp_path))
-    assert events == ["outlook", "eddi", "delete dropped"]
+    assert events == ["outlook", "eddi"]
     assert result.pdf_note.splitlines() == [
         "PDF: CT-2026-Tanzim-1.pdf",
         "EDDI: EDDI 3.0 - 2026-Tanzim-2026-09-09.pdf",

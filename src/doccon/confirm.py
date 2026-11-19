@@ -27,7 +27,6 @@ from doccon.client_log import (
     letter_inputs,
 )
 from doccon.diag import log
-from doccon.drop_pdfs import delete_pack_dropped_copies
 from doccon.eddi import eddi_full_drawings, eddi_print_drawings, snapshot_eddi
 from doccon.excel_pdf import export_sheet_pdf, place_filed_book, place_printed_pdf
 from doccon.jira_client import (
@@ -37,7 +36,7 @@ from doccon.jira_client import (
     revert_drawing_update,
 )
 from doccon.kinds import CLIENT, FIELD, PREFIX, SHOP
-from doccon.match import MatchedRow
+from doccon.match import MatchedRow, missing_paired_pdf, missing_pdf_message
 from doccon.pack_mail import (
     attach_pdfs,
     attachment_note,
@@ -129,7 +128,6 @@ def run_confirm_client_pack(
     field_copies: list[Path] | None = None,
     urgent: bool = False,
     skip_eddi: bool = False,
-    keep_dropped: bool = False,
     letter: LetterPreview | None = None,
     on_step=None,
     mail=None,
@@ -147,6 +145,9 @@ def run_confirm_client_pack(
         if on_step is not None:
             on_step(name)
 
+    gone = missing_paired_pdf(rows)
+    if gone is not None:
+        raise LogError(f"{missing_pdf_message(gone)} Confirm aborted; nothing was written.")
     if kind == SHOP and (shop_root is None or not Path(shop_root).is_dir()):
         raise LogError(MISSING_SHOP_FOLDER)
     if kind == SHOP:
@@ -375,8 +376,7 @@ def run_confirm_client_pack(
                     pdf_note=pdf_note,
                 ) from exc
         pdf_note = _joined(pdf_note, record_eddi())
-        if not keep_dropped:
-            delete_pack_dropped_copies(rows)
+        # A pasted copy stays in DocCon/dropped. The next ST, FT, or CT often sends the same drawing.
         return ConfirmResult(
             cover_id=cover_id,
             attach_note=note,

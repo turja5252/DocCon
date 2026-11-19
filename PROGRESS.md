@@ -2,6 +2,25 @@
 
 Newest first. Append a dated entry when a decision is locked, a test runs, or the next step changes.
 
+## 2026-11-19 — Shipped 2.34: a pasted PDF stays after a send
+
+Sarah: when she pastes an email attachment onto a row and switches between ST, CT, or FT, the row loses the file. Switching is not the cause. A test that pasted onto a drawing row and a Non Jira row, then switched CT, ST, FT, ST + FT, and CT, kept both files. Every successful Create transmittal (and ST + FT) deleted the email-dropped copies on packed rows and removed packed Non Jira rows. Pack stays ticked after a send, and she sends ST, FT, and CT on the same job minutes apart: 87 same-job pairs within an hour from Oct 14 to Nov 18 in her usage file.
+
+Read only, from this PC. All 61 email-dropped pairs saved in `client-pack.json` across 17 jobs name a file that is gone. On 2026-125 on Nov 18, ST-2026-125-2 went out at 10:26, and FT-2026-125-2 at 10:29 still copied all four drawings into the field folder, so she pasted them again between sends. Every CT she sent after an ST or FT on the same job has a zip that matches its letter. Shop and field copies were checked on 2026-125 only.
+
+The risk was worse than the extra pasting. A deleted copy still showed its filename on the row, and Create transmittal did not check it. The letter listed the drawing while the client zip, the shop copy, and the field copy left it out without a word.
+
+2.34:
+
+- Confirm no longer deletes a dropped copy. It is deleted only when that row pairs a different file (Locate, Sync, or another paste), as before.
+- Packed Non Jira rows stay packed after a send.
+- Create transmittal and ST + FT stop with `{ID}: {file} is missing. Paste it again, or Locate it.` when a packed drawing names a PDF this PC cannot see. `run_confirm_client_pack` checks it again before Jira, so nothing is written.
+- Locate… or Assign on a Non Jira row keeps the Next values typed on that row. Before, they were cleared. A REV in the filename still sets Outgoing Rev.
+
+Rows saved before 2.34 still name the files 2.33 deleted. Create transmittal names each one, and she pastes it once more.
+
+Suite: 569 passed, 10 failed, 2 skipped. The 10 are the board, Load, and field-letter tests that fail on 2.33 source too (run on both). The 2 skips are Tk not starting a second window in one run. The new tests in `tests/test_send_keeps_pasted_pdfs.py` pass on their own, and they and the two changed Confirm tests fail on 2.33. The frozen exe started, showed `Elite DocCon  2.34`, and closed cleanly. Load `2026-Tanzim`. Do not Confirm 075. 2.33 is commit `e44c333` if this needs to go back.
+
 ## 2026-11-05 — Shipped 2.33
 
 Source and the frozen exe are 2.33. Every EDDI also prints the Full EDDI PDF. Load `2026-Tanzim`. Do not Confirm 075. 2.32 is commit `60ba3a3` if this needs to go back. A flow chart of every process in 2.33, including the Preview, is at https://claude.ai/artifact/BQxG2tjx6itcXpPxrYPLWn (private to Tanzim until shared).

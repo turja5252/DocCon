@@ -408,6 +408,26 @@ def pdf_is_email_dropped(row: MatchedRow) -> bool:
     return bool(row.pdf is not None and row.pdf.email_dropped)
 
 
+def missing_paired_pdf(rows: list[MatchedRow]) -> MatchedRow | None:
+    """The first row that names a PDF this PC cannot see. A send must not go without it."""
+    for row in rows:
+        if row.pdf is None:
+            continue
+        try:
+            present = row.pdf.path.is_file()
+        except OSError:
+            present = False
+        if not present:
+            return row
+    return None
+
+
+def missing_pdf_message(row: MatchedRow) -> str:
+    who = (row.drawing.drawing_id or "").strip() or row.drawing.key
+    name = row.pdf.path.name if row.pdf is not None else ""
+    return f"{who}: {name} is missing. Paste it again, or Locate it."
+
+
 def pdf_address_text(row: MatchedRow) -> str:
     """PDF column address: the filename, plus the 'email dropped' marker for a drag-drop copy."""
     if row.pdf is None:
